@@ -1804,9 +1804,6 @@ if(DECT2_BUILD_TESTS)
     add_executable(test_tx_iqstream tests/tx/test_tx_iqstream.cpp)   # the transmit IQ on a TCP socket: every format, header and side channel, reconnect, dry run (loopback client)
     target_link_libraries(test_tx_iqstream PRIVATE dect2core)
     add_test(NAME tx_iqstream COMMAND test_tx_iqstream)
-    add_executable(test_tx_udpsink tests/tx/test_tx_udpsink.cpp)   # transmit baseband into GNU Radio UDP sink
-    target_link_libraries(test_tx_udpsink PRIVATE dect2core)
-    add_test(NAME tx_udpsink COMMAND test_tx_udpsink)
     add_executable(test_tx_quality_a tests/tx/test_tx_quality_a.cpp)   # TX signal quality, modes acars .. iono: level, clipping, DC, ACLR, spurs, fades, block seams; --rt: through the receiver
     target_link_libraries(test_tx_quality_a PRIVATE dect2core)
     add_test(NAME tx_quality_a COMMAND test_tx_quality_a)
@@ -1828,6 +1825,10 @@ if(DECT2_BUILD_TESTS)
     add_dependencies(test_scan_soapy SoapyOnAirTest)
     add_test(NAME scan_soapy COMMAND test_scan_soapy $<TARGET_FILE_DIR:SoapyOnAirTest>)
   endif()
+
+  add_executable(test_tx_udpsink tests/tx/test_tx_udpsink.cpp)   # transmit baseband into GNU Radio UDP sink
+  target_link_libraries(test_tx_udpsink PRIVATE dect2core)
+  add_test(NAME tx_udpsink COMMAND test_tx_udpsink)
 
   add_executable(bench_atsc tests/atsc/bench_atsc.cpp)
   target_link_libraries(bench_atsc PRIVATE dect2core)

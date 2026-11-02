@@ -1,6 +1,9 @@
 #include "../net/netcompat.h"
 #include "dect2/tx/tx_udpsink.h"
 #include "dect2/common/thread_name.h"
+#ifndef _WIN32
+#include <netdb.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
