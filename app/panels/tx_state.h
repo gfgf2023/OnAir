@@ -5,6 +5,7 @@
 #include "../app.h"
 #include "dect2/tx/tx.h"
 #include "dect2/tx/tx_iqfile.h"
+#include "dect2/tx/tx_udpsink.h"
 #include <memory>
 #include <atomic>
 #include <future>
@@ -86,7 +87,7 @@ struct TxUi {
     bool linkRx = false;                     // the transmit frequency follows the receiver's
     bool pttHold = false;                    // voice: transmit only while the PTT button is held
     bool pttDown = false;
-    // the destination of the signal: 0 a radio, 1 an IQ file (no radio is opened or claimed, no radio-only notice applies)
+    // the destination of the signal: 0 a radio, 1 an IQ file, 2 GNU Radio UDP (no radio is opened or claimed, no radio-only notice applies)
     int destKind = 0;
     char ifPath[512] = {};                   // the folder (or a file name without extension) the IQ file goes to
     int ifFormat = 0;                        // IqFileFormat
@@ -94,6 +95,14 @@ struct TxUi {
     bool sessionFile = false;                // the running session writes a file
     std::string ifPathUsed;                  // the data file of the running or last session
     std::shared_ptr<IqFileTxCounters> ifCounters;   // bytes and samples written, kept by the sink
+    // GNU Radio UDP destination
+    char udpHost[64] = {};                   // destination host/IP
+    int udpPort = 1234;                      // destination UDP port
+    int udpFormat = 0;                       // TxIqFormat (0 cf32, 1 cs16, 2 ci16, 3 cs8, 4 cu8)
+    int udpPayloadSize = 1472;               // UDP payload MTU size in bytes
+    double udpRateHz = 2000000;              // sample rate for UDP output (Hz)
+    bool udpCustomRate = false;              // manual numeric input of sample rate
+    std::shared_ptr<UdpTxCounters> udpCounters;     // packets and samples sent, kept by the sink
     // KAAL: the identity beacon and the power written in it (callsign, grid, latitude and longitude, bio text are the shared fields above)
     bool kaalBeacon = true;
     double kaalPower = 10;
@@ -138,7 +147,7 @@ void chooseMode(App& a, TxUi& s, const TxModeSpec& m); // a mode chosen for tran
 std::vector<int> txRadios(const App& a);               // indices of the radios that can transmit
 int rxHolder(const DeviceInfo& d);                     // the receiver holding a radio (0 none)
 void release(TxUi& s);                                 // gives the claimed radio back
-inline bool noRadio(const TxUi& s) { return s.dryRun || s.destKind == 1; }   // a test or an IQ file: no radio is opened or claimed
+inline bool noRadio(const TxUi& s) { return s.dryRun || s.destKind == 1 || s.destKind == 2; }   // a test, an IQ file or UDP: no radio is opened or claimed
 void loadPayloadPrefs(TxUi& s);                        // callsign, grid, text, offset, recent list from the settings
 void saveStr(const char* key, const char* v);        // one text into the settings
 void saveRecent(const TxUi& s);                        // writes the recent list

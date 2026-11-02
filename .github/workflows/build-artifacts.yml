@@ -1,0 +1,154 @@
+name: Build Runnable Artifacts
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+concurrency:
+  group: build-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 Runnable
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-glfw
+            mingw-w64-ucrt-x86_64-hackrf
+            mingw-w64-ucrt-x86_64-soapysdr
+            mingw-w64-ucrt-x86_64-libiconv
+            zip
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDECT2_BUILD_APP=ON -DDECT2_BUILD_TESTS=ON
+          cmake --build build -j 4 --target dect2 dect2cli dect2scan test_tx_udpsink
+
+      - name: Test UDP Sink
+        run: |
+          ctest --test-dir build -R '^tx_udpsink$' --output-on-failure
+
+      - name: Bundle runnable package
+        run: |
+          PREFIX=/ucrt64
+          OUT=dist/OnAir-windows-x64
+          mkdir -p "$OUT"
+
+          strip -o "$OUT/OnAir.exe" build/dect2.exe
+          strip -o "$OUT/onair-cli.exe" build/dect2cli.exe
+          strip -o "$OUT/onair-scan.exe" build/dect2scan.exe
+
+          collect() {
+            ldd "$1" | awk -v p="$PREFIX/" 'index($3, p) == 1 {print $3}' | while read -r dll; do
+              [ -f "$OUT/$(basename "$dll")" ] || { cp "$dll" "$OUT/"; collect "$dll"; }
+            done
+          }
+
+          collect "$OUT/OnAir.exe"
+          collect "$OUT/onair-cli.exe"
+          collect "$OUT/onair-scan.exe"
+
+          for d in librtlsdr libairspy libairspyhf libbladeRF libLimeSuite libiio libuhd; do
+            [ -f "$PREFIX/bin/$d.dll" ] && { cp "$PREFIX/bin/$d.dll" "$OUT/"; collect "$OUT/$d.dll"; }
+          done
+
+          for m in "$PREFIX"/lib/SoapySDR/modules*/; do
+            [ -d "$m" ] || continue
+            mkdir -p "$OUT/lib/SoapySDR/modules0.8"
+            for f in "$m"*.dll; do
+              case "$f" in *rtlsdrSupport.dll|*airspySupport.dll) continue;; esac
+              [ -f "$f" ] && cp "$f" "$OUT/lib/SoapySDR/modules0.8/"
+            done
+            for d in "$OUT"/lib/SoapySDR/modules0.8/*.dll; do [ -f "$d" ] && collect "$d"; done
+          done
+
+          cp LICENSE "$OUT/LICENSE.txt"
+          cat > "$OUT/README.txt" <<'TXT'
+          OnAir (Windows x64 Portable)
+          
+          Run OnAir.exe directly. No installation required.
+          To stream baseband over UDP to GNU Radio:
+          1. In Transmit (TX), select Destination -> GNU Radio UDP.
+          2. Set Host (default 127.0.0.1) and Port (default 1234).
+          3. Set Format (default cf32) and desired sample rate.
+          4. Start transmit; connect GNU Radio UDP Source to receive the IQ stream.
+          TXT
+
+          cd dist
+          zip -qr OnAir-Windows-x64-Runnable.zip OnAir-windows-x64
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: OnAir-Windows-x64-Runnable
+          path: dist/OnAir-Windows-x64-Runnable.zip
+
+  linux:
+    name: Linux x86_64 Runnable
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config patchelf zip \
+            libhackrf-dev libsoapysdr-dev libusb-1.0-0-dev libavformat-dev libavcodec-dev \
+            libavutil-dev libswscale-dev libswresample-dev libglfw3-dev
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDECT2_BUILD_APP=ON -DDECT2_BUILD_TESTS=ON
+          cmake --build build -j 4 --target dect2 dect2cli dect2scan test_tx_udpsink
+
+      - name: Test UDP Sink
+        run: |
+          ctest --test-dir build -R '^tx_udpsink$' --output-on-failure
+
+      - name: Bundle portable package
+        run: |
+          OUT=dist/OnAir-linux-x86_64
+          mkdir -p "$OUT/bin" "$OUT/lib"
+
+          cp build/dect2 "$OUT/bin/onair"
+          cp build/dect2cli "$OUT/bin/onair-cli"
+          cp build/dect2scan "$OUT/bin/onair-scan"
+
+          SKIP='linux-vdso|ld-linux|/libc\.so|/libm\.so|/libdl\.so|/libpthread\.so|/librt\.so|/libutil\.so|/libresolv\.so|/libstdc\+\+|/libgcc_s|/libGL|/libEGL|/libOpenGL|/libX|/libxcb|/libwayland|/libdrm|/libasound|/libpulse|/libudev|/libdbus|/libsystemd'
+          collect() {
+            ldd "$1" | awk '/=> \//{print $3}' | while read -r lib; do
+              echo "$lib" | grep -Eq "$SKIP" && continue
+              [ -f "$OUT/lib/$(basename "$lib")" ] || { cp -L "$lib" "$OUT/lib/"; collect "$lib"; }
+            done
+          }
+
+          for p in "$OUT"/bin/*; do collect "$p"; done
+          for p in "$OUT"/bin/*; do patchelf --set-rpath '$ORIGIN/../lib' "$p" || true; done
+          for l in "$OUT"/lib/*.so*; do patchelf --set-rpath '$ORIGIN' "$l" 2>/dev/null || true; done
+
+          cp LICENSE "$OUT/LICENSE"
+          cd dist
+          tar -czf OnAir-Linux-x86_64-portable.tar.gz OnAir-linux-x86_64
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: OnAir-Linux-x86_64-Runnable
+          path: dist/OnAir-Linux-x86_64-portable.tar.gz

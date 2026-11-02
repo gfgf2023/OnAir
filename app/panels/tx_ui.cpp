@@ -118,11 +118,18 @@ void loadPayloadPrefs(TxUi& s) {
     snprintf(s.text, sizeof s.text, "%s", p.getS("tx.text", "").c_str());
     s.offsetMhz = p.getD("tx.offsetMhz", 0);
     s.dryRun = p.getB("tx.dryRun", false);
-    s.destKind = p.getI("tx.destKind", 0) == 1 ? 1 : 0;
+    s.destKind = std::max(0, std::min(2, (int)p.getI("tx.destKind", 0)));
     snprintf(s.ifPath, sizeof s.ifPath, "%s", p.getS("tx.ifPath", "").c_str());
     s.ifFormat = std::max(0, std::min(kIqFileFormats - 1, (int)p.getI("tx.ifFormat", 0)));
     s.ifRateHz = p.getD("tx.ifRateHz", 48000);
     if (!(s.ifRateHz > 0)) s.ifRateHz = 48000;
+    snprintf(s.udpHost, sizeof s.udpHost, "%s", p.getS("tx.udpHost", "127.0.0.1").c_str());
+    if (s.udpHost[0] == '\0') snprintf(s.udpHost, sizeof s.udpHost, "127.0.0.1");
+    s.udpPort = std::max(1, std::min(65535, (int)p.getI("tx.udpPort", 1234)));
+    s.udpFormat = std::max(0, std::min(4, (int)p.getI("tx.udpFormat", 0)));
+    s.udpPayloadSize = std::max(64, std::min(65507, (int)p.getI("tx.udpPayloadSize", 1472)));
+    s.udpRateHz = p.getD("tx.udpRateHz", 2000000);
+    if (!(s.udpRateHz > 0)) s.udpRateHz = 2000000;
     // recent: "id,mhz,gain;id,mhz,gain"
     const std::string rec = p.getS("tx.recent", "");
     size_t pos = 0;
@@ -172,6 +179,7 @@ TxRequest makeReq(const TxUi& s, const TxModeSpec& mode, bool carrier) {
     r.tune.offsetHz = s.offsetMhz * 1e6;
     r.tune.sampleRate = s.autoSampleRate ? 0 : s.sampleRateMsps * 1e6;
     if (s.destKind == 1 && s.ifRateHz > 0) r.tune.sampleRate = s.ifRateHz;   // an IQ file: the rate the user chose
+    if (s.destKind == 2 && s.udpRateHz > 0) r.tune.sampleRate = s.udpRateHz; // GNU Radio UDP: the rate the user chose
     r.tune.gainDb = s.gainDb;
     r.tune.ampOn = s.ampOn;
     r.tune.channel = s.txCh < 0 ? 0 : s.txCh;
@@ -272,11 +280,12 @@ bool startTx(App& a, TxUi& s, const DeviceInfo* radio, const TxModeSpec* mode, b
     s.error.clear();
     s.info.clear();
     const bool toFile = s.destKind == 1;
-    if (!s.autoSampleRate && !toFile && (!std::isfinite(s.sampleRateMsps) || s.sampleRateMsps <= 0)) {
+    const bool toUdp = s.destKind == 2;
+    if (!s.autoSampleRate && !toFile && !toUdp && (!std::isfinite(s.sampleRateMsps) || s.sampleRateMsps <= 0)) {
         s.error = tr("Manual TX sample rate must be greater than zero.");
         return false;
     }
-    if (!s.dryRun && !toFile && !plat::basePrefs().getB("txNoticeAccepted", false)) { s.askNotice = true; return false; }   // the radio notice is for a radio, not for a file
+    if (!s.dryRun && !toFile && !toUdp && !plat::basePrefs().getB("txNoticeAccepted", false)) { s.askNotice = true; return false; }   // the radio notice is for a radio, not for a file or network
     std::string err;
     TxRequest req = makeReq(s, *mode, carrier);
     std::unique_ptr<TxSink> sink;
@@ -293,6 +302,15 @@ bool startTx(App& a, TxUi& s, const DeviceInfo* radio, const TxModeSpec* mode, b
         fc.counters = s.ifCounters;
         s.ifPathUsed = fc.path;
         sink = makeIqFileTxSink(fc);
+    } else if (toUdp) {   // GNU Radio UDP: stream raw IQ baseband over UDP
+        UdpTxConfig uc;
+        uc.host = s.udpHost[0] ? s.udpHost : "127.0.0.1";
+        uc.port = s.udpPort > 0 ? s.udpPort : 1234;
+        uc.format = (TxIqFormat)std::max(0, std::min(4, s.udpFormat));
+        uc.payloadSize = s.udpPayloadSize > 0 ? s.udpPayloadSize : 1472;
+        s.udpCounters = std::make_shared<UdpTxCounters>();
+        uc.counters = s.udpCounters;
+        sink = makeUdpTxSink(uc);
     } else if (s.dryRun) {   // no radio, no claim, no map suspension: the generator runs at the radio's rate into a paced null sink
         sink = makeNullTxSink();
         if (radio) lim = TxRateLimits{radio->txMinRateHz, radio->txMaxRateHz};
@@ -306,20 +324,20 @@ bool startTx(App& a, TxUi& s, const DeviceInfo* radio, const TxModeSpec* mode, b
     }
     txIqStreamSetConfig(txIqStreamFromPrefs());
     if (s.session.start(std::move(sink), req, lim, err)) {
-        s.radioName = toFile ? std::string("IQ file ") + s.ifPathUsed : s.dryRun ? std::string(tr("test (no RF)")) : radio->name;
+        s.radioName = toFile ? std::string("IQ file ") + s.ifPathUsed : toUdp ? (std::string("UDP ") + s.udpHost + ":" + std::to_string(s.udpPort)) : s.dryRun ? std::string(tr("test (no RF)")) : radio->name;
         s.modeName = mode->name; s.freqSent = req.tune.centerHz;
         s.fileNote = s.session.stats().fileNote;
         s.carrierOnly = carrier;
-        s.sessionDry = s.dryRun || toFile;
+        s.sessionDry = s.dryRun || toFile || toUdp;
         s.sessionFile = toFile;
         s.startedAt = ImGui::GetTime();
         s.appliedMhz = s.freqMhz; s.appliedGain = s.gainDb;
         if (!carrier) pushRecent(s, mode->id, s.freqMhz, s.gainDb);
-        a.engine.log(std::string(toFile ? "transmit into an IQ file: " : s.dryRun ? "transmit test (no RF): " : "transmit: ") + (carrier ? "carrier tune " : "") + mode->name + " on " + s.radioName + " at " + std::to_string(s.freqMhz) + " MHz");
+        a.engine.log(std::string(toFile ? "transmit into an IQ file: " : toUdp ? "transmit into GNU Radio UDP: " : s.dryRun ? "transmit test (no RF): " : "transmit: ") + (carrier ? "carrier tune " : "") + mode->name + " on " + s.radioName + " at " + std::to_string(s.freqMhz) + " MHz");
         return true;
     }
     s.error = err;
-    if (!s.session.running()) { release(s); if (!s.dryRun && !toFile) mapTransmitAbort(a); }
+    if (!s.session.running()) { release(s); if (!s.dryRun && !toFile && !toUdp) mapTransmitAbort(a); }
     return false;
 }
 

@@ -105,18 +105,24 @@ void levelRow(TxUi& s, const DeviceInfo* radio) {
 
 namespace txui {
 
-// Where the signal goes: a radio, or an IQ file (no radio is opened or claimed, none of the radio notices apply). The folder, the format and the sample
-// rate of the file, and what has been written so far.
+// Where the signal goes: a radio, an IQ file, or GNU Radio UDP (no radio is opened or claimed, none of the radio notices apply).
+// The folder, the format and the sample rate of the file, or UDP host/port/format, and what has been written/sent so far.
 void destinationPanel(TxUi& s, const TxModeSpec& mode, bool running) {
     plat::Prefs& pr = plat::basePrefs();
     ImGui::BeginDisabled(running);
-    const char* dn[] = {"Radio", "IQ file"};
+    const char* dn[] = {"Radio", "IQ file", "GNU Radio UDP"};
     ImGui::SetNextItemWidth(160 * gUi);
-    if (ImGui::BeginCombo("Destination", dn[s.destKind == 1 ? 1 : 0])) {
-        for (int i = 0; i < 2; i++) if (ImGui::Selectable(dn[i], s.destKind == i)) { s.destKind = i; pr.setI("tx.destKind", i); }
+    const int curDest = (s.destKind >= 0 && s.destKind <= 2) ? s.destKind : 0;
+    if (ImGui::BeginCombo("Destination", dn[curDest])) {
+        for (int i = 0; i < 3; i++) {
+            if (ImGui::Selectable(dn[i], curDest == i)) {
+                s.destKind = i;
+                pr.setI("tx.destKind", i);
+            }
+        }
         ImGui::EndCombo();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Radio sends the signal to the transmit radio. IQ file writes the same IQ to a file instead: no radio is needed.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Radio sends to a transmit radio. IQ file writes to disk. GNU Radio UDP streams raw IQ baseband over UDP to GNU Radio.");
     if (s.destKind == 1) {
         ImGui::SetNextItemWidth(std::max(160.f * gUi, ImGui::GetContentRegionAvail().x - 190 * gUi));
         if (ImGui::InputText("Folder##ifp", s.ifPath, sizeof s.ifPath)) pr.setS("tx.ifPath", s.ifPath);
@@ -145,6 +151,79 @@ void destinationPanel(TxUi& s, const TxModeSpec& mode, bool running) {
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "The sample rate of the file. The signal is made at this rate (or resampled to it). The centre frequency written to a SigMF file is the frequency above.");
         ImGui::TextDisabled("%s", "A microphone is written at its own speed; a WAV file is written as fast as it is made and the file is closed at its end.");
+    } else if (s.destKind == 2) {
+        if (s.udpHost[0] == '\0') snprintf(s.udpHost, sizeof(s.udpHost), "127.0.0.1");
+        ImGui::SetNextItemWidth(150 * gUi);
+        if (ImGui::InputText("Target Host##udph", s.udpHost, sizeof(s.udpHost))) {
+            pr.setS("tx.udpHost", s.udpHost);
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90 * gUi);
+        int port = s.udpPort > 0 ? s.udpPort : 1234;
+        if (ImGui::InputInt("Port##udpp", &port, 0, 0)) {
+            s.udpPort = std::max(1, std::min(65535, port));
+            pr.setI("tx.udpPort", s.udpPort);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Target IP/hostname and UDP port of the receiver (e.g. GNU Radio's UDP Source block).");
+
+        // Format dropdown
+        const char* ufm[] = {"cf32 (float32)", "cs16 (int16)", "ci16 (int16)", "cs8 (int8)", "cu8 (uint8)"};
+        const int ufmt = std::max(0, std::min(4, s.udpFormat));
+        ImGui::SetNextItemWidth(150 * gUi);
+        if (ImGui::BeginCombo("Format##udpf", ufm[ufmt])) {
+            for (int i = 0; i < 5; i++) {
+                if (ImGui::Selectable(ufm[i], ufmt == i)) {
+                    s.udpFormat = i;
+                    pr.setI("tx.udpFormat", i);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Baseband sample format. cf32 is standard 32-bit float complex for GNU Radio Complex Float32.");
+
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110 * gUi);
+        int psize = s.udpPayloadSize > 0 ? s.udpPayloadSize : 1472;
+        if (ImGui::InputInt("Payload MTU##udpmtu", &psize, 0, 0)) {
+            s.udpPayloadSize = std::max(64, std::min(65507, psize));
+            pr.setI("tx.udpPayloadSize", s.udpPayloadSize);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Maximum UDP payload bytes per datagram. 1472 bytes avoids IP fragmentation on standard Ethernet.");
+
+        int nr = 0;
+        const double* rates = iqFileRates(nr);
+        char curRate[48];
+        snprintf(curRate, sizeof(curRate), "%g ksps", s.udpRateHz / 1e3);
+        ImGui::SetNextItemWidth(150 * gUi);
+        if (ImGui::BeginCombo("Sample rate##udprate", curRate)) {
+            for (int i = 0; i < nr; i++) {
+                if (rates[i] < mode.minRateHz - 1 || (rates[i] < 13000 && mode.minRateHz <= 0)) continue;
+                char lab[48];
+                snprintf(lab, sizeof(lab), "%g ksps", rates[i] / 1e3);
+                if (ImGui::Selectable(lab, std::fabs(s.udpRateHz - rates[i]) < 1)) {
+                    s.udpRateHz = rates[i];
+                    pr.setD("tx.udpRateHz", s.udpRateHz);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Custom rate##udpcust", &s.udpCustomRate);
+        if (s.udpCustomRate) {
+            double rateKhz = s.udpRateHz / 1e3;
+            ImGui::SetNextItemWidth(120 * gUi);
+            if (ImGui::InputDouble("Rate (kHz)##udpcustval", &rateKhz, 10, 100, "%.1f")) {
+                if (rateKhz > 0) {
+                    s.udpRateHz = rateKhz * 1e3;
+                    pr.setD("tx.udpRateHz", s.udpRateHz);
+                }
+            }
+        }
+        if (mode.minRateHz > 0 && s.udpRateHz < mode.minRateHz) {
+            ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Notice: %s requires at least %.3g Msps (selected %.3g Msps)", mode.name, mode.minRateHz / 1e6, s.udpRateHz / 1e6);
+        } else {
+            ImGui::TextDisabled("Pacing: stream is transmitted in real time matching the %.3g Msps baseband clock.", s.udpRateHz / 1e6);
+        }
     }
     ImGui::EndDisabled();
     if (s.destKind == 1 && (running || s.ifCounters)) {
@@ -154,6 +233,19 @@ void destinationPanel(TxUi& s, const TxModeSpec& mode, bool running) {
             const double sec = c->seconds();
             ImGui::Text("%s %.2f MB, %d:%02d.%d", running ? "Writing:" : "Written:", mb, (int)sec / 60, (int)sec % 60, (int)(sec * 10) % 10);
             if (!s.ifPathUsed.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", s.ifPathUsed.c_str()); }
+        }
+    } else if (s.destKind == 2 && (running || s.udpCounters)) {
+        const UdpTxCounters* c = s.udpCounters.get();
+        if (c) {
+            const double mb = (double)c->bytes.load() / 1048576.0;
+            const double sec = c->seconds();
+            const uint64_t pkts = c->packets.load();
+            const double mbps = sec > 0.1 ? (mb * 8.0 / sec) : 0.0;
+            ImGui::Text("%s %llu pkts, %.2f MB, %d:%02d.%d (%.2f Mbps)",
+                        running ? "Streaming:" : "Sent:",
+                        (unsigned long long)pkts, mb, (int)sec / 60, (int)sec % 60, (int)(sec * 10) % 10, mbps);
+            ImGui::SameLine();
+            ImGui::TextDisabled("-> %s:%d", s.udpHost, s.udpPort);
         }
     }
 }
@@ -211,23 +303,26 @@ void stepSettings(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const 
 
     destinationPanel(s, *mode, running);
     iqStreamPanel(s, running);
-    radioRow(a, s, radio, running);
-    if (conflict && !noRadio(s)) {
-        char b[400];
-        snprintf(b, sizeof b, tr("%s is in use by RX %d, and this radio cannot receive and transmit at the same time. Choose another radio for transmitting, or stop that receiver first."), radio->name.c_str(), conflict);
-        banner(Note::Warn, b);
-    }
-    if (s.destKind != 1) { rangeNote(s, radio); levelRow(s, radio); }
-    if (running && s.destKind != 1) {   // a running radio can be retuned: the frequency and the level are live
-        const bool differs = std::fabs(s.freqMhz - s.appliedMhz) > 1e-9 || std::fabs(s.gainDb - s.appliedGain) > 1e-3f;
-        ImGui::BeginDisabled(!differs);
-        if (ImGui::Button(tr("Apply frequency and level now"))) {
-            std::string err;
-            TxTune t = makeReq(s, *mode, false).tune;
-            if (s.session.retune(t, err)) { s.appliedMhz = s.freqMhz; s.appliedGain = s.gainDb; s.freqSent = t.centerHz; s.error.clear(); }
-            else s.error = err;
+    if (s.destKind == 0) {
+        radioRow(a, s, radio, running);
+        if (conflict && !noRadio(s)) {
+            char b[400];
+            snprintf(b, sizeof b, tr("%s is in use by RX %d, and this radio cannot receive and transmit at the same time. Choose another radio for transmitting, or stop that receiver first."), radio->name.c_str(), conflict);
+            banner(Note::Warn, b);
         }
-        ImGui::EndDisabled();
+        rangeNote(s, radio);
+        levelRow(s, radio);
+        if (running) {   // a running radio can be retuned: the frequency and the level are live
+            const bool differs = std::fabs(s.freqMhz - s.appliedMhz) > 1e-9 || std::fabs(s.gainDb - s.appliedGain) > 1e-3f;
+            ImGui::BeginDisabled(!differs);
+            if (ImGui::Button(tr("Apply frequency and level now"))) {
+                std::string err;
+                TxTune t = makeReq(s, *mode, false).tune;
+                if (s.session.retune(t, err)) { s.appliedMhz = s.freqMhz; s.appliedGain = s.gainDb; s.freqSent = t.centerHz; s.error.clear(); }
+                else s.error = err;
+            }
+            ImGui::EndDisabled();
+        }
     }
 
     ImGui::Spacing();

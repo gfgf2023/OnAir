@@ -207,7 +207,7 @@ static const char* const kRestoreConfirm[] = {
     "tx.kaft.file", "tx.kaft.passes", "tx.kaft.profile", "tx.kaft.width", "tx.kait.callsign", "tx.kait.file", "tx.kait.profile", "tx.kapp.callsign",
     "tx.kapp.file", "tx.kapp.passes", "tx.kapp.profile", "tx.kapp.text", "tx.kavb.callsign", "tx.kavb.fec", "tx.kavb.file", "tx.kavb.profile",
     "tx.kavb.seconds", "tx.kaws.align", "tx.kaws.callsign", "tx.kaws.dest", "tx.kaws.eirp", "tx.kaws.grid", "tx.kaws.kind", "tx.kaws.passes",
-    "tx.kaws.profile", "tx.kaws.text", "tx.offsetMhz", "tx.recent", "tx.text", "txAirband", "txDays", "txEnabled", "txLang", "txMarine", "txModel",
+    "tx.kaws.profile", "tx.kaws.text", "tx.offsetMhz", "tx.recent", "tx.text", "tx.udpFormat", "tx.udpHost", "tx.udpPayloadSize", "tx.udpPort", "tx.udpRateHz", "txAirband", "txDays", "txEnabled", "txLang", "txMarine", "txModel",
     "txNoticeAccepted", "txOther", "txThreads", "txTranslate", "vi.accepted", "wifiSkipDfs", "wsprNetCall", "wsprNetLocator", "wsprNetOn",
 };
 

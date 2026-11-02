@@ -259,7 +259,7 @@ struct Host : RemoteApiHost {
                 e = s.askNotice ? "open the Transmit window and read the one-time notice first (it is shown once)" : s.error.empty() ? "the transmission did not start" : s.error;
                 return false;
             }
-            warnings = txApiWarnings(radio, s.freqMhz * 1e6, s.gainDb, s.ampOn, s.dryRun || s.destKind == 1);
+            warnings = txApiWarnings(radio, s.freqMhz * 1e6, s.gainDb, s.ampOn, txui::noRadio(s));
             return true;
         }, err);
         if (ok) json = "{\"ok\":true,\"transmitting\":true,\"warnings\":" + warnings + "}";
