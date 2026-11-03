@@ -33,6 +33,8 @@ jobs:
             mingw-w64-ucrt-x86_64-glfw
             mingw-w64-ucrt-x86_64-hackrf
             mingw-w64-ucrt-x86_64-soapysdr
+            mingw-w64-ucrt-x86_64-soapyrtlsdr
+            mingw-w64-ucrt-x86_64-rtl-sdr
             mingw-w64-ucrt-x86_64-libiconv
             zip
 
@@ -69,11 +71,19 @@ jobs:
             [ -f "$PREFIX/bin/$d.dll" ] && { cp "$PREFIX/bin/$d.dll" "$OUT/"; collect "$OUT/$d.dll"; }
           done
 
+          # Ensure both librtlsdr.dll and rtlsdr.dll are present in the package root
+          if [ -f "$OUT/librtlsdr.dll" ] && [ ! -f "$OUT/rtlsdr.dll" ]; then
+            cp "$OUT/librtlsdr.dll" "$OUT/rtlsdr.dll"
+          fi
+          if [ -f "$OUT/rtlsdr.dll" ] && [ ! -f "$OUT/librtlsdr.dll" ]; then
+            cp "$OUT/rtlsdr.dll" "$OUT/librtlsdr.dll"
+          fi
+
           for m in "$PREFIX"/lib/SoapySDR/modules*/; do
             [ -d "$m" ] || continue
             mkdir -p "$OUT/lib/SoapySDR/modules0.8"
             for f in "$m"*.dll; do
-              case "$f" in *rtlsdrSupport.dll|*airspySupport.dll) continue;; esac
+              case "$f" in *airspySupport.dll) continue;; esac
               [ -f "$f" ] && cp "$f" "$OUT/lib/SoapySDR/modules0.8/"
             done
             for d in "$OUT"/lib/SoapySDR/modules0.8/*.dll; do [ -f "$d" ] && collect "$d"; done
@@ -81,15 +91,21 @@ jobs:
 
           cp LICENSE "$OUT/LICENSE.txt"
           cat > "$OUT/README.txt" <<'TXT'
-          OnAir (Windows x64 Portable)
-          
-          Run OnAir.exe directly. No installation required.
-          To stream baseband over UDP to GNU Radio:
-          1. In Transmit (TX), select Destination -> GNU Radio UDP.
-          2. Set Host (default 127.0.0.1) and Port (default 1234).
-          3. Set Format (default cf32) and desired sample rate.
-          4. Start transmit; connect GNU Radio UDP Source to receive the IQ stream.
-          TXT
+OnAir (Windows x64 Portable)
+
+Run OnAir.exe directly. No installation required.
+
+RTL-SDR & USB Drivers:
+- Make sure to install the WinUSB driver for your RTL-SDR dongle using Zadig (https://zadig.akeo.ie).
+- Both librtlsdr.dll and rtlsdr.dll are included in this package.
+- Note: RTL-SDR hardware is Receive-Only (RX). To transmit baseband IQ signals, use HackRF / LimeSDR / PlutoSDR or select "GNU Radio UDP" destination.
+
+To stream baseband over UDP to GNU Radio:
+1. In Transmit (TX), select Destination -> GNU Radio UDP.
+2. Set Host (default 127.0.0.1) and Port (default 1234).
+3. Set Format (default cf32) and desired sample rate.
+4. Start transmit; connect GNU Radio UDP Source to receive the IQ stream.
+TXT
 
           cd dist
           zip -qr OnAir-Windows-x64-Runnable.zip OnAir-windows-x64
@@ -110,7 +126,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config patchelf zip \
-            libhackrf-dev libsoapysdr-dev libusb-1.0-0-dev libavformat-dev libavcodec-dev \
+            libhackrf-dev libsoapysdr-dev soapysdr-module-rtlsdr librtlsdr-dev librtlsdr0 \
+            libusb-1.0-0-dev libavformat-dev libavcodec-dev \
             libavutil-dev libswscale-dev libswresample-dev libglfw3-dev
 
       - name: Configure and build
@@ -140,6 +157,16 @@ jobs:
           }
 
           for p in "$OUT"/bin/*; do collect "$p"; done
+
+          # Bundle librtlsdr shared libraries for native driver
+          for f in /usr/lib/*-linux-gnu/librtlsdr.so* /usr/lib/librtlsdr.so*; do
+            [ -e "$f" ] || continue
+            cp -d "$f" "$OUT/lib/"
+            real=$(readlink -f "$f")
+            [ -f "$OUT/lib/$(basename "$real")" ] || cp "$real" "$OUT/lib/"
+            collect "$real"
+          done
+
           for p in "$OUT"/bin/*; do patchelf --set-rpath '$ORIGIN/../lib' "$p" || true; done
           for l in "$OUT"/lib/*.so*; do patchelf --set-rpath '$ORIGIN' "$l" 2>/dev/null || true; done
 
