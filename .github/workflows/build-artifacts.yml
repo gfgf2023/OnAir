@@ -126,7 +126,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config patchelf zip \
-            libhackrf-dev libsoapysdr-dev soapysdr-module-rtlsdr librtlsdr-dev librtlsdr0 \
+            libhackrf-dev libsoapysdr-dev soapysdr-module-rtlsdr librtlsdr-dev \
             libusb-1.0-0-dev libavformat-dev libavcodec-dev \
             libavutil-dev libswscale-dev libswresample-dev libglfw3-dev
 
