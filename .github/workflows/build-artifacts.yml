@@ -91,21 +91,21 @@ jobs:
 
           cp LICENSE "$OUT/LICENSE.txt"
           cat > "$OUT/README.txt" <<'TXT'
-OnAir (Windows x64 Portable)
+          OnAir (Windows x64 Portable)
 
-Run OnAir.exe directly. No installation required.
+          Run OnAir.exe directly. No installation required.
 
-RTL-SDR & USB Drivers:
-- Make sure to install the WinUSB driver for your RTL-SDR dongle using Zadig (https://zadig.akeo.ie).
-- Both librtlsdr.dll and rtlsdr.dll are included in this package.
-- Note: RTL-SDR hardware is Receive-Only (RX). To transmit baseband IQ signals, use HackRF / LimeSDR / PlutoSDR or select "GNU Radio UDP" destination.
+          RTL-SDR & USB Drivers:
+          - Make sure to install the WinUSB driver for your RTL-SDR dongle using Zadig (https://zadig.akeo.ie).
+          - Both librtlsdr.dll and rtlsdr.dll are included in this package.
+          - Note: RTL-SDR hardware is Receive-Only (RX). To transmit baseband IQ signals, use HackRF / LimeSDR / PlutoSDR or select "GNU Radio UDP" destination.
 
-To stream baseband over UDP to GNU Radio:
-1. In Transmit (TX), select Destination -> GNU Radio UDP.
-2. Set Host (default 127.0.0.1) and Port (default 1234).
-3. Set Format (default cf32) and desired sample rate.
-4. Start transmit; connect GNU Radio UDP Source to receive the IQ stream.
-TXT
+          To stream baseband over UDP to GNU Radio:
+          1. In Transmit (TX), select Destination -> GNU Radio UDP.
+          2. Set Host (default 127.0.0.1) and Port (default 1234).
+          3. Set Format (default cf32) and desired sample rate.
+          4. Start transmit; connect GNU Radio UDP Source to receive the IQ stream.
+          TXT
 
           cd dist
           zip -qr OnAir-Windows-x64-Runnable.zip OnAir-windows-x64
