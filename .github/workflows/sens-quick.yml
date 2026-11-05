@@ -3,10 +3,6 @@
 name: Sensitivity sweep
 
 on:
-  # Pushing the branch sens-baseline-run-030 runs the full sweep of every mode (8 trials a point) and builds the baseline file (artifact sens-merged);
-  # this exists because a workflow can only be dispatched by hand once it is on the default branch.
-  push:
-    branches: ['sens-baseline-run-030']
   workflow_dispatch:
     inputs:
       modes:

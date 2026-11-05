@@ -4,8 +4,6 @@ name: Full CI
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 2 * * *"   # nightly: only the slow tier (ctest -L slow)
 
 # ccache as in ci.yml (see the comment there for the cache keys); one cache per job/matrix entry.
 env:
