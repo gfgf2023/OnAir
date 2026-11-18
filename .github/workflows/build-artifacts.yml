@@ -26,6 +26,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-rust
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-glfw
@@ -99,7 +100,7 @@ jobs:
           - Note: RTL-SDR hardware is Receive-Only (RX). To transmit baseband IQ signals, use HackRF / LimeSDR / PlutoSDR or select "GNU Radio UDP" destination.
 
           To stream baseband over UDP to GNU Radio:
-          1. In Transmit (TX), select Destination -> GNU Radio UDP.
+          1. In Transmit (TX), select Send to -> GNU Radio UDP.
           2. Set Host (default 127.0.0.1) and Port (default 1234).
           3. Set Format (default cf32) and desired sample rate.
           4. Start transmit; connect GNU Radio UDP Source to receive the IQ stream.
