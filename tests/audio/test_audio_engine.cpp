@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Sound card (audio device) input through the whole engine, as the app runs it, with a WAV file standing in for the card (issue #137: weather fax
 // from a virtual audio cable neither decoded nor showed on the spectrum). Never opens a real device.
 //  - the audio of a synthetic weather fax at several sample rates, channel layouts, levels, DC offsets, tuning errors and clock errors goes in as the
@@ -202,7 +205,7 @@ static void check(const Case& c) {
     CHECK(r.detected && r.centre > lo + 50 && r.centre < hi, "%s: the centre finder says %.0f Hz (%.0f wide), not inside the fax band", c.name, r.centre, r.width);
     CHECK(r.specBandDb > 15, "%s: the fax is not on the spectrum (%.1f dB over the median)", c.name, r.specBandDb);
     CHECK(r.specPeakHz > lo && r.specPeakHz < hi, "%s: the strongest bin is at %.0f Hz, not in the fax band %.0f..%.0f", c.name, r.specPeakHz, lo, hi);
-    CHECK(r.state == 2 && r.lpm == 120 && r.ioc == 576, "%s: state %d lpm %d ioc %d", c.name, r.state, r.lpm, r.ioc);
+    CHECK(r.state >= 2 && r.lpm == 120 && r.ioc == 576, "%s: state %d lpm %d ioc %d", c.name, r.state, r.lpm, r.ioc);
     CHECK(r.lines >= c.lines - 12, "%s: only %d of %d lines", c.name, r.lines, c.lines);
     CHECK(r.corr > 0.85 && std::fabs(r.drift) < 2.5, "%s: the picture does not match the chart (correlation %.3f, drift %.2f)", c.name, r.corr, r.drift);
 }

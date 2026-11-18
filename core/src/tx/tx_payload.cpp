@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Transmit payload: turn the operator's own strings (callsign, text, a file) into a ModeSynth. Empty fields keep the mode's demo signal.
 #include "dect2/tx/tx.h"
 #include "dect2/acars/acars_gen.h"
@@ -16,6 +19,7 @@
 #include "dect2/dect/dect_gen.h"
 #include "dect2/dect/dect_rx.h"
 #include "dect2/dmr/dmr_gen.h"
+#include "dect2/dmr/dmr_tx.h"
 #include "dect2/dpmr/dpmr_gen.h"
 #include "dect2/dpmr/dpmr_rx.h"
 #include "dect2/dstar/dstar_gen.h"
@@ -34,6 +38,10 @@
 #include "dect2/js8/js8_proto.h"
 #include "dect2/js8/js8_rx.h"
 #include "dect2/loraraw/loraraw_gen.h"
+#include "dect2/mesh/mesh_gen.h"
+#include "dect2/mesh/mesh_proto.h"
+#include "dect2/mesh/mesh_rx.h"
+#include "dect2/mesh/mesh_tx.h"
 #include "dect2/loraraw/loraraw_rx.h"
 #include "dect2/m17/m17_gen.h"
 #include "dect2/m17/m17_rx.h"
@@ -307,7 +315,93 @@ std::unique_ptr<ModeSynth> aisVessel(const TxRequest& r, const SynthConfig& s, d
     return std::make_unique<LoopIq>(renderAisBursts(b, rc), rate);
 }
 
+// The APRS info field of APRS over AFSK and of LoRa APRS: a position (house symbol) with the comment when lat / lon are set, else a status
+std::string aprsInfo(const TxRequest& r) {
+    if (r.lat == 0 && r.lon == 0) return ">" + (r.text.empty() ? std::string("OnAir") : r.text);
+    // n as `width` digits with leading zeros
+    auto digits = [](long n, size_t width) { std::string d = std::to_string(n); return d.size() < width ? std::string(width - d.size(), '0') + d : d; };
+    // degrees and minutes to hundredths of a minute, rounded first so 59.999' becomes the next degree and not "60.00"
+    auto dm = [&](double v, size_t degWidth) {
+        const long h = std::lround(std::fabs(v) * 6000.0);
+        return digits(h / 6000, degWidth) + digits((h % 6000) / 100, 2) + "." + digits(h % 100, 2);
+    };
+    return "!" + dm(r.lat, 2) + (r.lat < 0 ? "S" : "N") + "/" + dm(r.lon, 3) + (r.lon < 0 ? "W" : "E") + "-" + r.text;
+}
+
+// a TNC2 header field as typed: spaces dropped, capitals
+std::string tnc2Call(const std::string& in) {
+    std::string s;
+    for (char c : in) if (c != ' ' && c != '\t') s += c;
+    return upper(s);
+}
+
+// LoRa APRS: the TNC2 packet with its prefix on the frame's radio settings, sent again after lora.gapSec. No callsign: the 70 cm test scene's
+// LoRa APRS stations (mesh_gen.h region 2, tuned to 433.775 MHz), always on the EU settings.
+std::unique_ptr<ModeSynth> loraAprsSynth(const TxRequest& r, const SynthConfig& s, double rate) {
+    const std::string tnc2 = txLoraAprsTnc2(r);
+    if (tnc2.empty()) {
+        SynthConfig d = s;
+        d.modeOpt[0] = 4;   // LoRa APRS only
+        d.modeOpt[1] = 2;   // the 70 cm scene
+        d.modeOpt[4] = 1;   // placed for a receiver tuned to 433.775 MHz
+        return makeMeshSynth(d, rate);
+    }
+    const TxLoraAprsRadio lr = txLoraAprsRadio(r);
+    LoraRawGenConfig c;
+    c.rate = rate;
+    c.dialOffsetHz = -meshTuning().tuneOffsetHz;
+    c.snrDb = 99;
+    c.loop = true;
+    LoraRawGenFrame g;
+    g.p.sf = lr.sf; g.p.bwHz = lr.bwHz; g.p.cr = lr.cr; g.p.preamble = lr.preamble; g.p.syncWord = (uint8_t)lr.syncWord;
+    g.p.ldro = meshLoraLdro(lr.sf, lr.bwHz);
+    g.p.crc = lr.crc;
+    g.payload = loraAprsFrame(tnc2);
+    if (g.payload.size() > 255) g.payload.resize(255);   // a LoRa frame carries at most 255 bytes
+    g.gapSec = std::max(0.1, r.o("lora.gapSec", 10));
+    c.frames.push_back(std::move(g));
+    return std::make_unique<WrapGen<LoraRawGenerator>>(std::make_unique<LoraRawGenerator>(c), rate);
+}
+
 } // namespace
+
+TxLoraAprsRadio txLoraAprsRadio(const TxRequest& r) {
+    TxLoraAprsRadio p;
+    switch ((int)std::lround(r.o("lora.preset", 0))) {
+    case 1: p.name = "PL"; p.mhz = 434.855; p.sf = 9; p.cr = 7; break;
+    case 2: p.name = "UK"; p.mhz = 439.9125; break;
+    case 3: p.name = "915"; p.mhz = 915.0; break;
+    case 4: {
+        static const double kBw[] = {62500, 125000, 250000, 500000};
+        p.name = "own";
+        p.mhz = 0;
+        p.sf = std::max(7, std::min(12, (int)std::lround(r.o("lora.sf", 12))));
+        p.bwHz = kBw[std::max(0, std::min(3, (int)std::lround(r.o("lora.bwIdx", 1))))];
+        p.cr = std::max(5, std::min(8, (int)std::lround(r.o("lora.cr", 5))));
+        p.preamble = std::max(6, std::min(65535, (int)std::lround(r.o("lora.preamble", 8))));
+        p.syncWord = std::max(0, std::min(255, (int)std::lround(r.o("lora.sync", 0x12))));
+        p.crc = r.o("lora.crc", 1) > 0.5;
+        break;
+    }
+    default: break;   // EU
+    }
+    return p;
+}
+
+std::string txLoraAprsTnc2(const TxRequest& r) {
+    const std::string call = tnc2Call(r.callsign);
+    if (call.empty()) return {};
+    const std::string dest = r.dest.empty() ? "APRS" : tnc2Call(r.dest);
+    std::string path = tnc2Call(r.path.empty() ? "WIDE1-1" : r.path);
+    if (path == "-" || path == "NONE") path.clear();
+    return call + ">" + dest + (path.empty() ? "" : "," + path) + ":" + aprsInfo(r);
+}
+
+double txModeDefaultMhz(const TxModeSpec& m) {
+    if (m.id && std::string(m.id) == "loraaprs") return 433.775;   // LoRa APRS EU; the mode's engine tuning (mesh) starts at Meshtastic's 869.525
+    const ModeTuning* mt = modeTuning(m.stdMode);
+    return mt && mt->defMhz > 0 ? mt->defMhz : 0;
+}
 
 std::string txFtxMessage(const TxRequest& r) {
     const std::string call = upper(r.callsign), grid = upper(r.grid), dest = upper(r.dest);
@@ -339,7 +433,7 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
             return makeHfdigSynthFromAudio(std::move(audio), s, rate, r.variant == 1);
         }
         if (which == 0) {
-            auto audio = makeRttyTxAudio(r.text, r.baudIdx, r.shiftIdx, r.reverse, 2125);
+            auto audio = makeRttyTxAudio(r.text, r.baudIdx, r.shiftIdx, r.reverse, std::max(100.0, r.o("rtty.markHz", 2125)));
             return makeHfdigSynthFromAudio(std::move(audio), s, rate, r.variant == 1);
         }
         if (which >= 26 && which <= 31) {
@@ -347,8 +441,18 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
             k.cfg.family = which - 26;
             if (!r.text.empty()) k.text = r.text;
             if (r.toneHz > 100) k.cfg.centreHz = r.toneHz;
+            // the mode's own settings (tx_params.h): Olivia / Contestia tones and bandwidth, the variant of the others
+            if (k.cfg.family == KbdOlivia || k.cfg.family == KbdContestia) {
+                k.cfg.tones = (int)std::lround(r.o("kbd.tones", k.cfg.tones));
+                k.cfg.bandwidth = (int)std::lround(r.o("kbd.bw", k.cfg.bandwidth));
+            } else if (kbdVariantCount(k.cfg.family) > 1) {
+                k.cfg.variant = std::max(0, std::min(kbdVariantCount(k.cfg.family) - 1, (int)std::lround(r.o("kbd.variant", kbdDefaultVariant(k.cfg.family)))));
+            }
+            k.cfg.autoParams = false;
             auto audio = makeKbdTx(k);
-            return makeHfdigSynthFromAudio(std::move(audio), s, rate, r.variant == 1);
+            // the sideband is the mode's own key kbd.lsb, not r.variant: that is another payload's field (the RTTY sideband, the PSK variant, the SSTV
+            // mode), which put the signal on the lower sideband, below the dial, whenever it was 1 (#225)
+            return makeHfdigSynthFromAudio(std::move(audio), s, rate, r.o("kbd.lsb", 0) > 0.5);
         }
         if (which == 2) {   // FreeDV
             SynthConfig sc = s;
@@ -468,16 +572,8 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
             if (c == std::string::npos) break;
             i = c + 1;
         }
-        char info[256];
-        if (r.lat != 0 || r.lon != 0) {
-            // degrees and minutes to hundredths of a minute, rounded first so 59.999' becomes the next degree and not "60.00"
-            const long la = std::lround(std::fabs(r.lat) * 6000.0), lo = std::lround(std::fabs(r.lon) * 6000.0);
-            snprintf(info, sizeof info, "!%02ld%02ld.%02ld%c/%03ld%02ld.%02ld%c-%s",
-                     la / 6000, (la % 6000) / 100, la % 100, r.lat < 0 ? 'S' : 'N',
-                     lo / 6000, (lo % 6000) / 100, lo % 100, r.lon < 0 ? 'W' : 'E',
-                     r.text.c_str());
-        } else snprintf(info, sizeof info, ">%s", r.text.empty() ? "OnAir" : r.text.c_str());
-        f.info = info;
+        f.info = aprsInfo(r);
+        if (f.info.size() > 255) f.info.resize(255);   // as the 256 byte buffer this replaced cut it
         return makePacketSynthFrame(s, rate, f, r.baudIdx == 1 ? 9600 : 1200);
     }
 
@@ -545,6 +641,7 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         t.src = (int)r.address;
         t.dst = r.dest.empty() ? 200 : atoi(r.dest.c_str());
         t.text = r.text;
+        if (!t.text.empty()) t.kind = NxdnGenTx::Data;   // the text goes out as short data (a voice call carries none)
         c.txs = {t};
         return std::make_unique<WrapGen<NxdnGenerator>>(std::make_unique<NxdnGenerator>(c), rate);
     }
@@ -558,18 +655,41 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         t.own = r.address;
         t.called = r.dest.empty() ? 200 : (uint32_t)atoi(r.dest.c_str());
         t.text = r.text;
+        if (!t.text.empty()) t.kind = DpmrGenTx::Message;   // the text goes out as a message (a voice call carries none)
         c.txs = {t};
         return std::make_unique<WrapGen<DpmrGenerator>>(std::make_unique<DpmrGenerator>(c), rate);
     }
 
     if (m.stdMode == 11) {   // DMR
         if (r.analogVoice) return makeTxVoiceSynth(m, r, rate);
+        // Real subscriber transmit (dmr_tx.h): built from the operator's own DMR ID and the payload when an identity or message is given.
+        const uint32_t destId = (uint32_t)(r.dest.empty() ? 0 : strtoul(r.dest.c_str(), nullptr, 10));
+        const bool haveId = r.address != 0 || destId != 0 || r.talkgroup != 0 || !r.text.empty() || r.lat != 0 || r.lon != 0 || r.kind != 0;
+        if (haveId) {
+            DmrTxConfig t;
+            t.rate = rate;
+            t.myId = r.address;
+            t.callsign = r.callsign;
+            t.colourCode = r.colorCode ? r.colorCode : 1;
+            t.slot = r.slot;
+            t.mobile = true;                 // a repeater uplink by default
+            t.call = (DmrTxCall)std::max(0, std::min(7, r.kind));
+            t.text = r.text;
+            t.lat = r.lat; t.lon = r.lon;
+            // destination: a talkgroup for group voice / SMS / LRRP, a radio ID for private and Tier III
+            const bool toUnit = t.call == DmrTxCall::PrivateVoice || t.call == DmrTxCall::Tier3Register || t.call == DmrTxCall::Tier3VoiceRequest;
+            t.dest = toUnit ? (destId ? destId : (uint32_t)r.talkgroup) : ((uint32_t)r.talkgroup ? (uint32_t)r.talkgroup : destId);
+            // slot sync (dmr_slot_sync.h): when the DMR receiver heard the repeater's output in the last 10 s, the first burst waits for the inbound
+            // slot; otherwise the transmission starts at once (BS activation). dmr.latencyMs: the radio's delay from here to the air, set by the user.
+            if (r.o("dmr.slotSync", 1) > 0.5 && t.mobile)
+                dmrTxApplySlotSync(t, t.slot == 2 ? 2 : 1, r.o("dmr.aligned", 0) > 0.5, dmrSteadySec() + r.o("dmr.latencyMs", 0) / 1000.0);
+            return makeDmrTxSynth(t);
+        }
+        // nothing entered: the demo base-station test signal
         SynthConfig s2 = s;
         if (r.colorCode) s2.modeOpt[0] = r.colorCode;
-        if (r.talkgroup) s2.modeOpt[1] = 1;
         if (r.slot == 2) s2.modeOpt[2] = 1;
-        if (r.colorCode || r.talkgroup || r.address || r.slot != 1) return makeDmrSynth(s2, rate);
-        return nullptr;
+        return makeDmrSynth(s2, rate);
     }
 
     if (m.stdMode == 10) {   // analog TV: test card / bars with ident; mic or file on the FM/AM sound carrier
@@ -577,6 +697,8 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         extra.ident = r.name.empty() ? r.callsign : r.name;
         if (r.pullAudio) extra.pullAudio = r.pullAudio;
         if (r.pullVideo) extra.pullVideo = r.pullVideo;
+        if (r.pullAspect) extra.pullAspect = r.pullAspect;
+        extra.aspect = std::max(0, std::min(2, (int)std::lround(r.o("atv.aspect", 0))));   // picture format: Auto, 4:3, 16:9 (atv_aspect.h)
         auto vid = makeAtvSynth(s, rate, extra);
         if (vid) return vid;
         return nullptr;
@@ -611,10 +733,11 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         std::string digits;
         const std::string raw = r.callsign.empty() ? r.text : r.callsign;
         for (char c : raw) if (std::isdigit((unsigned char)c)) digits += c;
-        if ((svc == 2 || svc == 4) && (r.address || digits.size() >= 5)) {
+        if (svc == 2 || svc == 4) {   // DSC was chosen: a DSC call, never NAVTEX (no MMSI given: the test identity 247000000)
             char mmsi[16];
             if (r.address) snprintf(mmsi, sizeof mmsi, "%09u", (unsigned)(r.address % 1000000000u));
             else {
+                if (digits.size() < 5) digits = "247000000";
                 while (digits.size() < 9) digits.insert(digits.begin(), '0');
                 if (digits.size() > 9) digits.resize(9);
                 snprintf(mmsi, sizeof mmsi, "%s", digits.c_str());
@@ -698,7 +821,31 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         c.snrDb = 99;
         c.ident = upper(r.callsign).substr(0, 4);
         c.voice = false;
+        c.kind = std::max(0, std::min(6, s.modeOpt[0]));   // the navaid and its radial / DDM chosen with the ident (they were the demo's only)
+        if (c.kind <= 1) c.radialDeg = s.modeVal[0];
+        else if (c.kind <= 3) c.ddm = s.modeVal[0];
         return std::make_unique<WrapGen<VorGenerator>>(std::make_unique<VorGenerator>(c), rate);
+    }
+
+    if (id == "loraaprs") return loraAprsSynth(r, s, rate);   // before the Meshtastic text below: the same engine mode (22), its own packets
+
+    if (m.stdMode == 22 && !r.text.empty() && !r.analogVoice) {   // Meshtastic text from the user's own node identity (mesh_tx.h); warnings only, never a refusal
+        MeshLoraSettings ls;
+        if (!meshtasticPreset(r.mesh.preset.empty() ? "LongFast" : r.mesh.preset, ls)) meshtasticPreset("LongFast", ls);
+        LoraRawGenConfig c;
+        c.rate = rate;
+        c.dialOffsetHz = -meshTuning().tuneOffsetHz;
+        c.snrDb = 99;
+        c.loop = true;
+        for (const MeshTxFrame& f : meshTxPackets(r.mesh, r.text, (uint32_t)std::chrono::system_clock::now().time_since_epoch().count() | 1u)) {
+            LoraRawGenFrame g;
+            g.p.sf = ls.sf; g.p.bwHz = ls.bwHz; g.p.cr = ls.cr; g.p.preamble = ls.preamble; g.p.syncWord = ls.syncWord; g.p.ldro = ls.ldro;
+            g.p.crc = true;
+            g.payload = f.bytes;
+            g.gapSec = 2.0;
+            c.frames.push_back(std::move(g));
+        }
+        if (!c.frames.empty()) return std::make_unique<WrapGen<LoraRawGenerator>>(std::make_unique<LoraRawGenerator>(c), rate);
     }
 
     if (m.stdMode == 73 && !r.text.empty()) {
@@ -710,8 +857,21 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         if (!frames.empty()) {
             frames.resize(1);
             frames[0].payload.assign(r.text.begin(), r.text.end());
+            if (frames[0].payload.size() > 255) frames[0].payload.resize(255);
             frames[0].cfoHz = 0;
+            // the LoRa settings (tx_params.h), the same keys as LoRa APRS's own settings
+            static const double kBw[] = {62500, 125000, 250000, 500000};
+            LoraRawGenFrame& f = frames[0];
+            f.p.sf = std::max(6, std::min(12, (int)std::lround(r.o("lora.sf", 7))));
+            f.p.bwHz = kBw[std::max(0, std::min(3, (int)std::lround(r.o("lora.bwIdx", 1))))];
+            f.p.cr = std::max(5, std::min(8, (int)std::lround(r.o("lora.cr", 5))));
+            f.p.preamble = std::max(6, std::min(65535, (int)std::lround(r.o("lora.preamble", 8))));
+            f.p.syncWord = (uint8_t)std::max(0, std::min(255, (int)std::lround(r.o("lora.sync", 0x12))));
+            f.p.crc = r.o("lora.crc", 1) > 0.5;
+            f.p.ldro = meshLoraLdro(f.p.sf, f.p.bwHz);
+            f.gapSec = std::max(0.1, r.o("lora.gapSec", 2));
         }
+        c.loop = true;
         c.frames = std::move(frames);
         return std::make_unique<WrapGen<LoraRawGenerator>>(std::make_unique<LoraRawGenerator>(c), rate);
     }
@@ -759,6 +919,13 @@ std::unique_ptr<ModeSynth> makeTxPayloadSynth(const TxModeSpec& m, const TxReque
         if (r.pullAudio) {
             auto pull = r.pullAudio;
             g.pull48k = [pull](float* st, int n) { if (pull) pull(st, n); else memset(st, 0, (size_t)n * 2 * sizeof(float)); };
+        }
+        {   // live RDS (rds_live.h): the request's values start it; the panel, the REST / MCP / text port and a watched file change it while on the air
+            RdsState rs;
+            rs.ps = g.ps; rs.ps.resize(8, ' '); rs.rt = g.rt; rs.pi = g.pi; rs.pty = g.pty; rs.tp = g.tp; rs.ta = g.ta; rs.music = g.music;
+            rs.ct = r.o("bfm.ct", 0) > 0.5;
+            RdsLive::global().seed(rs);
+            g.live = std::shared_ptr<RdsLive>(&RdsLive::global(), [](RdsLive*) {});
         }
         return std::make_unique<FmWrap>(g, rate, fmOutLevel);
     }

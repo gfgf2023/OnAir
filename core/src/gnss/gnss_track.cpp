@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // One tracking channel (see gnss_track.h).
 #include "dect2/gnss/gnss_track.h"
+#include "dect2/common/diag.h"
 #include "dect2/gnss/gnss_bds.h"
 #include "dect2/gnss/gnss_glo.h"
 #include "dect2/gnss/gnss_msg.h"
@@ -315,6 +319,7 @@ void GnssTracker::trySubframe() {
     const bool ok = lnavDecodeSubframeAuto(b, ev.sf) && lnavSubframeId(ev.sf) >= 1 && lnavSubframeId(ev.sf) <= 5 && lnavTowCount(ev.sf) < 100800;
     if (!ok) {
         if (frameSync_) {
+            DIAG_DEBUG_EVERY(771925, 5.0, "A GPS subframe on PRN %d failed its parity or format checks (%d bad in a row, frame sync is dropped at 4), so it is discarded.", prn, (int)badInRow_ + 1);
             framesBad_++;
             lastSubframeBit_ += 300;
             if (++badInRow_ >= 4) frameSync_ = false;
@@ -326,6 +331,7 @@ void GnssTracker::trySubframe() {
     const double t0 = towStart - (double)startEpoch * 1e-3;
     if (timeValid_ && std::fabs(gpsWrap(t0 - towAtEpoch0_)) > 2e-4) {
         // the clock count disagrees with an earlier subframe: this synchronisation is wrong
+        DIAG_DEBUG_EVERY(913499, 5.0, "The time count in a GPS subframe on PRN %d disagrees with an earlier subframe, so the frame sync is dropped and searched for again.", prn);
         framesBad_++;
         frameSync_ = false; timeValid_ = false; badInRow_ = 0;
         return;
@@ -339,6 +345,7 @@ void GnssTracker::trySubframe() {
     framesSinceSync_++;
     ev.towStart = towStart;
     ev.startEpoch = startEpoch;
+    if (timeValid_) { const double t = towAtEpoch0_ + (double)evenAt_ * spec.epochS; ev.osnmaPage = (int)std::floor(std::fmod(t, 30.0) / 2.0); }
     events_.push_back(ev);
 }
 
@@ -415,6 +422,7 @@ void GnssTracker::sbasLayer(float I) {
     }
     if (!any && frameSync_ && lastMsgSym_ >= 0 && symBase_ + (int64_t)sym_.size() - lastMsgSym_ > 2000) {
         // nothing for four seconds: the bit pairs or the symbols are wrong
+        DIAG_DEBUG_EVERY(211224, 5.0, "No SBAS message was found for four seconds on PRN %d (gap %d in a row, sync is dropped at 3), so the symbol pairing may be searched again.", prn, (int)badInRow_ + 1);
         framesBad_++;
         if (++badInRow_ >= 3) { frameSync_ = false; pairOffset_ = -1; badInRow_ = 0; }
     } else if (any) badInRow_ = 0;
@@ -492,6 +500,8 @@ void GnssTracker::inavPart(int64_t p) {
         if (++badInRow_ >= 6) { frameSync_ = false; }
         return;
     }
+    std::memcpy(ev.sar, bits + 58, 22);             // odd part: 2 + 16 + reserved 40 (OSNMA), then SAR
+    { int b8 = 0; for (int i = 0; i < 8; i++) b8 = b8 << 1 | bits[18 + i]; ev.nma8 = (uint8_t)b8; }
     badInRow_ = 0;
     framesOk_++;
     frameSync_ = true;
@@ -612,6 +622,7 @@ void GnssTracker::bdsTrySubframe() {
     }
     if (!ok) {
         if (frameSync_) {
+            DIAG_DEBUG_EVERY(899413, 5.0, "A BeiDou subframe on PRN %d failed its error correction or format checks (%d bad in a row, frame sync is dropped at 4), so it is discarded.", prn, (int)badInRow_ + 1);
             framesBad_++;
             lastSubframeBit_ += 300;
             if (++badInRow_ >= 4) frameSync_ = false;
@@ -623,6 +634,7 @@ void GnssTracker::bdsTrySubframe() {
     const int64_t startEpoch = firstBitEpoch_ + per * start;
     const double t0 = towStart - (double)startEpoch * 1e-3;
     if (timeValid_ && std::fabs(gpsWrap(t0 - towAtEpoch0_)) > 2e-4) {
+        DIAG_DEBUG_EVERY(135829, 5.0, "The time count in a BeiDou subframe on PRN %d disagrees with an earlier subframe, so the frame sync is dropped and searched for again.", prn);
         framesBad_++;
         frameSync_ = false; timeValid_ = false; badInRow_ = 0;
         return;

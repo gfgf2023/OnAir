@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital skeleton through the engine: the synthetic source plays the mode's test signal, the receiver makes the 8 kHz sideband audio
 // and hands it to all three decoders, the engine reports telemetry through latestRx() with the mode's standard. About 2 s; quick and silent.
 #include "dect2/engine/engine.h"
@@ -21,7 +24,7 @@ int main() {
     {   // the protocols listed as modes of their own: unique ids, a shared receiver that exists, a frequency inside its range
         int n = 0;
         const SubMode* sm = subModes(n);
-        CHECK(n == 33, "%d protocol entries", n);
+        CHECK(n == 45, "%d protocol entries", n);
         for (int i = 0; i < n; i++) {
             const ModeTuning* t = modeTuning(sm[i].stdMode);
             CHECK(t && sm[i].defMhz >= t->minMhz && sm[i].defMhz <= t->maxMhz, "%s: receiver or frequency", sm[i].id);

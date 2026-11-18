@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The DVB-T2 receiver's LDPC decoder: the layered normalised min-sum of LdpcCode::decodeFast (core/src/dsp/ldpc.cpp), with the same
 // arithmetic in the same order (so the same decisions and iteration counts, bit for bit), minus what it cost around the arithmetic:
 //   - the work buffers live on with the thread (the message store alone is over a megabyte for a 64800-bit code: allocated, page-faulted in
@@ -7,6 +10,7 @@
 // On a good signal a block takes one or two iterations and those costs were most of its time. tests: test_fec (t2), bench_dvb.
 #include "dect2/t2/t2fec.h"
 #include "dect2/dsp/simd.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -382,7 +386,10 @@ DECT2_AVX2_TARGET bool decodeAvx2(const LdpcCode& code, const std::vector<float>
 
 bool t2LdpcDecode(const LdpcCode& code, const std::vector<float>& llr, int maxIter, std::vector<uint8_t>& hard, int* iters, float alpha) {
     // a code without the quasi-cyclic 360 structure (none in DVB-T2): the general decoder
-    if (code.q() <= 0 || code.groups() * Z != code.k() || (int)llr.size() != code.n()) return code.decodeFast(llr, maxIter, hard, iters, alpha);
+    if (code.q() <= 0 || code.groups() * Z != code.k() || (int)llr.size() != code.n()) {
+        DIAG_DEBUG_EVERY(509672, 5, "An LDPC code with %d bits does not have the 360-bit structure of DVB-T2, so the slower general decoder is used.", (int)code.n());
+        return code.decodeFast(llr, maxIter, hard, iters, alpha);
+    }
 #if defined(DECT2_X86_DISPATCH)
     if (cpuHasAvx2()) return decodeAvx2(code, llr, maxIter, hard, iters, alpha);
 #endif

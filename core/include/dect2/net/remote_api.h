@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Remote-control API: a small HTTP/1.1 + WebSocket (RFC 6455) server so scripts and other programs can list the radios, start and stop the receiver,
 // set the mode, frequency, sample rate and gain, read the telemetry as JSON, subscribe to telemetry and the spectrum over a WebSocket, and fetch
 // the latest spectrum line. No dependencies (sockets only). Off until the user turns it on; it listens on 127.0.0.1 unless "lan" is set, and a
@@ -71,6 +74,8 @@ public:
     virtual bool setMute(bool /*on*/, std::string& err) { err = "not supported"; return false; }
     virtual bool setSquelch(bool /*on*/, bool /*autoLevel*/, double /*levelDb*/, std::string& err) { err = "not supported"; return false; }
     virtual bool setBandwidthHz(double /*hz*/, std::string& err) { err = "not supported"; return false; }
+    // The custom capture bandwidth of the mode on screen (the "Custom" bandwidth of the Advanced row): any positive width; 0 = the mode's own bandwidth again
+    virtual bool setCaptureBandwidthHz(double /*hz*/, std::string& err) { err = "not supported"; return false; }
     virtual bool setAutoGain(bool /*on*/, std::string& err) { err = "not supported"; return false; }
     virtual bool recordStart(const std::string& /*kind: "iq" or "audio"*/, std::string& err) { err = "not supported"; return false; }
     virtual bool recordStop(std::string& err) { err = "not supported"; return false; }
@@ -82,6 +87,12 @@ public:
     virtual bool eventsSince(uint64_t& /*cursor*/, size_t /*maxN*/, std::vector<std::string>& /*out*/, bool& /*gap*/) { return false; }
     // GET / POST under /api/v1/x/ (the program's own extras). Returns the HTTP status (0: not handled, the server answers 404) and the JSON body in `json`.
     virtual int handleExtra(const std::string& /*method*/, const std::string& /*path*/, const std::map<std::string, JsonVal>& /*body*/, std::string& /*json*/) { return 0; }
+    // The MCP endpoint (docs/MCP.md): POST / GET / DELETE /mcp with the raw body (at most 4 KB, Content-Type application/json required for POST). Returns the
+    // HTTP status (0: not handled, the server answers 404; 202: accepted, no body) and the body in `out`. Auth, Host / Origin checks and the rate limit
+    // have been done by the server before this is called.
+    virtual int handleMcp(const std::string& /*method*/, const std::string& /*body*/, std::string& /*out*/) { return 0; }
+    // true: this server carries nothing but /mcp (every /api/v1 path and the page answer 404). Used by the separate MCP listener.
+    virtual bool mcpOnly() const { return false; }
 };
 
 class RemoteApiServer {

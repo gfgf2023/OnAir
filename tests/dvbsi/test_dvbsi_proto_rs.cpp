@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the DVB service information layers (the Rust crate onair_dvbsi behind dect2::text, dect2::dvbsi and the teletext / DVB subtitle decoders):
 // broadcast character sets and the DVB text field, Hamming codes, G0 subsets, teletext data units, the page renderer and a whole TeletextDecoder fed with PES
 // packets, DVB subtitle segment parsers, colours, run-length pixel strings, blending and a whole DvbSubDecoder fed with PES packets, over ONAIR_DIFF_ITERS
@@ -89,13 +92,16 @@ static void testText() {
         const Buf t = textBytes(true);
         exact(t, [&](const uint8_t* p, size_t n) {
             for (bool gb : {false, true}) {
-                const std::string a = DV::dvbText(p, (int)n, gb);
+                // Keep the original C++ golden corpus within its supported domain: its GB default only handled a leading GBK pair.
+                // ASCII-leading GBK is covered by the DVB-C regression in test_tv_epg and the Rust charset tests.
+                const bool referenceGb = gb && n > 0 && p[0] >= 0x81;
+                const std::string a = DV::dvbText(p, (int)n, {referenceGb ? DV::TextEncoding::Gb2312 : DV::TextEncoding::Dvb});
                 dig.addIconv(a);
                 if (!a.empty()) rsStat[1]++;
             }
         });
     }
-    dig.addIconv(DV::dvbText(nullptr, -3, false));
+    dig.addIconv(DV::dvbText(nullptr, -3));
 }
 
 // ---- teletext --------------------------------------------------------------------------------------------------------------------------------------------

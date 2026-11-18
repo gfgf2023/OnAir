@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Server > Send data to map server: opted-in POST of decoded positions to map.on-air.dev /ingest.
 // Only positions the signal itself sent (no TLE catalogue, receiver GNSS, RID operator, FLARM stealth, cell towers, synthetic test signal).
 #include <cstdlib>
@@ -9,12 +12,14 @@
 #include "map_ask.h"
 #include "../rooms/rooms.h"
 #include "../webshare/webshare.h"
+#include "../badges/badges_ui.h"
 #include "../adsb/adsb_acars.h"
 #include "../transcribe/transcribe_app.h"
 #ifndef ONAIR_VERSION
 #define ONAIR_VERSION "dev"
 #endif
 #include "dect2/flarm/flarm_proto.h"
+#include "dect2/adsl/adsl_proto.h"
 #include "dect2/gnss/gnss_tel.h"
 #include "dect2/ham/ham_mapfeed.h"
 #include "dect2/net/map_guard.h"
@@ -449,6 +454,24 @@ void collectFrom(App& rx, std::vector<Track>& v, std::unordered_set<std::string>
         }
     }
 
+    dect2::AdslTelemetry adsl;
+    if (rx.engine.adsl().telemetry(adsl, 0)) {
+        for (const auto& a : adsl.aircraft) {
+            if (!a.hasPos || a.amt == dect2::adsl::AmtRandom) continue;   // a random address is the sender asking not to be identified: shown locally, never shared
+            Track t; t.kind = "flarm"; t.sub = "ADS-L"; t.src = "adsl";
+            char id[16]; snprintf(id, sizeof id, "%06X", a.id & 0xFFFFFF);
+            t.id = id; t.label = dect2::adsl::categoryName(a.category);
+            t.lat = a.lat; t.lon = a.lon; t.age = a.ageSec;
+            t.hasHeard = true; t.heardAt = adsl.timeSec - a.ageSec;
+            if (a.hasAlt) { t.hasAlt = true; t.alt = a.altM / 0.3048; }
+            if (a.hasTrack) { t.hasHdg = true; t.hdg = a.trackDeg; }
+            if (a.hasSpeed) { t.hasSpd = true; t.spd = a.speedKmh / 1.852; }
+            t.cat = dect2::adsl::categoryName(a.category);
+            for (const auto& p : a.track) t.path.push_back({p.lat, p.lon});
+            addTrack(v, seen, std::move(t));
+        }
+    }
+
     {   // GNSS satellites decoded by this receiver: sub-points from the broadcast ephemeris, nothing from an almanac
         const dect2::GnssTelemetry& g = rx.rx.gnss;
         if (rx.rx.standard == 13) for (const dect2::GnssSatPos& s : g.sats) {
@@ -585,8 +608,9 @@ void attachVoice(std::vector<Track>& tracks) {
     if (sent.size() > 3000) sent.clear();
 }
 
-std::string buildJson(const std::string& station, const std::vector<Track>& tracks, const std::string& byName = std::string()) {
+std::string buildJson(const std::string& station, const std::vector<Track>& tracks, const std::string& byName = std::string(), const std::string& home = std::string()) {
     std::string j = "{\"station\":\"" + jsonEsc(station) + "\"";
+    if (!home.empty()) j += ",\"home\":\"" + jsonEsc(home) + "\"";   // map badges, by choice: the receiver's 6-character locator square (range); not stored by the map
     if (!byName.empty()) j += ",\"by\":\"" + jsonEsc(byName) + "\"";   // optional public name, only when the user applied one; old servers ignore it
     j += ",\"tracks\":[";
     bool first = true;
@@ -639,13 +663,21 @@ std::string buildJson(const std::string& station, const std::vector<Track>& trac
     return j;
 }
 
-void startPost(const std::string& url, const std::string& body, int n) {
+// auth: "" posts exactly as before; with the user's OnAir sign-in (map badges, Earn badges on) the post carries it as a header and the
+// answer is read for new badges (app/badges/badges_ui.cpp).
+void startPost(const std::string& url, const std::string& body, int n, const std::string& auth = std::string()) {
     if (gBusy.exchange(true)) return;
     std::lock_guard<std::mutex> lk(gThMu);
     if (gTh.joinable()) gTh.join();
     const std::string ua = std::string("OnAir/") + ONAIR_VERSION + " (map ingest)";
-    gTh = dect2::namedThread("onair-mapsend", [url, body, ua, n] {
-        const bool ok = plat::postJson(url, body, ua);
+    gTh = dect2::namedThread("onair-mapsend", [url, body, ua, n, auth] {
+        bool ok;
+        if (auth.empty()) ok = plat::postJson(url, body, ua);
+        else {
+            const plat::HttpResult r = plat::httpCall("POST", url, body, "application/json", {auth}, ua, 20, 1u << 16);
+            ok = r.status >= 200 && r.status <= 299;
+            if (ok) badgesui::onIngestReply(r.body);
+        }
         const int64_t t = nowMs();
         gLastTryMs.store(t, std::memory_order_relaxed);
         if (ok) {
@@ -727,6 +759,31 @@ void nameEditor(App& s) {
     if (!s.mapName.empty()) ImGui::TextDisabled(tr("Sending as: %s"), s.mapName.c_str());
 }
 
+// The way to the name editor, second in the Server menu (3.8, Discord: on a Raspberry Pi the old submenu near the end of a tall menu was out
+// of reach on a small screen, and a submenu needs hover on a touch screen). A plain item that opens a window of its own in the middle of the
+// screen; it is there whether or not sending is on, so a name can be chosen first. Nothing is sent from it.
+bool gAskName = false;
+void nameItem(App& s, bool menu) {
+    std::string label = s.mapName.empty() ? std::string(tr("Your name on the map: anonymous")) : std::string(tr("Your name on the map:")) + " " + s.mapName;
+    label += "...##mapnameitem";
+    const bool hit = menu ? ImGui::MenuItem(label.c_str()) : ImGui::Selectable(label.c_str());
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Optional and public: a name shown on the icons you were the last to hear. Empty = anonymous."));
+    if (hit) gAskName = true;
+}
+void namePopup(App& a) {
+    App& s = rootApp(a);
+    if (gAskName) { ImGui::OpenPopup("##mapnamewin"); gAskName = false; }
+    if (const ImGuiViewport* vp = ImGui::GetMainViewport()) {
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(300 * gUi, vp->WorkSize.x), 0), ImVec2(vp->WorkSize.x, vp->WorkSize.y));   // never larger than the screen
+    }
+    if (!ImGui::BeginPopupModal("##mapnamewin", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    nameEditor(s);
+    ImGui::Dummy(ImVec2(0, 4 * gUi));
+    if (ImGui::Button(tr("Close"))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 // "Also share interesting ACARS messages": free text and crew / operations / company / maintenance messages from the aircraft on the map.
 // They are public radio, but the text may name people, so phone numbers and e-mail addresses are removed before upload and this is its own choice.
 void msgsToggle(App& s, bool menu) {
@@ -794,6 +851,7 @@ void voiceToggle(App& s, bool menu) {
 
 // ---- ham contacts (own choice, off until chosen; see core/include/dect2/ham/ham_mapfeed.h) ----
 dect2::ham::mapfeed::Feed gHamFeed;
+int64_t gLastPostMs = 0;                        // when the last ingest post was started (the minimum interval between posts)
 dect2::ham::mapfeed::Switches gHamSw;          // refreshed every tick from the settings
 std::map<std::string, std::string> gHamGrids;  // callsign -> locator heard (own station included); bounded
 bool gAskHamConsent = false;
@@ -803,7 +861,6 @@ struct TickSink : dect2::ham::mapfeed::Sink {   // adds the due contacts to this
     bool post(const std::vector<dect2::ham::mapfeed::Track>& v) override {
         if (!online || !out) return false;
         for (const auto& h : v) {
-            if (out->size() >= kMaxTracks) break;
             Track t; t.kind = "ham"; t.id = h.id; t.label = h.label; t.sub = h.sub; t.src = "ham"; t.extra = h.extra;
             t.lat = h.lat; t.lon = h.lon; t.age = h.ageSec;
             out->push_back(std::move(t));
@@ -942,6 +999,7 @@ void startupQuestion(App& a) {
     App& s = rootApp(a);
     if (s.mapDeclined && s.mapDeclinedVersion != ONAIR_VERSION) { s.mapDeclined = false; s.mapDeclinedVersion.clear(); savePrefs(s); }   // an update: ask again
     if (!mapShouldAsk(s.mapConsent, s.mapDeclined, s.mapDeclinedVersion, ONAIR_VERSION, dect2::mapguard::holdingNow())) { asked = true; return; }
+    if (s.setupOpen) return;   // the first-run setup is on screen: ask when it is done (it covered the setup screens)
     if (ImGui::GetFrameCount() < 90) return;   // after the first frames: the window is up and the layout is settled
     asked = true;
     gAskConsent = true;
@@ -951,6 +1009,7 @@ void mapPopups(App& a) {
     roomsPopups(rootApp(a));
     startupQuestion(a);
     consentPopup(a);
+    namePopup(a);
     hamConsentPopup(a);
     connectingPopup();
     retryPopup();
@@ -976,14 +1035,15 @@ void sendToggle(App& a, bool menu) {
 } // namespace
 
 void mapSendServerMenu(App& a) {
-    if (!ImGui::BeginMenu(tr("Server"))) { mapPopups(a); return; }
+    if (!ImGui::BeginMenu(tr("Server"))) { mapPopups(a); webshare::drawPopups(a); return; }   // the Share on web window stays up after the menu closes
     sendToggle(a, true);
+    nameItem(rootApp(a), true);
+    badgesui::openItem(true);
     if (rootApp(a).mapSend) msgsToggle(rootApp(a), true);
     if (rootApp(a).mapSend) voiceToggle(rootApp(a), true);
     if (rootApp(a).mapSend) jamToggle(rootApp(a), true);
     if (rootApp(a).mapSend) hamToggle(rootApp(a), true);
     if (rootApp(a).mapSend && rootApp(a).mapHam) hamPrecisionToggle(rootApp(a), true);
-    if (rootApp(a).mapSend && ImGui::BeginMenu(tr("Your name on the map"))) { nameEditor(rootApp(a)); ImGui::EndMenu(); }
     ImGui::Separator();
     roomsMenu(rootApp(a), true);
     ImGui::TextDisabled("%s", tr("The map is at map.on-air.dev"));
@@ -999,12 +1059,13 @@ void mapSendButton(App& a) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Send decoded positions to the public map"));
     if (ImGui::BeginPopup("##serverpop")) {
         sendToggle(a, false);
+        nameItem(rootApp(a), false);
+        badgesui::openItem(false);
         if (rootApp(a).mapSend) msgsToggle(rootApp(a), false);
         if (rootApp(a).mapSend) voiceToggle(rootApp(a), false);
         if (rootApp(a).mapSend) jamToggle(rootApp(a), false);
         if (rootApp(a).mapSend) hamToggle(rootApp(a), false);
         if (rootApp(a).mapSend && rootApp(a).mapHam) hamPrecisionToggle(rootApp(a), false);
-        if (rootApp(a).mapSend && ImGui::BeginMenu(tr("Your name on the map"))) { nameEditor(rootApp(a)); ImGui::EndMenu(); }
         ImGui::Separator();
         roomsMenu(rootApp(a), false);
         ImGui::TextDisabled("%s", tr("The map is at map.on-air.dev"));
@@ -1031,6 +1092,7 @@ bool mapFamilySends(int family) {
     case 44:  // Orbcomm
     case 56:  // Remote ID
     case 66:  // FLARM
+    case 300: // ADS-L
     case 68:  // DJI
     case 74:  // Datawell
         return true;
@@ -1113,22 +1175,33 @@ void mapSendTick(App& a) {
         }
     }
     if (s.mapMsgs) attachMsgs(tracks);
-    {   // ham contacts: only with the master switch, its consent and the ham choice with its own consent; queued while the link is down
+    {   // ham contacts: only with the master switch, its consent and the ham choice with its own consent; queued while the link is down.
+        // They are one-shot (unlike the tracks collected again every tick), so they leave the queue only when this tick will really post:
+        // not inside the minimum interval after the last post (they used to be taken out of the queue and then thrown away there), and
+        // with room kept for them under the hub's 250 tracks per post (the hub refuses a bigger post, and the old sink dropped them when full).
         gHamSw = {s.mapSend, s.mapConsent, s.mapHam, s.mapHamConsent};
         gHamFeed.limits().gridChars = s.mapHam6 ? 6 : 4;
-        TickSink sink; sink.out = &tracks; sink.online = (ph != kRetry);
-        gHamFeed.flush(gHamSw, sink, (double)std::time(nullptr));
+        const bool throttled = !gPingNow && !needHb && gLastPostMs != 0 && (now - gLastPostMs) < (int64_t)(kMinInterval * 1000);
+        if (!throttled) {
+            std::vector<Track> hamTracks;
+            TickSink sink; sink.out = &hamTracks; sink.online = (ph != kRetry);
+            gHamFeed.flush(gHamSw, sink, (double)std::time(nullptr));
+            const size_t room = dect2::ham::mapfeed::roomForOthers(kMaxTracks, hamTracks.size());
+            if (tracks.size() > room) tracks.resize(room);
+            for (auto& h : hamTracks) tracks.push_back(std::move(h));
+        } else if (!dect2::ham::mapfeed::allowed(gHamSw)) gHamFeed.clear();
     }
     if (s.mapVoice) attachVoice(tracks);
     tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [](const Track& t) { return dect2::mapguard::idBlockedNow(t.id) || dect2::mapguard::idBlockedNow(t.label); }), tracks.end());   // never what this app transmitted in the last 24 hours
     const bool ping = gPingNow || needHb || (tracks.empty() && (ph == kConnecting || ph == kRetry));
     if (!gPingNow && !needHb && !tracks.empty()) {
-        static int64_t lastSend = 0;
-        if (lastSend != 0 && (now - lastSend) < (int64_t)(kMinInterval * 1000)) return;
-        lastSend = now;
+        if (gLastPostMs != 0 && (now - gLastPostMs) < (int64_t)(kMinInterval * 1000)) return;
     } else if (!ping) return;
+    gLastPostMs = now;
     gPingNow = false;
-    startPost(originOf(s) + "/ingest", buildJson(s.mapStationId, tracks, s.mapName), (int)tracks.size());
+    std::string auth, home;
+    badgesui::postExtras(s, auth, home);   // both "" unless signed in with Earn badges on: then the post is the same as before
+    startPost(originOf(s) + "/ingest", buildJson(s.mapStationId, tracks, s.mapName, home), (int)tracks.size(), auth);
 }
 
 // The transmitters tell the map guard themselves (core/src/tx/tx.cpp, ham_tx.cpp): these stay for the callers and change nothing.

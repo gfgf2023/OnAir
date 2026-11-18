@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
+#include "dect2/dsp/simd.h"
+#include "dect2/common/stage_prof.h"
 #include "dect2/common/thread_name.h"
 #include <deque>
 #include "dect2/atsc3/atsc3_rx.h"
@@ -24,7 +30,10 @@ void Atsc3Rx::configure(double rate) {
 }
 
 void Atsc3Rx::start() {
-    if (rate_ <= 0) return;
+    if (rate_ <= 0) {
+        DIAG_DEBUG(994974, "The ATSC 3.0 receiver was not started because no sample rate is set (%.0f), so it stays idle.", rate_);
+        return;
+    }
     rx_.reset(new Atsc3Receiver());
     rx_->remux().setRealtime(paced_);
     sync_.reset(new Atsc3Sync(rate_, rx_.get()));
@@ -59,13 +68,14 @@ void Atsc3Rx::reset() {
 
 void Atsc3Rx::feed(const cf32* x, size_t n) {
     if (stop_) return;
+    DECT2_STAGE("a3.input");
     std::unique_lock<std::mutex> lk(mu_);
     const size_t cap = (size_t)(rate_ * 1.5);   // a second and a half of samples may wait
     if (blocking_) {
         while (queued_ > cap && !stop_) cvSpace_.wait_for(lk, std::chrono::milliseconds(20));
         if (stop_) return;
     } else {
-        while (queued_ > cap && !q_.empty()) { queued_ -= q_.front().size(); q_.pop_front(); dropped_++; }
+        while (queued_ > cap && !q_.empty()) { queued_ -= q_.front().size(); q_.pop_front(); dropped_++; DIAG_EVERY(294979, 10.0, "The ATSC 3.0 decoder cannot keep up with the incoming samples (%llu blocks dropped so far), so signal is lost and frames may fail.", (unsigned long long)dropped_); }
     }
     q_.emplace_back(x, x + n);
     queued_ += n;
@@ -81,32 +91,42 @@ void Atsc3Rx::selectService(int id) {
 void Atsc3Rx::autoSelect() {
     if (!rx_ || rx_->selectedService() >= 0) return;
     for (auto& s : rx_->services()) {
-        if (s.category == 1 && !s.hidden && s.slsProtocol == 1) { rx_->selectService(s.serviceId); return; }
+        if (s.category == 1 && !s.hidden && s.slsProtocol == 1) { rx_->selectServiceIfNone(s.serviceId); return; }
     }
 }
 
 void Atsc3Rx::worker() {
+    DenormalsOff ftz;   // x86: no microcode assists on denormal values (nothing elsewhere)
     double lastTel = 0;
     while (!stop_) {
         std::vector<cf32> blk;
+        bool have = false;
         {
             std::unique_lock<std::mutex> lk(mu_);
             cv_.wait_for(lk, std::chrono::milliseconds(100), [&] { return stop_ || !q_.empty(); });
             if (stop_) break;
-            if (q_.empty()) continue;
-            blk = std::move(q_.front());
-            q_.pop_front();
-            queued_ -= blk.size();
-            cvSpace_.notify_all();
+            if (!q_.empty()) {
+                blk = std::move(q_.front());
+                q_.pop_front();
+                queued_ -= blk.size();
+                have = true;
+                cvSpace_.notify_all();
+            }
         }
-        const double t0 = wallNow();
-        sync_->push(blk.data(), blk.size());
+        if (have) {
+            const double t0 = wallNow();
+            DECT2_STAGE_VAR(stSync, "a3.sync");
+            sync_->push(blk.data(), blk.size());
+            stSync.stop();
+            const double dt = wallNow() - t0;
+            // the load over about the last ten seconds of signal
+            busySec_ = busySec_ + dt;
+            signalSec_ = signalSec_ + (double)blk.size() / rate_;
+            if (signalSec_ > 10.0) { busySec_ = busySec_ * 0.5; signalSec_ = signalSec_ * 0.5; }
+        }
+        // also while no samples arrive: frames still being decoded on the worker threads commit after the last block (the end of a file, a
+        // radio that stopped), and their services and counts must still be selected and shown
         autoSelect();
-        const double dt = wallNow() - t0;
-        // the load over about the last ten seconds of signal
-        busySec_ = busySec_ + dt;
-        signalSec_ = signalSec_ + (double)blk.size() / rate_;
-        if (signalSec_ > 10.0) { busySec_ = busySec_ * 0.5; signalSec_ = signalSec_ * 0.5; }
         const double now = wallNow();
         if (now - lastTel > 0.1) {
             lastTel = now;
@@ -117,9 +137,12 @@ void Atsc3Rx::worker() {
             if (ss.frames > lastFrames_) { lastFrames_ = ss.frames; lastFrameWall_ = now; }
             t.secSinceFrame = lastFrameWall_ > 0 ? now - lastFrameWall_ : 1e9;
             t.locked = t.secSinceFrame < 1.5;
+            if (tel_.locked && !t.locked) DIAG_DEBUG_EVERY(560652, 10.0, "No ATSC 3.0 frame was decoded for %.1f seconds, so the receiver reports that it lost lock and waits for the next bootstrap.", t.secSinceFrame);
             t.cfoHz = ss.cfoHz; t.bootstraps = ss.bootstraps; t.frames = ss.frames; t.framesFailed = rs.framesFailed;
             t.bbPackets = rs.bbPackets; t.bbBad = rs.bbBad; t.alpPackets = rs.alpPackets; t.udp = rs.udp; t.llsTables = rs.llsTables; t.routeObjects = rs.routeObjects;
+            t.alpCompressedIp = rs.alpCompressedIp; t.alpSignaling = rs.alpSignaling; t.llsSigned = rs.llsSigned; t.slsObjects = rs.slsObjects; t.slsTables = rs.slsTables;
             t.services = rx_->services();
+            t.alerts = rx_->alerts();
             t.selected = rx_->selectedService();
             t.serviceReady = rx_->serviceReady();
             t.frame = rx_->frameInfo();

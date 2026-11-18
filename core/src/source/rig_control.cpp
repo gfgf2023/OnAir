@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Rig control for transmitting (see rig_control.h): error hints, finding the rig, audio pairing, the watched CAT link and the CAT HamRigIo.
 #include "dect2/source/rig_control.h"
+#include "dect2/common/diag.h"
 #include "dect2/audio/audioout.h"
 #include <algorithm>
 #include <cctype>
@@ -72,6 +76,7 @@ const std::vector<RigHint>& commonRigs() {
         {"Kenwood", "TS-2000", {57600, 9600}}, {"Elecraft", "K3", {38400}},           {"Elecraft", "KX3", {38400}},
         {"Elecraft", "KX2", {38400}},          {"Elecraft", "K4", {38400}},           {"Xiegu", "G90", {19200}},
         {"Xiegu", "X6100", {19200, 115200}},   {"QRP Labs", "QDX", {115200, 9600}},   {"Kenwood", "TS-480", {115200, 9600}},
+        {"Elad", "FDM-DUO", {115200, 57600, 38400, 9600}},   // CAT baud rates from the FDM-DUO manual (8N1)
     };
     return v;
 }
@@ -90,9 +95,11 @@ std::vector<RigHint> rigHintsForPort(const SerialPortInfo& p) {
         {"ft891", "Yaesu", "FT-891"},    {"ts590", "Kenwood", "TS-590SG"},  {"ts890", "Kenwood", "TS-890S"}, {"ts2000", "Kenwood", "TS-2000"},
         {"kx3", "Elecraft", "KX3"},      {"kx2", "Elecraft", "KX2"},        {"elecraftk4", "Elecraft", "K4"}, {"x6100", "Xiegu", "X6100"},
         {"xiegu", "Xiegu", "G90"},       {"qdx", "QRP Labs", "QDX"},        {"qmx", "QRP Labs", "QDX"},
+        {"fdmduo", "Elad", "FDM-DUO"},   {"eladfdm", "Elad", "FDM-DUO"},
     };
     for (const auto& n : kNamed) if (has(s, n.key)) add(n.mfg, n.model);
     if (has(s, "qdx") || has(s, "qmx") || has(s, "qrplabs")) add("Kenwood", "TS-480");   // the QRP Labs rigs speak TS-480 CAT
+    if (has(s, "fdmduo") || has(s, "eladfdm")) add("Kenwood", "TS-480");   // the FDM-DUO's CAT is a TS-480 subset plus its own commands (manual)
     if (has(s, "elecraft")) { add("Elecraft", "K3"); add("Elecraft", "KX3"); add("Elecraft", "KX2"); add("Elecraft", "K4"); }
     if (has(s, "cp2105")) { add("Yaesu", "FT-991"); add("Yaesu", "FTDX-10"); add("Yaesu", "FT-710"); add("Yaesu", "FT-891"); }   // Yaesu's dual UART
     if (has(s, "cp210") && !has(s, "cp2105")) { add("Icom", "IC-7300"); add("Icom", "IC-9700"); add("Icom", "IC-7610"); add("Kenwood", "TS-590SG"); }
@@ -258,6 +265,7 @@ bool RigKeeper::tuneForTx(double hz, const std::string& mode, std::string& err, 
     if (std::fabs(back - hz) > tolHz) {
         char b[160];
         snprintf(b, sizeof b, "the rig is at %.0f Hz, not at %.0f Hz: not sent (check the rig's VFO and band)", back, hz);
+        DIAG_ERROR(441106, "The rig reports %.0f Hz but %.0f Hz was set, so the frequency is not sent (check the rig VFO and band).", back, hz);
         err = b;
         return false;
     }
@@ -289,7 +297,7 @@ bool RigKeeper::ptt(bool on, std::string& err) {
     if (on) {
         if (st_ != Up) { err = "the rig is not connected" + (status_.empty() ? std::string() : ": " + status_); return false; }
         std::string e;
-        if (!cat_->setPtt(true, e)) { std::string e2; cat_->setPtt(false, e2); err = hamlibErrorHint(e); return false; }
+        if (!cat_->setPtt(true, e)) { DIAG_ERROR(645114, "The rig refused to key the transmitter (%s), so it is switched back to receive.", e.c_str()); std::string e2; cat_->setPtt(false, e2); err = hamlibErrorHint(e); return false; }
         keyed_ = true;
         keyedPing_ = -1e9;
         return true;
@@ -313,7 +321,7 @@ class SoundCardAudio : public RigAudio {
 public:
     bool start(const std::string& device, int rate, std::string& err) override {
         out_.setDevice(device);
-        if (!out_.start(rate)) { err = "cannot open the sound card output" + (device.empty() ? std::string() : " " + device); return false; }
+        if (!out_.start(rate)) { DIAG_ERROR(695177, "The sound card output for the rig audio could not be opened, so the transmit audio does not start."); err = "cannot open the sound card output" + (device.empty() ? std::string() : " " + device); return false; }
         out_.setStartThreshold(rate / 20);
         return true;
     }
@@ -353,7 +361,7 @@ bool CatRigIo::prepare(const ham::HamTxCheck& gate, std::string& err) {
 bool CatRigIo::ptt(bool on, std::string& err) {
     if (on) {
         std::lock_guard<std::mutex> l(mu_);
-        if (!prepared_) { err = "the rig is keyed only through the ham transmitter (Arm), not directly"; return false; }
+        if (!prepared_) { DIAG_ERROR(322004, "Something asked to key the rig directly instead of through the ham transmitter, so the request is refused."); err = "the rig is keyed only through the ham transmitter (Arm), not directly"; return false; }
     } else {
         std::lock_guard<std::mutex> l(mu_);
         prepared_ = false;

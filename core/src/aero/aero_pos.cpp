@@ -1,6 +1,9 @@
 // Positions from Aero ACARS messages (formats and sources in aero_pos.h).
+#include <ctime>
 #include "dect2/aero/aero_pos.h"
+#include "dect2/aero/aero_cpdlc.h"
 #include "dect2/aero/aero_adsc.h"
+#include "dect2/acars/acars_text.h"
 
 #include <cctype>
 #include <cmath>
@@ -113,6 +116,15 @@ bool aeroParseTextPosition(const std::string& label, const std::string& text, Ae
             f++;
         }
     }
+    AcarsReading r;
+    if (acarsInterpret(label, text, r) && r.hasPos && aeroSanitizePosition(r.lat, r.lon)) {
+        out = AeroPosition();
+        out.source = 2; out.kind = r.kind; out.lat = r.lat; out.lon = r.lon; out.valid = true;
+        if (r.altFt >= 0) { out.hasAlt = true; out.altFt = r.altFt; }
+        if (r.headingDeg >= 0) { out.hasTrack = true; out.trackDeg = r.headingDeg; }
+        out.flightId = r.flight;
+        return true;
+    }
     out = AeroPosition();
     return false;
 }
@@ -122,6 +134,7 @@ bool aeroPositionFromMessage(const std::string& label, const std::string& text, 
     if (detail) detail->clear();
     AeroAdscMessage a;
     if (aeroDecodeAdsc(text, uplink, a)) {
+        AdscContractBook::get().note(a, (int64_t)std::time(nullptr));
         if (detail) *detail = aeroDescribeAdsc(a);
         if (!a.crcOk || !a.hasPos) return false;
         out.valid = true;
@@ -141,7 +154,10 @@ bool aeroPositionFromMessage(const std::string& label, const std::string& text, 
         }
         return true;
     }
-    return aeroParseTextPosition(label, text, out);
+    AeroCpdlcMessage cp;
+    if (detail && aeroDecodeCpdlc(text, uplink, cp)) *detail = aeroDescribeCpdlc(cp);
+    if (aeroParseTextPosition(label, text, out)) return true;
+    return false;
 }
 
 } // namespace dect2

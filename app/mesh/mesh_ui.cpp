@@ -1,6 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mesh (LoRa) mode entry: the screen state, the mode's tick, and the entry points the shell calls (tab, list, receiver,
 // panels, status, summary, tuner, decoder, synth, meters). The tables, views, LoRaWAN screens and settings are in the other mesh_*.cpp.
+#include "adsb/records_ui.h"
 #include "mesh_internal.h"
+#include "ui/topo_view.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include <algorithm>
@@ -9,6 +15,8 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+void meshWatchTick(App& a, bool live);   // mesh_watch_ui.cpp
+void meshFwdTick(App& a, bool live);
 
 using namespace meshui;
 
@@ -88,7 +96,8 @@ void loadState() {
     S.view = (int)d.getI("meshView", 0);
     S.region = std::max(0, std::min(kNumPlans - 1, (int)d.getI("meshRegion", 0)));
     S.protocols = (int)d.getI("meshProtocols", 15);
-    S.allPresets = d.getB("meshPresets", false);
+    S.allPresets = d.getB("meshPresets", true);   // Auto: every Meshtastic preset of the region, the node need not be on LongFast
+    S.tableScale = (int)d.getI("meshTableScale", 1); if (S.tableScale != 5 && S.tableScale != 20) S.tableScale = 1;
     S.mtRegion = d.getS("meshMtRegion", "");
     S.mtPreset = d.getS("meshMtPreset", "LongFast");
     S.mcPreset = d.getS("meshCorePreset", "");
@@ -136,21 +145,28 @@ double meshBandwidthHz(App& a) {
 
 double meshSampleRate(App& a) { return meshBandwidthHz(a) > 500e3 ? 4e6 : 2e6; }
 
-// 0 = the usual rate. An RTL-SDR (USB or rtl_tcp) drops samples at 2.048 Msps, which breaks frames of a long LoRa symbol; a channel of up to
-// 500 kHz fits in 1.024 Msps, where it loses none (issue #386). Other radios keep 2 Msps, so more than one channel stays inside the window.
+// 0 = the usual rate. An RTL-SDR (USB or rtl_tcp) runs a channel that fits in 1.024 Msps there (meshRtlRateHz, issue #386); other radios keep 2 Msps.
 double meshRtlRate(App& a) {
     const double bw = meshBandwidthHz(a);
-    if (bw > 0 && bw <= 500e3 && a.devIdx >= 0 && a.devIdx < (int)a.devices.size()) {
-        const std::string& b = a.devices[a.devIdx].board;
-        if (b == "rtlsdr" || b == "rtltcp") return 1.024e6;
-    }
+    if (bw > 0 && a.devIdx >= 0 && a.devIdx < (int)a.devices.size()) return dect2::meshRtlRateHz(a.devices[a.devIdx].board, bw);
     return 0;
 }
 
 namespace meshui {
 
+void meshCoverageFeed(const dect2::MeshTelemetry& t, double rxLat, double rxLon, bool rxSet);   // mesh_coverage_ui.cpp (3.9)
+void meshCoverageCard();
 void tick(App& a) {
     loadState();
+    static uint64_t covSeq = 0;
+    if (live(a) && a.rx.mesh.seq != covSeq) { covSeq = a.rx.mesh.seq; double la = 0, lo = 0; receiverLocation(la, lo); meshCoverageFeed(a.rx.mesh, la, lo, receiverLocationSet()); }
+    meshWatchTick(a, live(a));   // node watch (mesh_watch_ui.cpp)
+    meshFwdTick(a, live(a));     // LoRaWAN forwarder
+    if (live(a)) {   // the records board: the farthest mesh node with a position
+        static double last = 0;
+        if (ImGui::GetTime() - last > 5) { last = ImGui::GetTime(); for (const auto& n : a.rx.mesh.nodes) if (n.hasPosition) recordsOffer("Mesh", "", recordsDistKm(n.lat, n.lon), n.longName.empty() ? n.id : n.longName + " " + n.id, n.hwModel); }
+    }
+    if (subMask(a) == 2) meshcoreTick(a);   // the MeshCore device: frames heard, retries, the transmitter (also while another view is open)
     dect2::MeshReceiver& r = a.engine.mesh();
     {
         const std::string mreg = meshtasticShown(a) ? S.mtRegion : "";
@@ -175,6 +191,7 @@ void tick(App& a) {
     if (!S.keysPushed) { pushKeys(a); S.keysPushed = true; }
     if (S.pushedRegion != effRegion(a)) { S.pushedRegion = effRegion(a); r.setRegion(kPlans[S.pushedRegion].rxRegion); }
     if (S.pushedProtocols != effProtocols(a)) { S.pushedProtocols = effProtocols(a); r.setProtocols(S.pushedProtocols); }   // a protocol entry: only its own network
+    if (S.pushedScale != S.tableScale) { r.setTableScale(S.tableScale); S.pushedScale = S.tableScale; }
     if (S.pushedPresets != (int)S.allPresets) { r.setPresetSearch(S.allPresets); S.pushedPresets = (int)S.allPresets; }
     if (S.pushedTuned != a.freqMhz) { r.setTunedHz(a.freqMhz * 1e6); S.pushedTuned = a.freqMhz; }   // the engine does not pass the user's frequency
     if (!a.engine.running()) { S.lastSeq = 0; S.logPrimed = false; return; }
@@ -197,32 +214,36 @@ void tab(App& a) {
     loadState();
     kit::modeHeader({20, "LoRa mesh", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
     if (const int m = subMask(a)) {   // a protocol entry: only its own views (LoRa APRS: stations instead of nodes and chat; MeshCom: stations and chat; LoRaWAN: devices and frames)
-        static const int aprsIds[] = {5, 1, 3, 4, 9}, comIds[] = {5, 1, 2, 3, 4, 9}, meshIds[] = {0, 1, 2, 3, 8, 4, 9}, lwIds[] = {6, 7, 4, 9};
-        const bool ap = m == 4, com = m == 8, lw = m == 16;
-        const int* ids = ap ? aprsIds : com ? comIds : lw ? lwIds : meshIds;
-        const int n = ap ? 5 : lw ? 4 : com ? 6 : 7;
+        static const int aprsIds[] = {5, 1, 3, 4, 9}, comIds[] = {5, 1, 2, 3, 4, 9}, meshIds[] = {0, 1, 2, 3, 8, 10, 4, 9}, lwIds[] = {6, 7, 4, 9},
+                         mcIds[] = {11, 0, 1, 2, 3, 8, 10, 4, 9};   // MeshCore: the Device (send and receive) first
+        const bool ap = m == 4, com = m == 8, lw = m == 16, mc = m == 2;
+        const int* ids = ap ? aprsIds : com ? comIds : lw ? lwIds : mc ? mcIds : meshIds;
+        const int n = ap ? 5 : lw ? 4 : com ? 6 : mc ? 9 : 8;
         int k = 0;
         for (int i = 0; i < n; i++) if (ids[i] == S.view) k = i;
         if (ap) subNav("meshva", k, {"Stations", "Map", "Packets", "Settings", tr("Tracks")});
         else if (com) subNav("meshvc", k, {"Stations", "Map", "Chat", "Packets", "Settings", tr("Tracks")});
         else if (lw) subNav("meshvl", k, {"Devices", "Frames", "Settings", tr("Tracks")});
-        else subNav("meshvm", k, {"Nodes", "Map", "Chat", "Packets", "Telemetry", "Settings", tr("Tracks")});
+        else if (mc) subNav("meshvmc", k, {tr("Device"), "Nodes", "Map", "Chat", "Packets", "Telemetry", tr("Topology"), "Settings", tr("Tracks")});
+        else subNav("meshvm", k, {"Nodes", "Map", "Chat", "Packets", "Telemetry", tr("Topology"), "Settings", tr("Tracks")});
         S.view = ids[k];
     } else {
-        if (S.view == 7) S.view = 3;
-        static const int ids[] = {0, 1, 2, 3, 8, 4, 5, 6, 9};   // the views in the order of the tabs (7, the LoRaWAN frames, has no tab here)
+        if (S.view == 7 || S.view == 11) S.view = 3;
+        static const int ids[] = {0, 1, 2, 3, 8, 10, 4, 5, 6, 9};   // the views in the order of the tabs (7, the LoRaWAN frames, has no tab here)
         int k = 0;
-        for (int i = 0; i < 9; i++) if (ids[i] == S.view) k = i;
-        subNav("meshv", k, {"Nodes", "Map", "Chat", "Packets", "Telemetry", "Settings", "APRS", "LoRaWAN", tr("Tracks")});
+        for (int i = 0; i < 10; i++) if (ids[i] == S.view) k = i;
+        subNav("meshv", k, {"Nodes", "Map", "Chat", "Packets", "Telemetry", tr("Topology"), "Settings", "APRS", "LoRaWAN", tr("Tracks")});
         S.view = ids[k];
     }
     plat::prefs().setI("meshView", S.view);
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     if (S.view == 9) { kit::sessionItems(20, 3, "mesh"); return; }
+    if (S.view == 11) { meshcoreView(a); return; }
     if (S.view == 0) { nodeTable(a, false); return; }
     if (S.view == 2) { chatView(a); return; }
     if (S.view == 3) { packetTable(a); return; }
     if (S.view == 8) { telemetryTable(a); return; }
+    if (S.view == 10) { topoView(a, "mesh", a.rx.mesh.topo); return; }
     if (S.view == 4) { settingsView(a); return; }
     if (S.view == 5) { aprsTable(a); return; }
     if (S.view == 6) { lorawanDevices(a, false); return; }
@@ -234,6 +255,7 @@ void tab(App& a) {
     ImGui::SameLine();
     ImGui::BeginChild("##mesh_r", ImVec2(0, H));
     nodeCard(a);
+    meshCoverageCard();
     ImGui::EndChild();
 }
 
@@ -290,16 +312,21 @@ void receiver(App& a) {
     ImGui::Spacing();
     ImGui::TextDisabled("Packets by type");
     // at least a few rows: in a short tab the pane scrolls to it instead (it was left a sliver of its header)
-    if (ImGui::BeginTable("##mcnt", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY,
+    uint64_t cntTotal = 0;
+    for (const auto& c : t.counts) cntTotal += c.count;   // 4.0: share and rate columns (docs/WIRING-4.0.md)
+    if (ImGui::BeginTable("##mcnt", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY,
                           ImVec2(0, std::max(ImGui::GetContentRegionAvail().y, 5 * ImGui::GetTextLineHeightWithSpacing())))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Net"); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthStretch); ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, hdrW("Count", "99999"));
+        ImGui::TableSetupColumn(tr("Share")); ImGui::TableSetupColumn(tr("Per min"));
         ImGui::TableHeadersRow();
         for (const auto& c : t.counts) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::TextColored(protoColour(c.protocol), "%s", protoTag(c.protocol));
             ImGui::TableNextColumn(); ImGui::TextUnformatted(c.type.c_str());
             ImGui::TableNextColumn(); ImGui::Text("%u", c.count);
+            ImGui::TableNextColumn(); ImGui::Text("%.0f %%", cntTotal ? 100.0 * c.count / (double)cntTotal : 0.0);
+            ImGui::TableNextColumn(); if (t.timeSec >= 60) ImGui::Text("%.1f", c.count * 60.0 / t.timeSec); else ImGui::TextDisabled("-");
         }
         ImGui::EndTable();
     }
@@ -395,7 +422,7 @@ void tuner(App& a, bool& retune) {
     ImGui::TextDisabled("Band plan");
     ImGui::SetNextItemWidth(std::min(230 * gUi, ImGui::GetContentRegionAvail().x));   // no wider than the side panel
     int r = effRegion(a);
-    if (planCombo(a, "##mreg_t", r, true)) { applyRegion(a, r); retune = true; }
+    if (planCombo(a, "##mreg_t", r, true)) applyRegion(a, r);   // retunes by itself (tuneFreq)
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("EU / US / ANZ: the Meshtastic LongFast channel; MeshCore sits 93 kHz above it in the EU (one capture holds both).\nAPRS / MeshCom: 70 cm LoRa APRS and MeshCom; MeshCom EU at 433.175 MHz also holds LoRa APRS at 433.775 MHz.\nThe frequency box can be changed for other slots: the receiver follows it.");
 }
 
@@ -484,6 +511,30 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 extern const ModeUi kMeshUi;
 
+// Simple view: by protocol entry, the stations / nodes / devices, the map and the chat / packets / frames side by side
+static void command(App& a) {
+    loadState();
+    kit::modeHeader({20, "LoRa mesh", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    const int m = subMask(a);
+    const auto map = [&a] { mapView(a, ImGui::GetContentRegionAvail()); };
+    if (m == 16)
+        modepanel::panes({{"##mscdev", tr("Devices"), [&a] { lorawanDevices(a, false); }, 1.2f, 240.f},
+                          {"##mscfr", tr("Frames"), [&a] { lorawanFrames(a); }, 1.f, 240.f}}, 340.f);
+    else if (m == 4)
+        modepanel::panes({{"##mscst", tr("Stations"), [&a] { aprsTable(a); }, 1.2f, 240.f},
+                          {"##mscmap", tr("Map"), map, 1.2f, 260.f},
+                          {"##mscpk", tr("Packets"), [&a] { packetTable(a); }, 1.f, 220.f}}, 320.f);
+    else if (m == 8)
+        modepanel::panes({{"##mscst", tr("Stations"), [&a] { aprsTable(a); }, 1.2f, 240.f},
+                          {"##mscmap", tr("Map"), map, 1.f, 260.f},
+                          {"##mscchat", tr("Chat"), [&a] { chatView(a); }, 1.f, 240.f}}, 320.f);
+    else
+        modepanel::panes({{"##mscnodes", tr("Nodes"), [&a] { nodeTable(a, false); }, 1.2f, 240.f},
+                          {"##mscmap", tr("Map"), map, 1.2f, 260.f},
+                          {"##mscchat", tr("Chat"), [&a] { chatView(a); }, 1.f, 240.f},
+                          {"##mscsel", tr("Selected"), [&a] { nodeCard(a); }, 0.8f, 200.f}}, 280.f);
+}
+
 const ModeUi kMeshUi = {
     .sideTitle = "NODES",
     .tabName = "Mesh",
@@ -499,4 +550,5 @@ const ModeUi kMeshUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

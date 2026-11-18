@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Eurobalise telegram coding (UNISIG SUBSET-036 issue 4.0.0, clause 4.3 and Annex A / B2), the air gap that EBICab systems share in its
 // physical form (a 27 MHz tele-powering field from the train, a 4.5 MHz band FSK up-link). Public and normative; the EBICab 700 / 900 telegram
 // formats are not published and are not handled (docs/ebicab.md).
@@ -35,6 +38,10 @@ struct Header {
 };
 Header parseHeader(const std::vector<uint8_t>& userBits);
 
+// SUBSET-026 chapter 7 packets after the header, one readable line each. Field layout read from the openETCS XML transcription of the chapter (a Baseline 3 text).
+struct Packet { int nid = -1, qDir = 0, lenBits = 0; std::string text; };
+std::vector<Packet> parsePackets(const std::vector<uint8_t>& userBits);
+
 struct Telegram {
     bool longFmt = false;
     bool inverted = false;           // the whole telegram was received inverted (the radio side swapped the two frequencies)
@@ -45,6 +52,7 @@ struct Telegram {
     uint16_t scrambling = 0;         // the 12 scrambling bits
     int shift = 0;                   // where the telegram started in the window
     Header header;
+    std::vector<Packet> packets;
     std::string hex;                 // the user bits as hex (padded with zeros to a whole byte)
 };
 

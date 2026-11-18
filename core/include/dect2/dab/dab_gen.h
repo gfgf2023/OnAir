@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DAB / DAB+ test transmitter (ETSI EN 300 401 transmission mode I, ETSI TS 102 563 for DAB+): an endless, continuous signal that carries a small
 // ensemble with real audio, so that the DAB receiver can be tried and tested without a radio. Nothing is transmitted; the samples only exist in
 // memory or in a file.
@@ -107,6 +110,10 @@ struct TxConfig {
     bool ptyDynamic = false;
     // Labels as FIG 2 (UTF-8, in segments of at most 8 bytes) instead of FIG 1: the label strings may then hold any text
     bool utf8Labels = false;
+    // Further FIGs sent as they are, one or more per frame in turn (tests: FIG 0/9 country, 0/11 regions, 0/22 transmitter positions,
+    // 1/3 region labels): each is {FIG type, data field starting with the type's header byte}; at most 29 bytes of data
+    struct RawFig { int type = 0; std::vector<uint8_t> data; };
+    std::vector<RawFig> extraFigs;
 };
 // 1 "OnAir Tones 1" DAB+ 48 kHz 1 kHz / 3 kHz, 48 kbit/s; 2 "OnAir Tones 2" DAB+ 32 kHz 2 kHz / 500 Hz, 32 kbit/s; 3 "OnAir Melody" DAB+ 48 kHz, 64 kbit/s;
 // 4 "OnAir MP2" DAB 48 kHz 1.5 kHz / 750 Hz, 128 kbit/s (left out when libavcodec has no MP2 encoder)

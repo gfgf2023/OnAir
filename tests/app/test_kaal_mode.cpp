@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The KAAL mode (family 122, engine standard 124, telemetry 123) and its neighbours in the group "Kris custom modes": KAVB (123, 125, built: tests/app/test_kavb_mode.cpp), KAPP (124, 126) and KAFT (125, 127, both built: tests/app/test_kapp_kaft_mode.cpp): the mode-table rows, the group, the modeui cases, the panel strings, the engine wiring, the transmit
 // registration and the IQ-file destination are in the sources. Text checks only, so it builds without the app.
 #include <cstdio>
@@ -34,7 +37,7 @@ int main() {
     need("app/ui/mode_table.cpp", table, "{124, \"KAPP\", 15,");
     need("app/ui/mode_table.cpp", table, "{125, \"KAFT\", 15,");
     need("app/ui/mode_table.cpp", table, "N_(\"PLUGINS\"), \"Kris custom modes\", N_(\"CUSTOM MODES\")}");   // the Mode Builder's group follows
-    need("app/ui/mode_table.cpp", table, "IM_COL32(236, 160, 84, 255),\n    IM_COL32(120, 200, 170, 255)};");
+    need("app/ui/mode_table.cpp", table, "IM_COL32(233, 163, 101, 255),\n    IM_COL32(147, 191, 179, 255)};");
 
     const std::string app = readSource("app/app.h");
     need("app/app.h", app, "constexpr int kNumFamilies = ");
@@ -113,7 +116,11 @@ int main() {
     need("app/panels/tx_ui.cpp", txui, "makeIqFileTxSink(fc)");
     need("app/panels/tx_ui.cpp", txui, "kaal.powerDbm");
     const std::string txset = readSource("app/panels/tx_step_settings.cpp");
-    need("app/panels/tx_step_settings.cpp", txset, "\"Destination\"");
+    need("app/panels/tx_step_settings.cpp", txset, "tr(\"Send to\")");   // 4.0: the destination is the "Send to" choice (radio, dummy load, IQ file)
+    const std::string txpar = readSource("core/src/tx/tx_params.cpp");
+    need("core/src/tx/tx_params.cpp", txpar, "case TxPayloadKind::Kaal:");
+    need("core/src/tx/tx_params.cpp", txpar, "custom(\"kaal.panel\"");
+    need("app/panels/tx_payload_ui.cpp", readSource("app/panels/tx_payload_ui.cpp"), "k == \"kaal.panel\") kaalPanel(s, running);");
     need("app/panels/tx_step_settings.cpp", txset, "\"IQ file\"");
     need("app/panels/tx_step_settings.cpp", txset, "destinationPanel(s, *mode, running);");
 

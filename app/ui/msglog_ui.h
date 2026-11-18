@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // "Save..." and "Auto-save to file" for a message tab: writes the rows as a .txt / .log text (dect2/common/msg_log.h), time in the
 // Time display setting. Auto-save appends each new message to a file chosen by the user (default in the data folder, "messages/<id>.log"),
 // with a new file each day (name-YYYY-MM-DD.log).
@@ -61,13 +64,13 @@ inline void bar(const char* id, const char* title, const std::vector<dect2::msgl
         }
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Save the messages in the list to a text file (.txt or .log): time, mode, frequency, address and text. The time follows View > Time display."));
-    ImGui::SameLine();
+    sameLineIf(ImGui::CalcTextSize(tr("Auto-save to file")).x + 36 * gUi, -1.f);   // wraps in a narrow pane (the Simple views)
     if (ImGui::Checkbox(tr("Auto-save to file"), &s.autosave)) {
         plat::prefs().setB((std::string("msglogAuto_") + id).c_str(), s.autosave);
         if (s.autosave) { s.seen.clear(); for (const auto& r : rows) s.seen.insert(rowKey(r)); s.note.clear(); }   // only messages from now on
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(tr("Append each new message to %s (a new file each day: name-YYYY-MM-DD)."), s.saver.base().c_str());
-    ImGui::SameLine();
+    sameLineIf(ImGui::CalcTextSize(tr("File...")).x + 12 * gUi, -1.f);
     if (ImGui::SmallButton(tr("File..."))) {
         const std::string p = saveFileDialog("messages.log");
         if (!p.empty()) { s.saver.setBase(p); plat::prefs().setS((std::string("msglogPath_") + id).c_str(), p); }

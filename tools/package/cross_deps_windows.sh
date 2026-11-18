@@ -54,11 +54,20 @@ Cflags: -I\${includedir}/libhackrf -DLIBHACKRF_STATIC
 PC
 }
 
-[ -f "$P/lib/libavcodec.a" ] || { step ffmpeg; unpack ffmpeg-8.0.tar.xz ffmpeg-8.0; mkdir -p ffmpeg-build; (cd ffmpeg-build && ../ffmpeg-8.0/configure --prefix=$P --enable-cross-compile --target-os=mingw32 --arch=x86_64 --cross-prefix=$HOST- \
-    --enable-static --disable-shared --disable-programs --disable-doc --disable-debug --disable-avdevice --disable-network --pkg-config=pkg-config --extra-cflags="-I$P/include" --extra-ldflags="-L$P/lib" >/dev/null && make -j$JOBS >/dev/null && grep -qE '^#define CONFIG_GPL 0' config.h && grep -qE '^#define CONFIG_VERSION3 0' config.h && grep -qE '^#define CONFIG_NONFREE 0' config.h && make install >/dev/null) || { echo "FFmpeg for Windows failed or is not the LGPL build (GPL/version3/nonfree are not allowed)"; exit 1; }; }
+# libavdevice with only the DirectShow input: the cameras and capture cards (core/src/audio/videoin_ffmpeg.cpp). Without it CMake builds the camera stub and
+# the program lists no camera at all. A prefix built before this has no libavdevice.a and is rebuilt.
+# Network: FFmpeg's own protocols (no TLS library), for the video generator's RTMP server input (core/src/tv/videogen_rtmp.cpp); a prefix
+# built without it (no rtmp protocol in libavformat.a) is rebuilt.
+if ! { [ -f "$P/lib/libavcodec.a" ] && [ -f "$P/lib/libavdevice.a" ] && $HOST-nm "$P/lib/libavformat.a" 2>/dev/null | grep -q ff_rtmp_protocol; }; then
+  step ffmpeg; rm -rf ffmpeg-build; unpack ffmpeg-8.0.tar.xz ffmpeg-8.0; mkdir -p ffmpeg-build; (cd ffmpeg-build && ../ffmpeg-8.0/configure --prefix=$P --enable-cross-compile --target-os=mingw32 --arch=x86_64 --cross-prefix=$HOST- \
+    --enable-static --disable-shared --disable-programs --disable-doc --disable-debug --disable-indevs --enable-indev=dshow --disable-outdevs --enable-network --pkg-config=pkg-config --extra-cflags="-I$P/include" --extra-ldflags="-L$P/lib" >/dev/null && make -j$JOBS >/dev/null && grep -qE '^#define CONFIG_GPL 0' config.h && grep -qE '^#define CONFIG_VERSION3 0' config.h && grep -qE '^#define CONFIG_NONFREE 0' config.h && grep -qE '^#define CONFIG_DSHOW_INDEV 1' config_components.h && grep -qE '^#define CONFIG_RTMP_PROTOCOL 1' config_components.h && make install >/dev/null) || { echo "FFmpeg for Windows failed or is not the LGPL build (GPL/version3/nonfree are not allowed) or has no DirectShow camera input or RTMP protocol"; exit 1; };
+fi
 
 # --- generic radios: SoapySDR (a DLL). Its RTL-SDR and Airspy modules are not built: the native drivers of the same name always win and hide them.
 
+# A prefix built from an older librtlsdr (no V4 Lite: #340) is rebuilt: the steps below skip whatever already exists
+RTL_BLOG_ID=aed0ea1
+if [ "$(cat "$P/.rtlsdr-blog-id" 2>/dev/null)" != "$RTL_BLOG_ID" ]; then rm -f "$P/lib/librtlsdr.a" "$P/bin/librtlsdr.dll"; rm -rf rtl-build rtl-sdr-blog-1.4.0; fi
 [ -f "$P/lib/librtlsdr.a" ] || { step librtlsdr; [ -f "$SRC/rtl-sdr-blog-1.4.0.tar.gz" ] || curl -fsSL -o "$SRC/rtl-sdr-blog-1.4.0.tar.gz" https://github.com/rtlsdrblog/rtl-sdr-blog/archive/aed0ea1.tar.gz   # 1.4.0 = commit aed0ea1: V4 Lite support, HF tracking filter bypass
   [ -d rtl-sdr-blog-1.4.0 ] || { mkdir rtl-sdr-blog-1.4.0 && tar xf "$SRC/rtl-sdr-blog-1.4.0.tar.gz" -C rtl-sdr-blog-1.4.0 --strip-components=1; }
   sed -i.bak 's/^set(VERSION_INFO_PATCH_VERSION git)/set(VERSION_INFO_PATCH_VERSION 0)/' rtl-sdr-blog-1.4.0/CMakeLists.txt   # (the tarball has no git history to take the version from)
@@ -117,6 +126,7 @@ PC
 # --- librtlsdr and libairspy as DLLs of their own (libusb inside): the native drivers of OnAir load rtlsdr.dll / airspy.dll by name from the program's folder
 [ -f "$P/bin/librtlsdr.dll" ] || { step "librtlsdr.dll"
   cmake rtl-build "-DCMAKE_SHARED_LINKER_FLAGS=-L$P/lib" >/dev/null && cmake --build rtl-build -j$JOBS --target rtlsdr >/dev/null && cp rtl-build/src/librtlsdr.dll "$P/bin/"; }
+echo "$RTL_BLOG_ID" > "$P/.rtlsdr-blog-id"
 [ -f "$P/bin/libairspy.dll" ] || { step "libairspy.dll"
   cmake --build airspy-build -j$JOBS --target airspy >/dev/null; cp "$(find "$WORK" -name libairspy.dll -path '*src*' | head -1)" "$P/bin/libairspy.dll" && touch "$P/airspy-close-order.stamp"; }
 

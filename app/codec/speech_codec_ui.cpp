@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The app side of user-installed speech codecs (see speech_codec_ui.h and docs/CODECS.md).
 #include "speech_codec_ui.h"
 #include "../app.h"
@@ -7,6 +10,7 @@
 #include "dect2/codec/speech_codec.h"
 #include "dect2/codec/codec_registry.h"
 #include "dect2/codec/codec_paths.h"
+#include "dect2/codec/optional_libs.h"
 #include "dect2/codec/codec_arch.h"
 #include "dect2/engine/updater.h"
 #include "dect2/dstar/dstar_ambe.h"
@@ -48,6 +52,12 @@ void syncExtra() {
     dect2::codec::setExtraCodecDir(plat::basePrefs().getS(kExtraKey, ""));
 }
 bool fileExists(const std::string& p) { std::error_code ec; return std::filesystem::is_regular_file(std::filesystem::path(p), ec); }
+std::vector<std::string> listFolderFiles(const std::string& dir) {
+    std::vector<std::string> v;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(std::filesystem::path(dir), ec), end; !ec && it != end && v.size() < 500; it.increment(ec)) v.push_back(it->path().filename().string());
+    return v;
+}
 void openFolder(const std::string& folder) {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(folder), ec);
@@ -82,6 +92,21 @@ void setExtraFolder(const std::string& dir) {
     lastAt.clear();
 }
 
+const char* discordInviteUrl() { return "https://discord.gg/ptxkzCuzR"; }
+
+const char* discordCodecLabel() { return tr("Join the Discord to get access to built codecs"); }
+
+bool discordCodecButton(bool compact) {
+    ImGui::PushID("codec_discord");
+    const bool clicked = compact ? ImGui::SmallButton(discordCodecLabel()) : ImGui::Button(discordCodecLabel());
+    ImGui::PopID();
+    if (ImGui::IsItemHovered())   // the second line: where the files are (owner, 4.0); the first line keeps its existing translations
+        ImGui::SetTooltip("%s\n%s", tr("Opens the OnAir Discord in your browser. OnAir itself never downloads or includes a codec."),
+                          tr("The Dropbox link with the ready-built codec files is posted in the Discord: download the files for your system, put them in the codecs folder and press Look again."));
+    if (clicked) dect2::openUrl(discordInviteUrl());
+    return clicked;
+}
+
 bool openCodecFolderButtons() {
     const auto dirs = codecSearchFolders();
     if (ImGui::Button("Open codecs folder")) openFolder(codecsFolder());
@@ -99,6 +124,13 @@ bool openCodecFolderButtons() {
         if (ImGui::Button("Open extra folder")) openFolder(d.path);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.path.c_str());
         break;
+    }
+    {   // the Discord button: after the folder buttons on the same line when it fits, else on the next line
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float w = ImGui::CalcTextSize(discordCodecLabel()).x + st.FramePadding.x * 2;
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;   // the line's right edge (the cursor is at its start)
+        if (ImGui::GetItemRectMax().x + st.ItemSpacing.x + w <= right) ImGui::SameLine();
+        discordCodecButton();
     }
     return true;
 }
@@ -178,7 +210,12 @@ void voiceCodecLine(const char* id, const char* name, const std::string& libPath
     const bool ok = plug || !libPath.empty();
     ImGui::AlignTextToFramePadding();
     if (ok) ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1), "Voice codec loaded: %s %s (%s)", name, plug ? "plug-in" : "libmbe", plug ? p.c_str() : libPath.c_str());
-    else ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1), "Voice codec missing: %s. Install the plug-in (see ?). Calls are still found and logged.", name);
+    else {   // wraps: the Simple views show it in a narrow pane
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1), "Voice codec missing: %s. Install the plug-in (see ?). Calls are still found and logged.", name);
+        ImGui::PopTextWrapPos();
+        discordCodecButton(true);
+    }
     codecNoticePrompt(id);
 }
 
@@ -278,6 +315,7 @@ static void codecSetupAssistant() {
     namespace vv = dect2::voice;
     vv::SetupProbe pr;
     pr.fileExists = fileExists;
+    pr.listDir = listFolderFiles;
     pr.archOfFile = [](const std::string& f) {
 #if defined(__APPLE__)
         return cd::machoArchOfFile(f);
@@ -337,6 +375,85 @@ static void codecSetupAssistant() {
         }
     }
     ImGui::Spacing();
+}
+
+// The setup wizard's codec screen: the status of every voice codec plug-in in one line each, Open codecs folder, Look again, the steps for this computer.
+// Nothing is downloaded or installed by OnAir; the user builds the plug-ins on their own computer (docs/CODECS.md).
+void wizardCodecPanel() {
+    namespace cd = dect2::codec;
+    namespace vv = dect2::voice;
+    vv::SetupProbe pr;
+    pr.fileExists = fileExists;
+    pr.listDir = listFolderFiles;
+    pr.archOfFile = [](const std::string& f) {
+#if defined(__APPLE__)
+        return cd::machoArchOfFile(f);
+#else
+        (void)f; return std::string();
+#endif
+    };
+    pr.loaded = [](const std::string& id, std::string* path) { return cd::pluginLoaded(id, path); };
+    pr.processArch = cd::processArch();
+    const auto items = vv::codecSetupStatus(codecSearchFolders(), pr);
+    ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1), "%s", vv::setupSummary(items).c_str());
+    for (const auto& it : items) {
+        const bool good = it.state == vv::SetupState::Loaded || it.state == vv::SetupState::Ready;
+        ImGui::Bullet();
+        ImGui::TextUnformatted(it.name.c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(good ? ImVec4(0.5f, 0.9f, 0.6f, 1) : ImVec4(0.95f, 0.75f, 0.3f, 1), "%s",
+                           it.state == vv::SetupState::Loaded ? tr("working") : it.state == vv::SetupState::Ready ? tr("installed") : it.state == vv::SetupState::WrongArch ? tr("wrong processor") : tr("missing"));
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", it.modes.c_str());
+    }
+    ImGui::Spacing();
+    if (openCodecFolderButtons()) {}
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Look again##wizcodecs"))) for (const auto& it : items) speechCodecRescan(it.id.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Copy build command##wizcodecs"))) ImGui::SetClipboardText(vv::setupBuildCommand(vv::currentSetupOs()).c_str());
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", tr("How to install (this computer):"));
+    const auto steps = vv::setupSteps(vv::currentSetupOs());
+    for (size_t i = 0; i < steps.size(); ++i) ImGui::TextDisabled("%zu. %s", i + 1, steps[i].c_str());
+}
+
+// Every optional library OnAir loads at run time with a found / missing state (docs/OPTIONAL-LIBRARIES.md). Shown in Settings > Advanced and in the
+// Voice codecs window. Only folders are looked at; nothing is loaded or downloaded here.
+void optionalLibrariesSection() {
+    namespace cd = dect2::codec;
+    static std::vector<cd::OptionalLib> libs;
+    static double stamp = -100;
+    const double now = ImGui::GetTime();
+    if (libs.empty() || now - stamp > 5.0) { libs = cd::optionalLibraries(); stamp = now; }   // a copy dropped into a folder shows up within seconds
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(tr("Libraries OnAir can use when you add them. Put the file in the codecs folder; it survives updates. Get each one only from its official page below: a DLL from an unofficial site can be malware."));
+    ImGui::PopTextWrapPos();
+    int shown = 0;
+    for (const char* g : {"Sound and codecs", "Radio drivers", "Plug-ins"}) {
+        int n = 0;
+        for (const auto& o : libs) if (o.group == g) n++;
+        if (!n) continue;
+        ImGui::TextDisabled("%s", tr(g));
+        for (const auto& o : libs) {
+            if (o.group != g) continue;
+            ImGui::PushID(shown++);
+            if (o.found) ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1), "%s", tr("found"));
+            else ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1), "%s", tr("missing"));
+            ImGui::SameLine();
+            ImGui::TextUnformatted(o.name.c_str());
+            std::string tip = o.usedFor + "\n" + tr("File names") + ": " + o.files + "\n" + tr("Put it in") + ": " + o.where + "\n" + tr("Official source") + ": " + o.source;
+            if (o.found) tip += "\n" + std::string(tr("Found")) + ": " + o.foundPath;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip.c_str());
+            ImGui::PopID();
+        }
+    }
+    ImGui::TextDisabled("%s", tr("Hover a line for the file names, the folder and the official source."));
+    openCodecFolderButtons();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Look again##optlibs"))) libs = cd::optionalLibraries();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Full list and where to get them"))) dect2::openUrl("https://github.com/adswill/OnAir/blob/main/docs/OPTIONAL-LIBRARIES.md");
 }
 
 void voiceCodecsWindow(App& a) {
@@ -433,6 +550,7 @@ void voiceCodecsWindow(App& a) {
         codecHelpButton(CodecHelp::AvsPlus);
     }
     ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Optional libraries and codecs###optlibs")) optionalLibrariesSection();
     ImGui::TextDisabled("Folders searched, in this order (the first one that has a plug-in wins)");
     for (const auto& d : codecSearchFolders()) ImGui::BulletText("%s  [%s]", d.path.c_str(), d.source.c_str());
     ImGui::TextDisabled("Also: set ONAIR_CODEC_DIR to a folder before starting OnAir, or type an extra folder below.");

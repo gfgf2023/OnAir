@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // C ABI of the Rust crate rust/onair_adsb (ADS-B / Mode S message layer). Written by hand; the Rust test rust/onair/tests/headers.rs checks it against ffi.rs.
 // Out parameters are written only when the function returns true. Strings
 // returned as `const uint8_t*` are static and NUL-terminated ("" when none).
@@ -134,6 +137,21 @@ typedef struct OnairAdsbMsg {
     int32_t sil;
     int32_t gva;
     int32_t nic_baro;
+    int32_t nacv;
+    int32_t cap_acas;
+    int32_t cap_1090in;
+    int32_t cap_uatin;
+    int32_t ra_active;
+    int32_t ident_on;
+    int32_t atc_svc;
+    int32_t length_code;
+    bool has_ra_bcast;
+    uint32_t ra_ara;
+    uint32_t ra_rac;
+    bool ra_term;
+    bool ra_mte;
+    int32_t ra_tti;
+    uint32_t ra_threat;
     OnairAdsbCommB commb;   // DF20 / 21 Comm-B.
 } OnairAdsbMsg;
 

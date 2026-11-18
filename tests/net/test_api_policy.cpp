@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The pure rules of the remote API (token, rate limit, sizes, routes and the refusal list, message lines, rigctl) and the parts built on them:
 // the HTTP server with token on loopback, rate limit and the new endpoints, the rigctl TCP server, the UDP output. Plus a guard: the sources of
 // the API must not mention the key store (transmit is allowed since 3.2: the operator decides).
@@ -330,7 +333,7 @@ static void testServer() {
         Host h2;
         RemoteApiServer srv2(h2);
         RemoteApiConfig c2 = c;
-        c2.ratePerSec = 2; c2.rateBurst = 5;
+        c2.ratePerSec = 0.1; c2.rateBurst = 5;   // a slow refill: on a loaded runner (a second per request) the 30 requests stay a flood
         CHECK(srv2.configure(c2), "second server");
         const int p2 = srv2.config().port;
         int n429 = 0, n200 = 0;

@@ -1,18 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV receiver: the glue between the radio side (atv_front), the picture side (atv_video), the sound and the outside world.
 //
 //   input -> DC removal -> [searching: spectrum -> vision carrier + sound carrier]
 //                       -> [running: vision channel -> picture decoder -> pictures]
 //                                    sound channel  -> 48 kHz mono -> sound device
 #include "dect2/atv/atv_sound2.h"
+#include "dect2/atv/atv_btsc.h"
 #include "dect2/atv/atv_rx.h"
 #include "atv_front.h"
 #include "atv_fm.h"
 #include "atv_video.h"
 #include "dect2/atv/atv_nbtv.h"
 #include "dect2/audio/audioout.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 
 namespace dect2 {
@@ -34,6 +41,8 @@ struct AtvReceiver::Impl {
     AtvFront front;
     AtvVideo video;
     AtvSound sound;
+    BtscRx btsc;                        // BTSC stereo and SAP on the 4.5 MHz sound carrier of system M
+    std::vector<float> btl, btr;
     A2Rx a2rx;                          // second sound: A2 (two FM carriers) and NICAM-728, found by themselves
     NicamRx nicrx;
     std::atomic<int> sndMode{0};        // 0 automatic, 1 FM sound only
@@ -157,7 +166,10 @@ struct AtvReceiver::Impl {
     void configure(double rate) {
         fs = rate;
         ready = false;
-        if (rate < 7.9e6) return;
+        if (rate < 7.9e6) {
+            DIAG(118542, "Analog TV was given an input rate of %.2f Msps, below the 7.9 Msps it needs, so the analog TV receiver stays off.", rate / 1e6);
+            return;
+        }
         dcA = (float)(1.0 / (0.0005 * rate));
         search.configure(rate);
         searchInv.configure(rate);
@@ -166,6 +178,7 @@ struct AtvReceiver::Impl {
         front.configure(rate);
         sound.configure(rate);
         a2rx.configure(rate);
+        btsc.configure(rate);
         nicrx.configure(rate);
         video.configure(front.videoRate(), front.colourCapable());
         videoRateNow = front.videoRate();
@@ -206,7 +219,10 @@ struct AtvReceiver::Impl {
         active = m;
         if (m >= 2) startNbtv();
         else if (m == 1) {
-            if (fs < 15.9e6) log("analog TV, FM video: a link is about 17 MHz wide, this input rate is too low (use 20 Msps)");
+            if (fs < 15.9e6) {
+                DIAG(556842, "Analog FM video needs about 17 MHz of bandwidth but the input rate is only %.2f Msps, so the picture will be cut off.", fs / 1e6);
+                log("analog TV, FM video: a link is about 17 MHz wide, this input rate is too low (use 20 Msps)");
+            }
             fm.configure(fs);
             video.configure(fm.videoRate(), fm.videoRate() >= 9.5e6);
             video.setNoiseScale(1.0);
@@ -245,7 +261,7 @@ struct AtvReceiver::Impl {
         video.setNoiseScale(front.noiseGain() * fs / 5e6);
         pending.clear();
         video.reset();
-        sound.reset(); a2rx.reset(); nicrx.reset(); soundSys.clear(); a2Next = a2Until = 0;
+        btsc.reset(); sound.reset(); a2rx.reset(); nicrx.reset(); soundSys.clear(); a2Next = a2Until = 0;
         mode = kSearch; haveCarrier = false; syncOn = false; rawMode = false;
         front.setSyncDetector(false);
         dc = cf32(0, 0);
@@ -316,7 +332,7 @@ struct AtvReceiver::Impl {
         refDb = std::max(refDb - 0.1, lvl);
         if (prom < 12 || lvl < refDb - 12) {
             afcHave = false;
-            if (++goneN >= 4) { goneN = 0; log("analog TV: the vision carrier is gone"); backToSearch(); pending.clear(); }
+            if (++goneN >= 4) { goneN = 0; DIAG_DEBUG(214876, "The analog TV vision carrier near %.3f MHz disappeared from the spectrum, so the receiver searches for carriers again.", front.carrierHz() / 1e6); log("analog TV: the vision carrier is gone"); backToSearch(); pending.clear(); }
             return;
         }
         goneN = 0;
@@ -434,6 +450,7 @@ struct AtvReceiver::Impl {
                 mode = kRun; lostAt = 0;
                 log(std::string("analog TV, FM video: locked, the sync tip is the ") + (fmSyncLow ? "lowest" : "highest") + " frequency");
             } else if (nIn - fmFlipAt > (uint64_t)(1.2 * fs)) {
+                DIAG_DEBUG(633221, "No analog FM video lines were found within 1.2 seconds, so the sync tip polarity is flipped and the lock is tried again.");
                 fmSyncLow = !fmSyncLow; fm.setSyncLow(fmSyncLow);
                 video.reset();
                 fmFlipAt = nIn;
@@ -441,7 +458,7 @@ struct AtvReceiver::Impl {
             }
         } else if (mode == kRun) {
             if (video.lineLocked()) lostAt = 0;
-            else { if (!lostAt) lostAt = nIn; if (nIn - lostAt > (uint64_t)(2.0 * fs)) { log("analog TV, FM video: signal lost"); mode = kTrial; fmFlipAt = nIn; } }
+            else { if (!lostAt) lostAt = nIn; if (nIn - lostAt > (uint64_t)(2.0 * fs)) { DIAG_DEBUG(420169, "The analog FM video lost its line lock for more than 2 seconds, so the receiver tries the other sync polarity."); log("analog TV, FM video: signal lost"); mode = kTrial; fmFlipAt = nIn; } }
         }
         if (nIn - lastTelAt >= (uint64_t)(fs * 0.25)) { lastTelAt = nIn; publish(); }
     }
@@ -510,7 +527,7 @@ struct AtvReceiver::Impl {
         if (nv) video.process(front.v(), front.i(), front.q(), nv);
         // the detector: synchronous once the carrier loop is locked (and the user did not ask for the envelope)
         const bool want = detMode.load() == 0 && video.wantSyncDetector();
-        if (want != syncOn) { syncOn = want; front.setSyncDetector(want); video.syncDetectorChanged(want); }
+        if (want != syncOn) { if (getenv("ATVDBG")) fprintf(stderr, "ATVDBG t=%.3f sync->%d lineLocked=%d fieldLocked=%d\n", nIn / fs, (int)want, (int)video.lineLocked(), (int)video.fieldLocked()); syncOn = want; front.setSyncDetector(want); video.syncDetectorChanged(want); }
         // sound: AM with the positive-modulation systems
         {
             const bool am = isAmSpacing(carrier.spacingMhz) || (video.lineLocked() && video.positive());
@@ -530,13 +547,14 @@ struct AtvReceiver::Impl {
                     startCarrier(carrier, true);
                 } else {
                     bad.push_back({carrier.visionHz, nIn + (uint64_t)(6 * fs)});
+                    DIAG_DEBUG(722867, "No analog TV lines were found on the carrier at %.3f MHz even with the weak-signal slicer, so this carrier is skipped for 6 seconds.", carrier.visionHz / 1e6);
                     log("analog TV: no picture signal on that carrier");
                     if (!nextCandidate()) backToSearch();
                 }
             }
         } else if (mode == kRun) {
             if (video.lineLocked()) lostAt = 0;
-            else { if (!lostAt) lostAt = nIn; if (nIn - lostAt > (uint64_t)(2.0 * fs)) { log("analog TV: signal lost"); backToSearch(); pending.clear(); } }
+            else { if (!lostAt) lostAt = nIn; if (nIn - lostAt > (uint64_t)(2.0 * fs)) { DIAG_DEBUG(130177, "The analog TV picture lost its line lock for more than 2 seconds at %.3f MHz, so the receiver searches for carriers again.", front.carrierHz() / 1e6); log("analog TV: signal lost"); backToSearch(); pending.clear(); } }
         }
     }
 
@@ -544,6 +562,17 @@ struct AtvReceiver::Impl {
     void secondSound(size_t m) {
         soundSys = "FM";
         const double sp = carrier.spacingMhz;
+        if (sp == 4.5 && sndMode.load() == 0 && !sound.am() && video.lineLocked()) {
+            btl.clear(); btr.clear();
+            const bool wantSap = dualChoice.load() != 0;
+            btsc.process(xd.data(), m, front.carrierHz() + sp * 1e6 + sound.trimHz(), wantSap, btl, btr);
+            const BtscStatus bs = btsc.status();
+            if (bs.pilot || (wantSap && bs.sap)) {
+                soundSys = wantSap && bs.sap ? "BTSC second audio program" : bs.sap ? "BTSC stereo + SAP" : "BTSC stereo";
+                audioBuf = btl; audioR = btr;
+            }
+            return;
+        }
         const bool sysI = sp > 5.9 && sp < 6.1;
         if (sndMode.load() != 0 || !video.lineLocked() || !(sp == 5.5 || sp == 6.5 || sysI)) return;
         const double vis = front.carrierHz();
@@ -634,7 +663,8 @@ struct AtvReceiver::Impl {
         t.lineCount = vi.lines_; t.fieldCount = vi.fields; t.frameCount = vi.frames; t.fieldNo = vi.fieldNo;
         t.syncDepthPct = vi.syncTip; t.whitePeak = vi.whitePeak; t.burstLevel = vi.burstLevel; t.syncCompressionPct = vi.syncCompressionPct; t.chromaPhaseErrDeg = vi.chromaErrDeg;
         t.blocksOk = vi.fieldsOk; t.blocksBad = vi.fieldsBad;
-        t.lineWave = vi.lineWave; t.vbiWave = vi.vbiWave;
+        t.vitsLines = vi.vitsLines; t.vitsLineNo = vi.vitsLineNo; t.vitsRate = vi.vitsRate;
+        t.lineWave = vi.lineWave; t.vbiWave = vi.vbiWave; t.ttxPackets = vi.vbi.ttxPackets; t.ttx = vi.ttx; t.wssText = vi.vbi.wssText; t.captions = vi.vbi.captions; t.ghostFound = vi.ghost.found; t.ghostDelayUs = vi.ghost.delayUs; t.ghostDb = vi.ghost.levelDb;
         t.soundSystem = soundSys;
         t.soundPresent = sound.present(); t.soundDevKhz = sound.devKhz(); t.soundLevelDb = sound.levelDb();
         if (haveCarrier) {

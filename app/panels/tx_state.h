@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Shared state and entry points of the transmit panel: one TxUi, the request builder, the start / stop calls and the block drawers.
 // Files: tx_ui.cpp (state, start / stop, the RX / TX switch), tx_payload_ui.cpp (the signal's own options), tx_panel.cpp (top bar, layout, shortcuts),
 // tx_step_signal.cpp (the signal list), tx_step_settings.cpp (Basic), tx_params.cpp (the table of advanced parameters, presets), tx_step_send.cpp + tx_preview.cpp (preview).
@@ -6,6 +9,8 @@
 #include "dect2/tx/tx.h"
 #include "dect2/tx/tx_iqfile.h"
 #include "dect2/tx/tx_udpsink.h"
+#include "dect2/tx/tx_control.h"
+#include "dect2/tx/tx_params.h"
 #include <memory>
 #include <atomic>
 #include <future>
@@ -13,19 +18,15 @@
 #include <string>
 #include <vector>
 
+namespace dect2 { class RigKeeper; }   // rig_control.h: the external PTT of a Hamlib rig
+
 namespace txui {
 
 using namespace dect2;
 
-// One advanced parameter (tx_params.cpp has the table): where it sits in the panel, what it is called, its range and default, and where its value goes
-enum class Sec { Modulation, Audio, Filters, Output, Timing };
-enum class PType { Float, Int, Bool, Choice };
-enum class Bind { Opt, ToneHz, Deviation, Preemph, Kind, Variant };   // Opt: TxRequest::opt[key]; the others are the request's own fields
-struct PDef {
-    const char* key = ""; Sec sec = Sec::Modulation; PType type = PType::Float; const char* label = ""; const char* tip = "";
-    double def = 0, lo = 0, hi = 1; const char* fmt = "%.2f"; const char* when = nullptr; Bind bind = Bind::Opt;
-    std::vector<const char*> choices; double base = 0;   // Choice: the value sent is base + the chosen index
-};
+// The parameters of a mode come from the core table (dect2/tx/tx_params.h); tx_params.cpp draws them: the Simple rows in "What to send",
+// the Advanced rows in their groups. A text row edits the TxUi buffer of its field (callsign, text, ...), a number row s.pv[key].
+using PDef = TxParamDef;
 
 struct TxUi {
     TxSession session;
@@ -49,9 +50,11 @@ struct TxUi {
     double freqSent = 0;
     int tickFrame = -1;
     char callsign[16] = {}, grid[8] = {}, dest[24] = {}, name[16] = {}, path[64] = {}, file[512] = {}, text[256] = {};
-    char rdsRt[128] = {}, audioDevice[64] = {};
+    std::string rdsRt;
+    std::string audioDevice;   // the microphone (listAudioInputs id: its name, which can be longer than 64 bytes); empty = default
     char provider[64] = {}, network[64] = {}, svc[4][48] = {}, svcFile[4][512] = {}, svcCam[4][96] = {}, videoDevice[96] = {};
-    int nsvc = 1, serviceId = 1, videoSrc = 0, svcSrc[4] = {};
+    int nsvc = 1, serviceId = 1, videoSrc = 0, svcSrc[4] = {};   // svcSrc: 0 test card, 1 video file, 2 camera, 3 video generator (svcGen)
+    int svcGen[4] = {1, 2, 3, 4};   // svcSrc 3: which Digital video generator (1..8) is this service (#492)
     int kind = 0, baudIdx = 0, shiftIdx = 0, variant = 0, wpm = 20, dbm = 37, function = 3;
     unsigned address = 0;
     double toneHz = 1000, lat = 0, lon = 0;
@@ -79,14 +82,40 @@ struct TxUi {
     bool devAutoStart = false;               // dev flag --txdry: start the test (no RF) at the first frame
     float meterPeak = 0, meterRms = 0;       // smoothed meters of what is shown
     // the advanced parameters of the chosen signal
-    std::vector<PDef> params;                // its table
+    std::vector<PDef> params;                // its table (a copy of txParams for the mode and context)
     std::string paramsKey, pvMode;           // what the table was built for; the signal the values belong to
     std::map<std::string, double> pv;        // the values by key
     char presetName[32] = {}, presetNew[32] = {};
     bool advOpen = false;                    // the Advanced block is open
     bool linkRx = false;                     // the transmit frequency follows the receiver's
+    // the transmit flow (tx_panel.cpp): Idle -> Armed -> On air -> Done. Arm is a separate, deliberate step; Transmit only works while armed.
+    bool armed = false;                      // armed by the user (never saved); disarmed on Stop, on a mode or radio change, and after Done
+    double armedAt = 0;                      // ImGui time of the arming (an armed transmitter disarms itself after kArmTimeoutSec)
+    bool doneShown = false;                  // the last transmission ended (by itself or Stop): "Done" until the next arm
+    std::string doneWhy;                     // how it ended
+    double doneAt = 0;
+    bool wasRunning = false;                 // a session ran last frame (to see one end by itself)
+    // external PTT (Advanced > Radio): a Hamlib rig of the radio list (an amplifier, transverter or sequencer behind the SDR) keyed by its own
+    // PTT method (CAT, RTS, DTR or VOX, from the rig's profile) while a radio transmits; a failure is a warning, never a block. Not saved.
+    bool pttRigOn = false;
+    int pttRigIdx = 0;
+    std::shared_ptr<dect2::RigKeeper> pttKeeper;
+    struct Sent { std::string utc, mode, what, ended; double mhz = 0, seconds = 0; bool rf = false; };
+    std::vector<Sent> history;               // what was sent this run of the program, newest first (the TX log)
+    Sent current;                            // the running one
     bool pttHold = false;                    // voice: transmit only while the PTT button is held
     bool pttDown = false;
+    // full control (docs/TX-CONTROL-3.8.md): the radio's analogue filter (0 = automatic), the typed gain stages of a SoapySDR radio, the schedule
+    double filterKhz = 0;
+    char stageGains[128] = {};
+    char schedAt[12] = {};                   // "HH:MM[:SS]" UTC of the first start; empty: when Start is pressed
+    double schedEverySec = 0;                // then again every so many seconds (0: once)
+    int schedCount = 0;                      // in all (0: until cancelled)
+    bool schedArmed = false, schedRunning = false;   // Start was pressed with a schedule; the running session was started by it
+    double schedNext = -1, schedLast = 0;    // UTC seconds
+    int schedDone = 0;
+    double targetDbm = 10;                   // "Set the level for" (from the radio's power table)
+    bool radioLoaded = false;                // filter / stages / schedule read from the settings
     // the destination of the signal: 0 a radio, 1 an IQ file, 2 GNU Radio UDP (no radio is opened or claimed, no radio-only notice applies)
     int destKind = 0;
     char ifPath[512] = {};                   // the folder (or a file name without extension) the IQ file goes to
@@ -104,8 +133,14 @@ struct TxUi {
     bool udpCustomRate = false;              // manual numeric input of sample rate
     std::shared_ptr<UdpTxCounters> udpCounters;     // packets and samples sent, kept by the sink
     // KAAL: the identity beacon and the power written in it (callsign, grid, latitude and longitude, bio text are the shared fields above)
+    // Mesh (LoRa) transmit: the sender's own node identity (mesh_tx.h), saved as tx.mesh*
+    char meshLong[48] = "OnAir", meshShort[8] = "ONAR", meshNode[16] = {}, meshChan[40] = "LongFast", meshPsk[96] = "default", meshPreset[24] = "LongFast";
+    int meshHop = 3;
+    bool meshCallInMsg = false, meshNodeInfo = true;
     bool kaalBeacon = true;
     double kaalPower = 10;
+    bool dmrSlotSync = true, dmrAligned = false, dmrSyncLoaded = false;   // DMR: wait for the repeater's inbound slot (dmr_slot_sync.h); aligned channel timing
+    double dmrLatencyMs = 0;                 // DMR slot sync: the radio's delay to the air (Advanced)
     int kaalBitrate = 16;                    // voice codec 12 / 16 / 24 / 32 kbit/s
     int kaalFrame = 3;                       // 3 = the v3 voice stream, 4 = frame version 4 (four slots, 20 kHz, docs/KAAL-NEXT.md)
     int kaalV4Profile = 2;                   // v4 voice profile: 1 = 8.0, 2 = 6.0, 3 = 4.8, 4 = 3.2 kbit/s
@@ -144,6 +179,7 @@ int familyOf(const TxModeSpec& m);                     // engine family of a tra
 const TxModeSpec* rxMode(const App& a);                // the transmit mode of the receiver's current selection
 void ensureTxMode(App& a, TxUi& s);                    // first use: follow the receiver's mode once
 void chooseMode(App& a, TxUi& s, const TxModeSpec& m); // a mode chosen for transmitting
+SynthConfig txSynthFromRx(const TxModeSpec& m, const SynthConfig& rx);   // what of the receiver's test-signal settings a transmitter takes
 std::vector<int> txRadios(const App& a);               // indices of the radios that can transmit
 int rxHolder(const DeviceInfo& d);                     // the receiver holding a radio (0 none)
 void release(TxUi& s);                                 // gives the claimed radio back
@@ -164,10 +200,20 @@ bool isFtxId(const std::string& id);
 bool isKbdId(const std::string& id);
 bool isTvId(const std::string& id);
 void payloadPanel(TxUi& s, const TxModeSpec& mode, bool running);   // the signal's own options (tx_payload_ui.cpp)
+// one row of the table that the mode draws with its own widget (tx_payload_ui.cpp): the audio input, the multiplex, a node identity, the KA* panels ...
+void customRow(TxUi& s, const TxModeSpec& mode, const PDef& d, bool running);
+TxParamCtx paramCtx(const TxUi& s, const TxModeSpec& m);   // what the table depends on besides the mode (tx_params.cpp)
+void simpleRows(TxUi& s, const TxModeSpec& mode, bool running);   // the Simple rows of the table: what to send (tx_params.cpp)
 const DeviceInfo* bindRadio(App& a, TxUi& s, int& conflict);        // the chosen transmit radio (nullptr: none) and the receiver that holds it
 bool canStart(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxModeSpec* mode);   // everything needed to press Start is there
 bool startTx(App& a, TxUi& s, const DeviceInfo* radio, const TxModeSpec* mode, bool carrier);
 void stopTx(App& a, TxUi& s, const char* why);         // stops, gives the radio back, logs why
+constexpr double kArmTimeoutSec = 120;                 // an armed transmitter that is not used disarms itself
+void txArm(TxUi& s, bool on);                          // arm / disarm (tx_panel.cpp); arming sends nothing
+bool txNeedsArm(const TxUi& s);                        // a radio is the destination: Transmit needs Arm first (a test or a file does not)
+void txSessionEnded(TxUi& s, const char* why);         // the TX log entry of the session that just ended, and the Done state
+void txExternalPtt(App& a, TxUi& s, bool on);         // keys / releases the external PTT rig when it is chosen (tx_ui.cpp)
+void externalPttPanel(App& a, TxUi& s, bool running);  // Advanced > Radio: the external PTT choice (tx_step_settings.cpp)
 void destinationPanel(TxUi& s, const TxModeSpec& mode, bool running);   // Radio or IQ file, the folder, the format, the rate and what has been written (tx_ui.cpp)
 void kavbPanel(TxUi& s, bool running);                // KAVB: callsign, file or test stream, profile A to D, FEC profile (kavb_ui.cpp)
 void kawsPanel(TxUi& s, bool running);                // KAWS: callsign, recipient, message, kind, profile, passes, slot timing (app/kaws/kaws_ui.cpp)
@@ -183,6 +229,21 @@ enum class Note { Info, Warn, Error };
 void banner(Note kind, const char* text);              // an inline message box (no popup)
 void stepSignal(App& a, TxUi& s, bool running, float listH);                                                         // tx_step_signal.cpp: the signal list
 void stepSettings(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxModeSpec* mode, bool running);   // tx_step_settings.cpp: Basic + Advanced
+// full control (tx_control_ui.cpp, docs/TX-CONTROL-3.8.md)
+TxCalibration calibrationFor(const std::string& radioKey);                          // this radio's TX calibration (empty when none was saved)
+void saveCalibration(const std::string& radioKey, const TxCalibration& c);
+void controlApply(const TxUi& s, TxRequest& r);                                       // filter, gain stages, calibration of the chosen radio into a request
+void loadControlPrefs(TxUi& s);                                                       // filter, stages, schedule from the settings (once)
+void resetControl(TxUi& s);                                                           // the radio and timing choices back to automatic (not the calibration)
+void radioControlPanel(TxUi& s, const DeviceInfo* radio, bool running);              // Advanced > Radio: filter, gain stages
+void schedulePanel(TxUi& s, bool running);                                            // Advanced > Timing: start at, repeat every, times
+void calibrationPanel(App& a, TxUi& s, const DeviceInfo* radio, bool running);      // Advanced > Calibration of this radio
+void powerReadout(TxUi& s, const DeviceInfo* radio);                                  // the predicted output power and "Set the level for"
+void planReadouts(TxUi& s, const DeviceInfo* radio);                                  // d40_tx_ui.cpp: link budget, power ramp steps, SWR advice (notes only, never blocks)
+bool scheduleConfigured(const TxUi& s);
+void scheduleArm(TxUi& s);                                                            // Start was pressed with a schedule: the first start is planned
+void scheduleStatus(TxUi& s);                                                         // the "Scheduled: next start ..." line with Cancel
+void scheduleTick(App& a, TxUi& s);                                                   // every frame: starts a planned transmission, plans the next
 TxIqStreamConfig txIqStreamFromPrefs();   // tx_step_settings.cpp: the "Send the IQ over TCP" setting (tx_iqstream.h)
 void stepSend(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxModeSpec* mode, bool running);       // tx_step_send.cpp + tx_preview.cpp: the preview
 void drawStatusHeader(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxModeSpec* mode);              // tx_panel.cpp: state word and the big button

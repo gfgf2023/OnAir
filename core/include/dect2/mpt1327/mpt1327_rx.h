@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // MPT 1327 control channel decoder: FM audio of the control channel in, codewords and messages out.
 // 1200 bit/s FFSK is demodulated as minimum shift keying around 1500 Hz (tones 1200 and 1800 Hz, a phase step of a quarter turn per bit);
 // bit timing is found by running a sync search on every sample phase. The bit polarity (which tone is which bit) is taken from the
@@ -26,6 +29,7 @@ struct Event {
 
 struct Stats {
     uint64_t good = 0;       // codewords with good check bits (control channel system codewords and address / data codewords after a SYNC)
+    uint64_t corrected = 0;  // single-bit errors repaired (counted in good as well)
     uint64_t bad = 0;        // codewords after a SYNC whose check bits fail
     uint64_t ccsc = 0;       // control channel system codewords seen
     uint64_t messages = 0;   // address codewords decoded

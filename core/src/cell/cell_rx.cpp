@@ -1,11 +1,18 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Cell towers receiver (cell_rx.h): blocks of input, carriers found in the spectrum, cells searched and their broadcast decoded.
 #include "dect2/common/thread_name.h"
+#include "dect2/wirecap/wire.h"
 #include "dect2/cell/cell_rx.h"
 #include "dect2/results/results_io.h"
 #include "dect2/cell/cell_asn.h"
 #include "dect2/cell/cell_dsp.h"
 #include "dect2/cell/cell_lte.h"
 #include "dect2/cell/cell_tel.h"
+#include "dect2/cell/cell_pws.h"
+#include <cstring>
+#include <map>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -128,6 +135,7 @@ const char* lteOperatorName(int mcc, int mnc) {
         {248, 1, "Telia"}, {248, 2, "Elisa"}, {248, 3, "Tele2"},
         {260, 1, "Plus"}, {260, 2, "T-Mobile"}, {260, 3, "Orange"}, {260, 6, "Play"},
         {244, 5, "Elisa"}, {244, 12, "DNA"}, {244, 91, "Telia"},
+        {244, 45, "Erillisverkot"}, {244, 46, "Erillisverkot"},
         {240, 1, "Telia"}, {240, 2, "Tre"}, {240, 7, "Tele2"},
         {242, 1, "Telenor"}, {242, 2, "Telia"},
         {238, 1, "TDC"}, {238, 2, "Telenor"},
@@ -201,6 +209,7 @@ struct CellReceiver::Impl {
     uint64_t jobGen = 0;
     // results (under mu)
     CellTelemetry tel, pub;
+    std::map<uint32_t, cell::PwsAssembler> pws;   // per PCI (under mu)
 
     Impl() { th = dect2::namedThread("onair-cell", [this] { run(); }); }
     ~Impl() {
@@ -329,7 +338,7 @@ struct CellReceiver::Impl {
         }
         std::lock_guard<std::mutex> lk(mu);
         if (gen.load() != g) return;
-        if (clearReq.exchange(false)) { tel.cells.clear(); tel.events.clear(); tel.blocksOk = tel.blocksBad = 0; }
+        if (clearReq.exchange(false)) { tel.cells.clear(); tel.events.clear(); tel.warnings.clear(); pws.clear(); tel.blocksOk = tel.blocksBad = 0; }
         tel.blocks++;
         tel.carriers = car;
         for (auto& cc : tel.carriers) cc.freqHz += center;
@@ -369,7 +378,7 @@ struct CellReceiver::Impl {
             if (ear >= 0) { const LteBandChoice bc = lteBandFor(nominal, 0); t->band = bc.band; t->bandConfirmed = false; t->bandsAlso = bc.also; }
         }
         t->tdd = r.found.tdd; t->extCp = r.found.extCp;
-        if (r.mib.ok) { t->hasMib = true; t->nRb = r.mib.nRb; t->ports = r.mib.ports; t->phichDur = r.mib.phichDur; t->phichRes = r.mib.phichRes; t->sfn = r.mib.sfn; }
+        if (r.mib.ok) { t->hasMib = true; t->nRb = r.mib.nRb; t->ports = r.mib.ports; t->phichDur = r.mib.phichDur; t->phichRes = r.mib.phichRes; t->sfn = r.mib.sfn; t->mibTail = r.mib.mibTail; }
         t->rsrpDb = r.meas.rsrpDb; t->rsrqDb = r.meas.rsrqDb; t->sinrDb = r.meas.sinrDb; t->pssDb = r.found.pssDb;
         t->cfoHz = actual - (center > 0 ? nominal : cd.off);
         t->clockPpm = r.found.clockPpm;
@@ -381,11 +390,13 @@ struct CellReceiver::Impl {
                 else snprintf(b, sizeof b, "PCI %d at %+.1f kHz, synchronisation signals only", t->pci, nominal / 1e3);
             } else if (center > 0) snprintf(b, sizeof b, "PCI %d at %.1f MHz (EARFCN %d), %.0f MHz, %d port%s", t->pci, nominal / 1e6, ear, t->nRb * 0.2, t->ports, t->ports == 1 ? "" : "s");
             else snprintf(b, sizeof b, "PCI %d at %+.1f kHz, %.0f MHz, %d port%s", t->pci, nominal / 1e3, t->nRb * 0.2, t->ports, t->ports == 1 ? "" : "s");
+            if (r.mib.ok && cell::lteMibSib1Br(t->mibTail) > 0) { const size_t l = strlen(b); snprintf(b + l, sizeof b - l, ", LTE-M (SIB1-BR %d)", cell::lteMibSib1Br(t->mibTail)); }
             event(b, sec);
         }
         tel.blocksBad += (uint64_t)r.tbFail;
         for (const auto& m : r.si) {
             cell::LteBcch bc;
+            if (wire::on(wire::Lte)) { const wire::Bytes b = wire::packBitsMsbFirst(m.bits.data(), m.bits.size()); wire::Hub::get().publish(wire::Lte, wire::makeGsmtap(wire::gsmtap::kTypeLteRrc, wire::gsmtap::kLteBcchDlSch, b.data(), b.size(), (uint16_t)std::max(ear, 0))); }
             if (!cell::lteParseBcch(m.bits, bc)) continue;
             tel.blocksOk++;
             t->siMsgs++;
@@ -421,6 +432,28 @@ struct CellReceiver::Impl {
                 continue;
             }
             for (int n : bc.sibsSeen) seenSib(n);
+            if (bc.has9) t->hnbName = bc.hnbName;
+            if (bc.has16 && bc.sib16.hasTime) {
+                t->hasTime = true;
+                t->utcSec = (int64_t)(bc.sib16.timeUtc / 100) - 2208988800LL;   // 10 ms units since 1900-01-01
+                t->dst = bc.sib16.dst; t->leapSeconds = bc.sib16.leapSeconds; t->localOffsetQh = bc.sib16.localOffsetQh;
+            }
+            for (const auto& w : bc.warn) {
+                cell::PwsMessage pm;
+                if (!pws[(uint32_t)t->pci].add(w, pm)) continue;
+                const int64_t wall = wallNow();
+                bool merged = false;
+                for (auto& old : tel.warnings) if (old.messageId == pm.messageId && old.serial == pm.serial && old.sib == pm.sib) { old.cells++; merged = true; break; }
+                if (merged) continue;
+                CellWarning cw;
+                cw.wallTime = wall; cw.sec = sec; cw.pci = t->pci; cw.sib = pm.sib; cw.messageId = pm.messageId; cw.serial = pm.serial; cw.etws = pm.etws;
+                cw.plmn = t->plmns.empty() ? "" : t->plmns[0];
+                cw.category = pm.category; cw.text = pm.text; cw.lang = pm.lang;
+                tel.warnings.insert(tel.warnings.begin(), cw);
+                if (tel.warnings.size() > kCellWarnMax) tel.warnings.resize(kCellWarnMax);
+                snprintf(b, sizeof b, "WARNING SIB%d %s (id %u): %.150s", pm.sib, pm.category.empty() ? "unlisted id" : pm.category.c_str(), pm.messageId, pm.text.c_str());
+                event(b, sec);
+            }
             if (bc.has2) {
                 const cell::LteSib2& s = bc.sib2;
                 t->hasSib2 = true;
@@ -472,7 +505,7 @@ void CellReceiver::setCenterHz(double hz) {
 }
 bool CellReceiver::ready() const { std::lock_guard<std::mutex> lk(p_->mu); return p_->rateSet >= cellTuning().minSampleRate - 1; }
 void CellReceiver::reset() { p_->gen++; }
-void CellReceiver::clearCells() { p_->clearReq = true; std::lock_guard<std::mutex> lk(p_->mu); p_->tel.cells.clear(); p_->tel.events.clear(); p_->tel.blocksOk = p_->tel.blocksBad = 0; p_->clearReq = false; p_->publish(); }
+void CellReceiver::clearCells() { p_->clearReq = true; std::lock_guard<std::mutex> lk(p_->mu); p_->tel.cells.clear(); p_->tel.events.clear(); p_->tel.warnings.clear(); p_->pws.clear(); p_->tel.blocksOk = p_->tel.blocksBad = 0; p_->clearReq = false; p_->publish(); }
 void CellReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->log = std::move(cb); }
 
 bool CellReceiver::busy() const { std::lock_guard<std::mutex> lk(p_->mu); return !p_->idle.load() || p_->jobReady; }

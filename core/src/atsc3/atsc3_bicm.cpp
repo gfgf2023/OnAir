@@ -1,7 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
+#include "dect2/common/stage_prof.h"
 #include "dect2/atsc3/atsc3_bicm.h"
 #include "atsc3_data_tables.h"
 #include "atsc3_ldpc.h"
 #include "dect2/dsp/ldpc.h"
+#include "dect2/dsp/gpu_ldpc.h"
+#include "dect2/dsp/gpu_policy.h"
+#include <cstdlib>
 #include "dect2/atsc3/atsc3_l1.h"
 #include "dect2/dsp/simd.h"
 #include "dect2/t2/t2fec.h"
@@ -181,15 +189,27 @@ std::vector<int> blockInterleaverMap(int n, int eta, int type) {
 
 Bicm::Bicm(const BicmConfig& c) : cfg_(c) {
     const int n = c.nInner, eta = c.bitsPerCell;
-    if ((n != 16200 && n != 64800) || c.rate15 < 2 || c.rate15 > 13 || eta < 2 || eta > 12 || eta % 2) return;
-    if (n == 16200 && eta > 8) return;
+    if ((n != 16200 && n != 64800) || c.rate15 < 2 || c.rate15 > 13 || eta < 2 || eta > 12 || eta % 2) {
+        DIAG_DEBUG_EVERY(437104, 10.0, "An ATSC 3.0 FEC block with %d inner bits, code rate %d/15 and %d bits per cell is not a valid combination, so its PLP cannot be decoded.", n, c.rate15, eta);
+        return;
+    }
+    if (n == 16200 && eta > 8) {
+        DIAG_DEBUG_EVERY(464614, 10.0, "An ATSC 3.0 16200-bit FEC block cannot use %d bits per cell (8 at most), so its PLP cannot be decoded.", eta);
+        return;
+    }
     const Ldpc& ldpc = ldpcCode(n, c.rate15);
-    if (!ldpc.ok()) return;
+    if (!ldpc.ok()) {
+        DIAG_DEBUG_EVERY(944753, 10.0, "The ATSC 3.0 LDPC code for %d bits at rate %d/15 could not be built, so its PLP cannot be decoded.", n, c.rate15);
+        return;
+    }
     kLdpc_ = ldpc.k();
     const int mouter = c.outer == 0 ? (n == 64800 ? 192 : 168) : c.outer == 1 ? 32 : 0;
     kPayload_ = kLdpc_ - mouter;
     points_ = buildPoints(eta, c.rate15);
-    if (points_.empty()) return;
+    if (points_.empty()) {
+        DIAG_DEBUG_EVERY(709268, 10.0, "No ATSC 3.0 constellation exists for %d bits per cell at rate %d/15, so its PLP cannot be decoded.", eta, c.rate15);
+        return;
+    }
     if (eta >= 2 && eta <= 8) {   // one quadrant and its reflections?
         const int B = 1 << (eta - 2);
         bool q = true;
@@ -201,7 +221,10 @@ Bicm::Bicm(const BicmConfig& c) : cfg_(c) {
     }
     int type = blockInterleaverType(n, eta, c.rate15);
     const unsigned short* pi = groupPermutation(n, eta, c.rate15);
-    if (type < 0 || !pi) return;
+    if (type < 0 || !pi) {
+        DIAG_DEBUG_EVERY(206413, 10.0, "No ATSC 3.0 bit interleaver is defined for %d bits, %d bits per cell and rate %d/15, so its PLP cannot be decoded.", n, eta, c.rate15);
+        return;
+    }
     auto m1 = parityMap(ldpc);
     auto m3 = blockInterleaverMap(n, eta, type);
     perm_.resize(n);
@@ -235,7 +258,8 @@ std::vector<cf32> Bicm::encode(const std::vector<uint8_t>& payload) const {
     return out;
 }
 
-void Bicm::llrs(const cf32* cells, float noiseVar, std::vector<float>& llr) const {
+void Bicm::llrs(const cf32* cells, float noiseVar, std::vector<float>& llr, const float* w) const {
+    DECT2_STAGE("a3.demap");
     const int eta = cfg_.bitsPerCell, nc = this->cells(), M = 1 << eta;
     const float nv = std::max(noiseVar, 1e-5f);
     llr.assign((size_t)cfg_.nInner, 0.f);
@@ -279,21 +303,30 @@ void Bicm::llrs(const cf32* cells, float noiseVar, std::vector<float>& llr) cons
             }
         }
     }
+    // the channel state of each cell: a cell in a fade carries less, one on a strong carrier more (the soft bits of noise noiseVar / w)
+    if (w) for (int s = 0; s < nc; s++) { const float g = w[s]; if (g == 1.f) continue; for (int k = 0; k < eta; k++) llr[(size_t)perm_[(size_t)(s * eta + k)]] *= g; }
     // a few confidently wrong values (a cell the equaliser got wrong, noise the estimate left out) are as strong as many right ones for the min-sum
     // decoder and keep it from converging although the rest is clean: no value counts for more than this
     for (auto& v : llr) v = std::max(-kLlrLimit, std::min(kLlrLimit, v));
 }
 
 bool Bicm::finish(const std::vector<uint8_t>& hard, std::vector<uint8_t>& payload) const {
+    DECT2_STAGE("a3.bch");
     std::vector<uint8_t> bits(hard.begin(), hard.begin() + kLdpc_);
     if (cfg_.outer == 0) {
         const BchCode bch(cfg_.nInner == 16200, 12);
-        if (bch.decode(bits) < 0) return false;
+        if (bch.decode(bits) < 0) {
+            DIAG_DEBUG_EVERY(104677, 5.0, "An ATSC 3.0 FEC block passed LDPC but failed its BCH check, so the block is lost.");
+            return false;
+        }
         bits.resize(kPayload_);
     } else if (cfg_.outer == 1) {
         uint32_t want = l1Crc32(bits.data(), kPayload_), got = 0;
         for (int i = kPayload_; i < kLdpc_; i++) got = (got << 1) | bits[i];
-        if (want != got) return false;
+        if (want != got) {
+            DIAG_DEBUG_EVERY(997927, 5.0, "An ATSC 3.0 FEC block passed LDPC but its CRC-32 does not match, so the block is lost.");
+            return false;
+        }
         bits.resize(kPayload_);
     }
     payload.swap(bits);
@@ -305,7 +338,10 @@ bool Bicm::decode(const cf32* cells, float noiseVar, std::vector<uint8_t>& paylo
     std::vector<float> llr;
     llrs(cells, noiseVar, llr);
     std::vector<uint8_t> hard;
-    if (!decodeLlr(llr, hard, iters)) return false;
+    if (!decodeLlr(llr, hard, iters)) {
+        DIAG_DEBUG_EVERY(929266, 5.0, "An ATSC 3.0 FEC block did not converge in LDPC decoding (rate %d/15), so the block is lost.", cfg_.rate15);
+        return false;
+    }
     return finish(hard, payload);
 }
 
@@ -314,6 +350,7 @@ bool Bicm::decode(const cf32* cells, float noiseVar, std::vector<uint8_t>& paylo
 // layered 8-bit offset min-sum and the plain float fallback this gains 0.2 to 0.4 dB (16200 rate 8/15 at 1.4 dB on an ideal channel: 1 failed word
 // of 30 instead of 29) and runs far faster than the general float decoder.
 bool Bicm::decodeLlr(const std::vector<float>& llr, std::vector<uint8_t>& hard, int* iters) const {
+    DECT2_STAGE("a3.ldpc");
     if (const dect2::LdpcCode* qc = qcCode(cfg_.nInner, cfg_.rate15)) {
         const float a = qcAlpha(cfg_.nInner, cfg_.rate15);
         int it = 0;
@@ -324,17 +361,45 @@ bool Bicm::decodeLlr(const std::vector<float>& llr, std::vector<uint8_t>& hard, 
     return ldpcCode(cfg_.nInner, cfg_.rate15).decode(llr, 60, hard, iters, typeAAlpha(cfg_.nInner, cfg_.rate15), true);
 }
 
-void Bicm::decodeBatch(const std::vector<const cf32*>& cells, float noiseVar, std::vector<std::vector<uint8_t>>& payload, std::vector<char>& ok) const {
+void Bicm::decodeBatch(const std::vector<const cf32*>& cells, float noiseVar, std::vector<std::vector<uint8_t>>& payload, std::vector<char>& ok,
+                       const std::vector<const float*>* weights) const {
     const int nb = (int)cells.size();
+    auto wOf = [&](int b) -> const float* { return weights && (size_t)b < weights->size() ? (*weights)[(size_t)b] : nullptr; };
     payload.assign((size_t)nb, std::vector<uint8_t>());
     ok.assign((size_t)nb, 0);
     if (!ok_ || nb == 0 || nb > Ldpc::kBatch) return;
-    if (qcCode(cfg_.nInner, cfg_.rate15)) {
-        // Type B: word by word on the quasi-cyclic decoder (decodeLlr)
+    if (const dect2::LdpcCode* qc = qcCode(cfg_.nInner, cfg_.rate15)) {
+        // Type B: on the GPU in one batch when it is on and worth it (gpu_policy.h; the words it fails on go to the CPU decoder below), else word by word
+        // on the quasi-cyclic decoder (decodeLlr)
         std::vector<float> llr;
         std::vector<uint8_t> hard;
+        std::vector<uint8_t> gHard, gOk;
+        const int mode = gpupol::liveMode(gpupol::Atsc3);
+        static const bool noGpu = getenv("DECT2_NOGPU") != nullptr;
+        // Auto: a batch of 12 or more words (a GPU round trip is a fixed cost; docs/GPU-AUDIT-3.7.md has the measured crossover)
+        const bool wantGpu = !noGpu && mode != 0 && (mode == 1 || nb >= 12) && GpuLdpc::instance().available();
+        if (wantGpu) {
+            std::vector<float> all((size_t)nb * (size_t)cfg_.nInner);
+            for (int b = 0; b < nb; b++) {
+                llrs(cells[(size_t)b], noiseVar, llr, wOf(b));
+                if (llr.size() != (size_t)cfg_.nInner) { all.clear(); break; }
+                std::copy(llr.begin(), llr.end(), all.begin() + (size_t)b * (size_t)cfg_.nInner);
+            }
+            std::vector<int> it((size_t)nb);
+            gHard.resize((size_t)nb * (size_t)cfg_.nInner); gOk.resize((size_t)nb);
+            if (!all.empty() && GpuLdpc::instance().decode(*qc, all.data(), nb, 50, gHard.data(), gOk.data(), it.data(), qcAlpha(cfg_.nInner, cfg_.rate15), true)) gpupol::reportGpu(gpupol::Atsc3, true);
+            else {
+                gOk.clear();
+                gpupol::reportGpu(gpupol::Atsc3, false);
+                DIAG_DEBUG_EVERY(998925, 10.0, "The GPU LDPC decoder refused a batch of %d ATSC 3.0 FEC blocks, so the CPU decodes them instead.", nb);
+            }
+        } else gpupol::reportGpu(gpupol::Atsc3, false);
         for (int b = 0; b < nb; b++) {
-            llrs(cells[(size_t)b], noiseVar, llr);
+            if (!gOk.empty() && gOk[(size_t)b]) {
+                hard.assign(gHard.begin() + (size_t)b * (size_t)cfg_.nInner, gHard.begin() + (size_t)(b + 1) * (size_t)cfg_.nInner);
+                if (finish(hard, payload[(size_t)b])) { ok[(size_t)b] = 1; continue; }
+            }
+            llrs(cells[(size_t)b], noiseVar, llr, wOf(b));   // the CPU decoder: no GPU, or the GPU did not converge on this word (it also has the 8-bit first pass)
             ok[(size_t)b] = decodeLlr(llr, hard) && finish(hard, payload[(size_t)b]);
         }
         return;
@@ -343,7 +408,7 @@ void Bicm::decodeBatch(const std::vector<const cf32*>& cells, float noiseVar, st
     std::vector<const int8_t*> ptr((size_t)nb);
     std::vector<float> llr;
     for (int b = 0; b < nb; b++) {
-        llrs(cells[(size_t)b], noiseVar, llr);
+        llrs(cells[(size_t)b], noiseVar, llr, wOf(b));
         q[(size_t)b].resize(llr.size());
         for (size_t i = 0; i < llr.size(); i++) q[(size_t)b][i] = (int8_t)std::lround(llr[i]);
         ptr[(size_t)b] = q[(size_t)b].data();
@@ -353,7 +418,7 @@ void Bicm::decodeBatch(const std::vector<const cf32*>& cells, float noiseVar, st
     const Ldpc& code = ldpcCode(cfg_.nInner, cfg_.rate15);
     // the values are the limited LLRs rounded to integers (+-20): with the 8-bit range filled to +-31 the decoder failed on 1.5% of the blocks, which
     // the float decoder then had to take over
-    code.decodeBatch(ptr, 20, hard, good);
+    { DECT2_STAGE("a3.ldpc"); code.decodeBatch(ptr, 20, hard, good); }
     // A block the 8-bit decoder gave up on may still decode with the float one (60 iterations). When most blocks of the batch fail it is a damaged
     // frame (a gap in the samples): the float decoder would spend about 150 ms on each and keep the whole receiver waiting for many seconds.
     int failed = 0;

@@ -1,15 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Hamlib CAT control for classic transceivers and receivers (an IC-R8600 and the like): frequency and mode follow in both directions
 // while the receiver runs; IQ or speaker audio comes through a sound card when configured.
 // Receiving never keys the transmitter: only HamlibTx (the transmit subsystem, an operator action) calls PTT.
 #ifdef DECT2_HAVE_HAMLIB
 
+#include "dect2/audio/audioin.h"
+#include "dect2/common/diag.h"
 #include "dect2/common/thread_name.h"
 #include "dect2/ham/ham.h"
 #include "dect2/source/hamlib_link.h"
 #include "dect2/source/hamlib_rig.h"
 #include "dect2/source/rig_setup.h"
 #include "dect2/source/source.h"
-#include <hamlib/rig.h>
+#ifdef DECT2_HAMLIB_DYNAMIC
+#include "native_common.h"   // DynLib, libNames: found like the radio drivers' libraries
+#endif
+#include "hamlib_api.h"   // <hamlib/rig.h>, or the same calls loaded at run time (DECT2_HAMLIB_DYNAMIC, the Windows packages)
 
 #include <algorithm>
 #include <atomic>
@@ -35,6 +43,8 @@ std::mutex gHamInitMu;   // rig_init / rig_open of different rigs one at a time 
 bool gHamLoaded = false;
 
 bool hamLoad(std::string& err) {
+    std::string le;
+    if (!hamlibLibLoad(le)) { DIAG_ERROR(793863, "The Hamlib library could not be loaded (%s), so no rig can be controlled.", le.c_str()); err = le; return false; }   // the run-time loaded library (Windows): not found, or too old
     std::call_once(gHamInit, [] {
         rig_set_debug(RIG_DEBUG_ERR);   // the default prints a trace line per call
         const int r = rig_load_all_backends();
@@ -60,6 +70,64 @@ std::string modeName(rmode_t m) {
 
 } // namespace
 
+#ifdef DECT2_HAMLIB_DYNAMIC
+namespace hamdyn {
+Api& api() { static Api a; return a; }
+}
+namespace {
+std::mutex gLibMu;
+native::DynLib gLib;
+bool gLibOk = false;
+double gLibTried = -1e9;
+std::string gLibErr;
+}
+bool hamlibLibLoad(std::string& err) {
+    std::lock_guard<std::mutex> lk(gLibMu);
+    if (gLibOk) return true;
+    const double now = std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+    if (now - gLibTried < 5) { err = gLibErr; return false; }
+    gLibTried = now;
+    // Hamlib's own Windows build and MSYS2 call it libhamlib-4.dll; next to OnAir.exe, in the OnAir codecs folder or on the PATH (#495)
+    if (!gLib.h && !gLib.open(native::libNames("hamlib", {".4"}, {"libhamlib-4.dll", "hamlib-4.dll", "libhamlib.dll", "hamlib.dll"}))) {
+#if defined(_WIN32)
+        gLibErr = "Hamlib: libhamlib-4.dll not found. Put it (with the DLLs from the bin folder of Hamlib's Windows zip) next to OnAir.exe or in the OnAir codecs folder; OnAir looks again every few seconds (docs/OPTIONAL-LIBRARIES.md)";
+#elif defined(__APPLE__)
+        gLibErr = "Hamlib: libhamlib.4.dylib not found (brew install hamlib, or put it in the OnAir codecs folder; docs/OPTIONAL-LIBRARIES.md)";
+#else
+        gLibErr = "Hamlib: libhamlib.so.4 not found (install libhamlib4 or put it in the OnAir codecs folder; docs/OPTIONAL-LIBRARIES.md)";
+#endif
+        err = gLibErr;
+        return false;
+    }
+    Api& a = hamdyn::api();
+    bool ok = gLib.get(a.init, "rig_init") && gLib.get(a.open, "rig_open") && gLib.get(a.close, "rig_close") && gLib.get(a.cleanup, "rig_cleanup") &&
+              gLib.get(a.setFreq, "rig_set_freq") && gLib.get(a.getFreq, "rig_get_freq") && gLib.get(a.setMode, "rig_set_mode") && gLib.get(a.getMode, "rig_get_mode") &&
+              gLib.get(a.setPtt, "rig_set_ptt") && gLib.get(a.setSplitVfo, "rig_set_split_vfo") && gLib.get(a.setSplitFreq, "rig_set_split_freq") &&
+              gLib.get(a.getSplitFreq, "rig_get_split_freq") && gLib.get(a.getInfo, "rig_get_info") && gLib.get(a.parseMode, "rig_parse_mode") &&
+              gLib.get(a.strrmode, "rig_strrmode") && gLib.get(a.loadAllBackends, "rig_load_all_backends") && gLib.get(a.setDebug, "rig_set_debug") &&
+              gLib.get(a.error, "rigerror") && gLib.get(a.getCaps, "rig_get_caps") && gLib.get(a.tokenLookup, "rig_token_lookup") && gLib.get(a.setConf, "rig_set_conf") &&
+              gLib.get(a.listForeach, "rig_list_foreach");
+    if (!ok) {
+        gLibErr = "Hamlib: " + gLib.path + " is not a Hamlib 4 library (a function is missing): use Hamlib 4.0 or later";
+        err = gLibErr;
+        return false;
+    }
+    fprintf(stderr, "Hamlib: %s loaded at run time\n", gLib.path.c_str());
+    fflush(stderr);
+    gLibOk = true;
+    gLibErr.clear();
+    return true;
+}
+std::string hamlibLibPath() { std::lock_guard<std::mutex> lk(gLibMu); return gLibOk ? gLib.path : std::string(); }
+#endif
+
+bool hamlibLibraryReady(std::string* why) {
+    std::string e;
+    const bool ok = hamlibLibLoad(e);
+    if (why) *why = ok ? std::string() : e;
+    return ok;
+}
+
 bool hamlibModeKnown(const std::string& name) { return modeFromName(name) != RIG_MODE_NONE; }
 
 bool hamlibSameMode(const std::string& a, const std::string& b) {
@@ -78,7 +146,7 @@ std::vector<RigModelInfo> hamlibModelList() {
     if (!hamLoad(err)) return out;
     std::lock_guard<std::mutex> lk(gHamInitMu);
     rig_list_foreach(
-        [](const struct rig_caps* c, rig_ptr_t data) -> int {
+        [](const rig_caps* c, rig_ptr_t data) -> int {
             auto* v = static_cast<std::vector<RigModelInfo>*>(data);
             RigModelInfo m;
             m.id = (int)c->rig_model;
@@ -134,13 +202,15 @@ bool HamlibLink::open(const HamlibConn& c, std::string& err) {
     std::lock_guard<std::mutex> gl(gHamInitMu);
     p_->rig = rig_init((rig_model_t)c.model);
     if (!p_->rig) {
-        err = "Hamlib: no rig with model number " + std::to_string(c.model);
+         DIAG_ERROR(267455, "Hamlib has no rig with model number %d, so the rig is not opened.", (int)c.model);
+         err = "Hamlib: no rig with model number " + std::to_string(c.model);
         return false;
     }
-    const struct rig_caps* caps = rig_get_caps((rig_model_t)c.model);
+    const rig_caps* caps = rig_get_caps((rig_model_t)c.model);
     const bool portless = caps && caps->port_type == RIG_PORT_NONE;   // the dummy rig has no port: a path would be taken as a network address
     if (!portless && !c.path.empty() && !p_->setConf("rig_pathname", c.path)) {
-        err = "Hamlib: this rig model takes no port setting";
+         DIAG_ERROR(924841, "The Hamlib rig model %d takes no port setting, so the rig is not opened.", (int)c.model);
+         err = "Hamlib: this rig model takes no port setting";
         p_->closeLocked();
         return false;
     }
@@ -150,19 +220,22 @@ bool HamlibLink::open(const HamlibConn& c, std::string& err) {
     if (c.pttType >= 1 && c.pttType <= 3) {   // RTS / DTR keying (on the CAT port or a port of its own), or none for VOX
         static const char* const kPtt[] = {"RIG", "RTS", "DTR", "None"};
         if (!p_->setConf("ptt_type", kPtt[c.pttType])) {
-            err = std::string("Hamlib: this rig model cannot key PTT by ") + kPtt[c.pttType];
+             DIAG_ERROR(632973, "The Hamlib rig model %d cannot key PTT this way, so the rig is not opened.", (int)c.model);
+             err = std::string("Hamlib: this rig model cannot key PTT by ") + kPtt[c.pttType];
             p_->closeLocked();
             return false;
         }
         if (c.pttType != 3 && !c.pttPath.empty() && !p_->setConf("ptt_pathname", c.pttPath)) {
-            err = "Hamlib: the PTT port " + c.pttPath + " cannot be set for this rig model";
+             DIAG_ERROR(199915, "The PTT port %s cannot be set for Hamlib rig model %d, so the rig is not opened.", c.pttPath.c_str(), (int)c.model);
+             err = "Hamlib: the PTT port " + c.pttPath + " cannot be set for this rig model";
             p_->closeLocked();
             return false;
         }
     }
     const int r = rig_open(p_->rig);
     if (r != RIG_OK) {
-        err = std::string("Hamlib open ") + (c.path.empty() ? "rig" : c.path) + ": " + rigerror(r);
+         DIAG_ERROR(551899, "Opening the Hamlib rig failed (%s), so the rig stays closed.", rigerror(r));
+         err = std::string("Hamlib open ") + (c.path.empty() ? "rig" : c.path) + ": " + rigerror(r);
         p_->closeLocked();
         return false;
     }
@@ -181,7 +254,7 @@ bool HamlibLink::setFreq(double hz, std::string& err) {
     std::lock_guard<std::mutex> lk(p_->mu);
     if (!p_->rig) { err = "Hamlib: rig not open"; return false; }
     const int r = rig_set_freq(p_->rig, RIG_VFO_CURR, (freq_t)hz);
-    if (r != RIG_OK) { err = std::string("Hamlib set frequency: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(354655, "Hamlib could not set the rig frequency (%s), so the frequency is not changed.", rigerror(r)); err = std::string("Hamlib set frequency: ") + rigerror(r); return false; }
     return true;
 }
 
@@ -190,7 +263,7 @@ bool HamlibLink::getFreq(double& hz, std::string& err) {
     if (!p_->rig) { err = "Hamlib: rig not open"; return false; }
     freq_t f = 0;
     const int r = rig_get_freq(p_->rig, RIG_VFO_CURR, &f);
-    if (r != RIG_OK) { err = std::string("Hamlib read frequency: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(227417, "Hamlib could not read the rig frequency (%s), so no frequency is shown.", rigerror(r)); err = std::string("Hamlib read frequency: ") + rigerror(r); return false; }
     hz = (double)f;
     return true;
 }
@@ -199,9 +272,9 @@ bool HamlibLink::setMode(const std::string& mode, int passbandHz, std::string& e
     std::lock_guard<std::mutex> lk(p_->mu);
     if (!p_->rig) { err = "Hamlib: rig not open"; return false; }
     const rmode_t m = modeFromName(mode);
-    if (m == RIG_MODE_NONE) { err = "Hamlib: unknown mode " + mode; return false; }
+    if (m == RIG_MODE_NONE) { DIAG_ERROR(360772, "The Hamlib mode %s is not known, so the rig mode is not changed.", mode.c_str()); err = "Hamlib: unknown mode " + mode; return false; }
     const int r = rig_set_mode(p_->rig, RIG_VFO_CURR, m, passbandHz > 0 ? (pbwidth_t)passbandHz : RIG_PASSBAND_NORMAL);
-    if (r != RIG_OK) { err = std::string("Hamlib set mode: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(882803, "Hamlib could not set the rig mode (%s), so the mode is not changed.", rigerror(r)); err = std::string("Hamlib set mode: ") + rigerror(r); return false; }
     return true;
 }
 
@@ -211,7 +284,7 @@ bool HamlibLink::getMode(std::string& mode, int& passbandHz, std::string& err) {
     rmode_t m = RIG_MODE_NONE;
     pbwidth_t pb = 0;
     const int r = rig_get_mode(p_->rig, RIG_VFO_CURR, &m, &pb);
-    if (r != RIG_OK) { err = std::string("Hamlib read mode: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(436776, "Hamlib could not read the rig mode (%s), so no mode is shown.", rigerror(r)); err = std::string("Hamlib read mode: ") + rigerror(r); return false; }
     mode = modeName(m);
     passbandHz = (int)pb;
     return true;
@@ -221,7 +294,7 @@ bool HamlibLink::setPtt(bool on, std::string& err) {
     std::lock_guard<std::mutex> lk(p_->mu);
     if (!p_->rig) { err = "Hamlib: rig not open"; return false; }
     const int r = rig_set_ptt(p_->rig, RIG_VFO_CURR, on ? RIG_PTT_ON : RIG_PTT_OFF);
-    if (r != RIG_OK) { err = std::string("Hamlib PTT: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(369773, "Hamlib could not switch the rig PTT (%s), so the PTT state is not changed.", rigerror(r)); err = std::string("Hamlib PTT: ") + rigerror(r); return false; }
     return true;
 }
 
@@ -229,10 +302,10 @@ bool HamlibLink::setSplit(bool on, double txHz, std::string& err) {
     std::lock_guard<std::mutex> lk(p_->mu);
     if (!p_->rig) { err = "Hamlib: rig not open"; return false; }
     int r = rig_set_split_vfo(p_->rig, RIG_VFO_CURR, on ? RIG_SPLIT_ON : RIG_SPLIT_OFF, RIG_VFO_TX);
-    if (r != RIG_OK) { err = std::string("Hamlib split: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(171544, "Hamlib could not set the rig split mode (%s), so split is not changed.", rigerror(r)); err = std::string("Hamlib split: ") + rigerror(r); return false; }
     if (on) {
         r = rig_set_split_freq(p_->rig, RIG_VFO_CURR, (freq_t)txHz);
-        if (r != RIG_OK) { err = std::string("Hamlib split frequency: ") + rigerror(r); return false; }
+        if (r != RIG_OK) { DIAG_ERROR(790456, "Hamlib could not set the rig split frequency (%s), so it is not changed.", rigerror(r)); err = std::string("Hamlib split frequency: ") + rigerror(r); return false; }
     }
     return true;
 }
@@ -242,7 +315,7 @@ bool HamlibLink::getSplitFreq(double& hz, std::string& err) {
     if (!p_->rig) { err = "Hamlib: rig not open"; return false; }
     freq_t f = 0;
     const int r = rig_get_split_freq(p_->rig, RIG_VFO_CURR, &f);
-    if (r != RIG_OK) { err = std::string("Hamlib read split frequency: ") + rigerror(r); return false; }
+    if (r != RIG_OK) { DIAG_ERROR(289402, "Hamlib could not read the rig split frequency (%s), so none is shown.", rigerror(r)); err = std::string("Hamlib read split frequency: ") + rigerror(r); return false; }
     hz = (double)f;
     return true;
 }
@@ -265,7 +338,11 @@ DeviceInfo audioDevFor(const DeviceInfo& ham) {
         a.serial = "silence";
         a.name = "silence";
     } else {
-        a.serial = ham.nativeArgs;
+        // the sound card as it was typed in: an id, "Default input" or a device name (#358); a name that matches no card stays as it is, so
+        // the audio source reports the card as missing
+        std::string id = ham.nativeArgs;
+        resolveAudioInputId(ham.nativeArgs, listAudioInputs(), id);
+        a.serial = id;
         a.name = ham.nativeArgs;
     }
     return a;

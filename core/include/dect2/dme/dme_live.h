@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DME (distance measuring equipment) for the engine: IQ in, the channel, the pair rate, the level and the Morse ident out.
 // The envelope the receiver works on is the magnitude of the IQ at the channel (the simplest envelope; the pulses are 3.5 us wide,
 // so the radio rate must be 2 Msps or more). The pulse detector is dme/dme_rx.h. Family 119, engine standard 121.
@@ -22,6 +25,7 @@ class DmeLiveReceiver {
 public:
     void configure(double inputRateHz);
     void setSignalOffset(double hz);            // not used: the beacon's pulses are found on the envelope of the channel
+    void setCenterHz(double hz);                // the tuned frequency: gives the channel number
     bool ready() const;
     void reset();                               // the pulse detector and the ident; the engine calls it on a new start
     void feed(const cf32* x, size_t n);
@@ -34,6 +38,7 @@ private:
     double rate_ = 0.0;
     bool ready_ = false;
     uint64_t seq_ = 0;
+    double centerHz_ = 0.0;
     std::vector<float> env_;
     DmeTelemetry snap_;
     std::string lastIdent_;

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Build RTL-SDR Blog librtlsdr 1.4.0 (commit aed0ea1: V4 Lite support, HF tracking filter bypass) as a dylib for bundling into OnAir.app (stock Homebrew librtlsdr cannot drive the V4 HF upconverter).
 # Usage: build_rtlsdr_blog_macos.sh <output directory>
 set -euo pipefail
@@ -11,7 +14,7 @@ tarball=
 for f in "$REPO/build-windows-deps/src/$T" "$REPO/tools/package/cache/$T"; do [ -f "$f" ] && tarball=$f && break; done
 if [ -z "$tarball" ]; then
   tarball=$W/$T
-  curl -fsSL -o "$tarball" https://github.com/rtlsdrblog/rtl-sdr-blog/archive/aed0ea1.tar.gz
+  curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$tarball" https://github.com/rtlsdrblog/rtl-sdr-blog/archive/aed0ea1.tar.gz
 fi
 mkdir "$W/src" && tar xf "$tarball" -C "$W/src" --strip-components=1
 sed -i '' 's/^set(VERSION_INFO_PATCH_VERSION git)/set(VERSION_INFO_PATCH_VERSION 0)/' "$W/src/CMakeLists.txt"

@@ -24,8 +24,11 @@ public:
     void feed(const cf32* x, size_t n);
     void resetNow();                                     // reset() at once, on the calling thread (nothing may be feeding): the worker threads are stopped when it returns
     bool telemetry(DvbsTelemetry& out, uint64_t lastSeq);
+    uint64_t idleInputSamples() const;   // input samples let go by unprocessed while there was no signal (the no-signal pre-check; tests)
     void setLogCallback(std::function<void(const std::string&)> cb);   // events for the log pane; may be called from the receiver thread
     // The decoded transport stream: packets of 188 bytes, `secs` of signal time since the previous call. Runs on the receiver thread.
+    // Every BBFRAME of a generic stream (BBHEADER + data field), mod and rate as in dvbs_s2.h, TS/GS as signalled. Runs on the receiver thread.
+    void setDataFieldCallback(std::function<void(const uint8_t* bbframe, size_t n, int mod, int rate, bool shortFrame, int tsGs)> cb);
     void setPacketCallback(std::function<void(const uint8_t* packets, size_t nPackets, double secs)> cb);
 
     // ---- controls (any thread)
@@ -56,7 +59,9 @@ ModeTuning dvbsTuning();
 
 // The highest symbol rate the receiver accepts at an input rate: about 1.3 samples per symbol times (1 + roll-off) of bandwidth
 double dvbsMaxSymbolRate(double inputRateHz, double rollOff = 0.35);
-// The lowest symbol rate that the spectrum analysis can measure at an input rate (below it a manual symbol rate is needed)
+// The lowest symbol rate that the spectrum analysis can measure at an input rate (below it a manual symbol rate is needed): 10 ksym/s up to about 13 Msps
 double dvbsMinAutoSymbolRate(double inputRateHz);
+// The lowest symbol rate the receiver takes (manual or found): 10 ksym/s, for reduced bandwidth DATV
+double dvbsMinSymbolRate();
 
 } // namespace dect2

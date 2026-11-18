@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GSM-R screens: the base station table (ARFCN, BSIC, operator code, location area, cell identity, level, last seen), the channel lists
 // of System Information 1 and 2, the carriers seen in the spectrum, a band scan for radios that cannot take the whole railway band at
 // once, and the log. Only what base stations broadcast to every mobile is shown.
 #include "app.h"
+#include "../d40/d40_ui.h"
 #include "state/results_export.h"
 #include "dect2/gsmr/gsmr_rx.h"
 #include "dect2/gsmr/gsmr_si.h"
@@ -18,7 +22,7 @@ namespace {
 struct State {
     int view = 0;                 // 0 cells, 1 channel lists, 2 carriers, 3 log
     int sel = -1;                 // selected cell (index in cells)
-    bool railway = true, publicBand = false;
+    bool railway = true, publicBand = false, dcsBand = false;
     bool scanning = false;
     std::vector<double> plan;     // centres, MHz
     size_t step = 0;
@@ -56,6 +60,7 @@ void makePlan(const App& a) {
     auto add = [&](double lo, double hi) { for (double c = lo + span / 2; c - span / 2 < hi; c += span) S.plan.push_back(std::round(c * 10) / 10); };
     if (S.railway) add(921.0, 925.0);
     if (S.publicBand) add(925.0, 960.0);
+    if (S.dcsBand) add(1805.0, 1880.0);
 }
 
 void scanBar(App& a) {
@@ -67,6 +72,8 @@ void scanBar(App& a) {
     flowNext(6 * gUi);
     ImGui::Checkbox("GSM 900 925 - 960##gb1", &S.publicBand);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The public GSM 900 downlink: the same broadcast, the same decoder");
+    flowNext(6 * gUi);
+    ImGui::Checkbox("DCS 1800 1805 - 1880##gb2", &S.dcsBand);
     flowNext(10 * gUi);
     if (!S.scanning) {
         if (runningButton(a, tr("Scan"), true)) { makePlan(a); S.step = 0; S.stepAt = 0; S.scanning = !S.plan.empty(); }
@@ -83,8 +90,8 @@ void scanBar(App& a) {
         resexp::Table t; t.cols = {"time", "frequency_hz", "mode", "operator", "arfcn", "bsic", "lac", "cell_id", "band", "level_db", "snr_db"};
         const std::string now = resexp::stamp();
         for (const auto& c : a.rx.gsmr.cells)
-            t.add({now, resexp::num(c.freqHz, 0), c.railway ? "GSM-R" : "GSM 900", opText(c), c.arfcn >= 0 ? std::to_string(c.arfcn) : "", std::to_string(c.ncc) + "-" + std::to_string(c.bcc),
-                   c.hasLai ? std::to_string(c.lac) : "", c.hasSi3 ? std::to_string(c.cellId) : "", c.railway ? "GSM-R" : "GSM 900",
+            t.add({now, resexp::num(c.freqHz, 0), c.railway ? "GSM-R" : c.freqHz > 1.7e9 ? "DCS 1800" : "GSM 900", opText(c), c.arfcn >= 0 ? std::to_string(c.arfcn) : "", std::to_string(c.ncc) + "-" + std::to_string(c.bcc),
+                   c.hasLai ? std::to_string(c.lac) : "", c.hasSi3 ? std::to_string(c.cellId) : "", c.railway ? "GSM-R" : c.freqHz > 1.7e9 ? "DCS 1800" : "GSM 900",
                    resexp::num(c.levelDb, 0), resexp::num(c.snrDb, 0)});
         resexp::saveButton(t, "gsmr", note, "svgsmr");
         if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
@@ -114,7 +121,7 @@ void cellTable(App& a) {
         ImGui::TableNextColumn(); ImGui::Text("%d-%d", c.ncc, c.bcc);
         ImGui::TableNextColumn(); if (c.hasLai) ImGui::Text("%u", c.lac); else ImGui::TextDisabled("-");
         ImGui::TableNextColumn(); if (c.hasSi3) ImGui::Text("%u", c.cellId); else ImGui::TextDisabled("-");
-        if (wide) { ImGui::TableNextColumn(); ImGui::TextUnformatted(c.railway ? "GSM-R" : "GSM 900"); }
+        if (wide) { ImGui::TableNextColumn(); ImGui::TextUnformatted(c.railway ? "GSM-R" : c.freqHz > 1.7e9 ? "DCS 1800" : "GSM 900"); }
         ImGui::TableNextColumn(); ImGui::Text("%.0f", c.levelDb);
         if (wide) { ImGui::TableNextColumn(); ImGui::Text("%.0f", c.snrDb); }
         if (wide) { ImGui::TableNextColumn(); ImGui::TextUnformatted(ago(c.lastWall).c_str()); }
@@ -139,6 +146,14 @@ void detail(App& a) {
     }
     std::string ty; for (int v : c.typesSeen) { ty += dect2::gsmr::siName(v); ty += " "; }
     ImGui::Text("messages read: %s", ty.empty() ? "-" : ty.c_str());
+    if (std::find(c.typesSeen.begin(), c.typesSeen.end(), dect2::gsmr::kSi13) != c.typesSeen.end()) ImGui::TextUnformatted(tr("GPRS / EDGE: the cell sends SI13"));
+    if (std::find(c.typesSeen.begin(), c.typesSeen.end(), dect2::gsmr::kSi2quater) != c.typesSeen.end()) ImGui::TextUnformatted(tr("3G / 4G neighbour information: the cell sends SI2quater"));
+    if (const char* bn = dect2::gsmrBandName(c.freqHz); *bn) ImGui::Text(tr("Band: %s"), bn);
+    if (c.ccch.blocks()) {
+        const double n = (double)c.ccch.blocks();
+        ImGui::Text(tr("CCCH load: %llu blocks, %.0f%% paging, %.0f%% assignments, %.0f%% rejects, %.0f%% idle (message kinds only, no contents read)"), (unsigned long long)c.ccch.blocks(),
+                    100.0 * (double)c.ccch.paging / n, 100.0 * (double)c.ccch.assign / n, 100.0 * (double)c.ccch.reject / n, 100.0 * (double)c.ccch.idle / n);
+    }
 }
 
 void listsView(App& a) {
@@ -150,11 +165,16 @@ void listsView(App& a) {
         any = true;
         char h[96]; snprintf(h, sizeof h, "ARFCN %d %s##l%d_%d", c.arfcn, opText(c).c_str(), c.arfcn, c.bsic);
         if (!ImGui::TreeNode(h)) continue;
-        if (c.hasSi1) ImGui::Text("cell allocation (SI1): %s", listText(c.cellAlloc).c_str());
+        if (c.hasSi1) {
+            ImGui::Text("cell allocation (SI1): %s", listText(c.cellAlloc).c_str());
+            ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s: %s", tr("downlink / uplink MHz (R = railway band)"), d40GsmrFrequencies(c.cellAlloc).c_str()); ImGui::PopTextWrapPos();   // 4.0 (app/d40)
+        }
         if (c.hasSi2) {
             ImGui::Text("BCCH neighbours (SI2): %s", listText(c.neigh).c_str());
+            ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s: %s", tr("downlink / uplink MHz (R = railway band)"), d40GsmrFrequencies(c.neigh).c_str()); ImGui::PopTextWrapPos();   // 4.0 (app/d40)
             ImGui::Text("neighbour NCC permitted: 0x%02X", c.nccPermitted);
         }
+        if (!c.neighBis.empty()) ImGui::Text("%s %s", tr("more BCCH neighbours (SI2bis):"), listText(c.neighBis).c_str());
         ImGui::TreePop();
     }
     if (!any) ImGui::TextDisabled("no channel list read yet (SI1 / SI2)");

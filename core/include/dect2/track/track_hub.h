@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The tracks of all aircraft of one mode (or of all modes together), keyed by ICAO address or registration, plus the adapters that turn
 // the receivers' aircraft records into fixes. The hub owns the shared wind field and the ground-station positions.
 #pragma once
@@ -60,5 +63,11 @@ private:
     std::map<uint32_t, St> st_;
     WindField wind_;
 };
+
+// The map screens' hubs, so that other windows (Search everything) can ask for an aircraft's latest track position. UI thread only.
+void registerHub(const TrackHub* h);
+void unregisterHub(const TrackHub* h);
+// The most recent fix of this aircraft in any registered hub, estimated at the time of that fix (no prediction); false when no hub has it.
+bool liveFix(Key k, double& lat, double& lon);
 
 }  // namespace dect2::track

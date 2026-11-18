@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Iridium frame layer (no radio): classify and decode the bits of one demodulated burst, assemble pager messages,
 // and build burst bits for the test signal.
 // Facts: iridium-toolkit (github.com/muccc/iridium-toolkit: bitsparser.py, bch.py, FORMAT.md, tests/test_parser.py) and gr-iridium
@@ -21,6 +24,9 @@ struct IridiumBurstBits {
     double freqHz = 0, timeSec = 0, levelDb = 0, confidence = 0;
     double snrDb = 0;                   // Es/N0 of the symbols (the noise figure of the .bits lines)
     double refUnixTime = 0;             // wall clock the Iridium time of IBC frames is read against; 0 = this computer's clock
+    // 4.1: reliability of each bit (same order and size as bits, >= 0, larger = surer); empty = hard bits only. With it, a ring alert, broadcast or
+    // pager frame whose BCH blocks all decode but one is repaired by a Chase search over the least reliable bits of the failing blocks.
+    std::vector<float> rel;
 };
 
 enum class IridiumType { Unknown, IRA, IBC, ISY, ITL, MSG, IDA, IIP, IIQ, IIR, IIU, IMS, Voice };
@@ -41,6 +47,8 @@ struct IridiumFrame {
     std::string msgText;                // MSG: text of this part (control characters shown as '?', ETX padding removed)
     std::string hex;                    // payload as hex for data/unknown frames (empty for voice); MSG: the toolkit's "msg:" field
     // added by the frame layer
+    int lcw2 = -1;                      // LCW second field (6 bits) when the word was read, -1 otherwise
+    int64_t lcw3 = -1;                  // LCW third field (21 bits)
     int lcwFt = -1;                     // frame type of the link control word (0 voice, 1 IP, 2 data, 3.., 7 sync), -1 without LCW
     bool crcOk = false;                 // IDA/IIP: the frame check sequence matches
     int idaCtr = -1, idaLen = -1;       // IDA: counter and number of payload bytes
@@ -50,6 +58,7 @@ struct IridiumFrame {
     std::string msgRaw;                 // MSG: the 7-bit characters of this part as sent
     int lbfc = -1;                      // IBC: raw frame counter ("Iridium time") when this frame carries it
     bool uplink = false;
+    std::string vtype;                  // Voice slot content: "VOC" vocoder frame (the only kind for the codec), "VO6"/"VOD"/"VOZ" data in a voice slot (toolkit)
 };
 
 IridiumFrame decodeIridiumBurst(const IridiumBurstBits& b);

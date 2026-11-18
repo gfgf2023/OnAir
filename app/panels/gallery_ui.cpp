@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The picture gallery window (View > Images): the pictures every image receiver finished, kept across restarts in <data folder>/images/
 // (index.tsv, one PNG per picture, a small thumbnail, the separate channels of a multi-channel picture, the ground track of a pass), capped by
 // size. A viewer with zoom and pan, contrast stretch, gamma, histogram equalise, invert, false-colour presets, and for passes with a ground
 // track an equirectangular map projection (graticule, coastlines, borders; saved as PNG with a world file, or as GeoTIFF), tone curves,
 // colour palettes, a histogram, crop to the visible part, and a mosaic that stitches several projected passes into one map.
 #include "../app.h"
+#include "dect2/common/diag.h"
 #include "gallery.h"
 #include "enhance_ui.h"
 #include "../gfx/gfx.h"
@@ -19,6 +23,11 @@
 #include <ctime>
 #include <filesystem>
 #include "picsave_ui.h"
+#include "dect2/automation/engine.h"
+#include "dect2/image/gif_loop.h"
+#include <atomic>
+#include <map>
+#include <thread>
 #include "../state/picsave.h"
 #include <fstream>
 #include <sstream>
@@ -174,7 +183,7 @@ bool writeGrey(const std::string& path, const std::vector<uint8_t>& g, int w, in
 
 bool readPng(const std::string& path, int& w, int& h, std::vector<uint8_t>& rgba) {
     std::ifstream f(P(path), std::ios::binary);
-    if (!f) return false;
+    if (!f) { DIAG_DEBUG(921111, "The satellite picture file %s could not be opened, so it was not loaded.", path.c_str()); return false; }
     std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     return dect2::decodePng(b.data(), b.size(), w, h, rgba) && w > 0 && h > 0;
 }
@@ -229,6 +238,27 @@ void setPassContext(const std::string& sat, double aos, double maxElDeg, double 
     gPassCtx = PassCtx{sat, aos, maxElDeg, validUntil};
 }
 
+// image.done: a picture whose key has not changed for kDoneSec is finished (a receiver republishes a growing picture under one key)
+struct Pending { double lastWall = 0; std::string path, source, sat, detail; int w = 0, h = 0; double time = 0; };
+std::map<std::string, Pending> gPending;
+constexpr double kDoneSec = 20;
+
+void emitDone() {
+    if (gPending.empty()) return;
+    const double now = (double)std::time(nullptr);
+    for (auto it = gPending.begin(); it != gPending.end();) {
+        if (now - it->second.lastWall < kDoneSec) { ++it; continue; }
+        const Pending& p = it->second;
+        if (dect2::automation::wants(dect2::automation::FImage)) {
+            dect2::automation::Event ev("image.done");
+            ev.at(now, p.source, 0);
+            ev.str("path", p.path).str("source", p.source).str("satellite", p.sat).str("detail", p.detail).str("key", it->first).num("width", p.w).num("height", p.h).num("picture_time", p.time);
+            dect2::automation::emit(std::move(ev));
+        }
+        it = gPending.erase(it);
+    }
+}
+
 void publish(const std::string& key, const std::string& source, double unixTime, int w, int h, const uint8_t* rgba, const Meta& meta) {
     if (w <= 0 || h <= 0 || !rgba) return;
     load();
@@ -248,7 +278,7 @@ void publish(const std::string& key, const std::string& source, double unixTime,
         it.detail += (it.detail.empty() ? "" : ", ") + std::string(b) + ", max " + std::to_string((int)std::lround(gPassCtx.maxEl)) + " deg";
     }
     const std::string base = S.dir + "/" + id;
-    if (!gfx::writePng((base + ".png").c_str(), rgba, w, h)) { S.msg = "could not write " + base + ".png"; return; }
+    if (!gfx::writePng((base + ".png").c_str(), rgba, w, h)) { DIAG(194693, "Writing the gallery picture %s.png failed (the folder may be read-only or the disk full), so it was not saved.", base.c_str()); S.msg = "could not write " + base + ".png"; return; }
     it.bytes = fileSize(base + ".png");
     enhui::autoEnhanceFile(source, rgba, w, h, base + "_e.png");   // "Apply to all new images" of this mode: an enhanced copy beside the raw one
     std::vector<uint8_t> th; int tw, thh;
@@ -270,6 +300,25 @@ void publish(const std::string& key, const std::string& source, double unixTime,
     std::stable_sort(S.items.begin(), S.items.end(), [](const Item& a, const Item& b) { return a.time > b.time; });
     enforceCap();
     saveIndex();
+    // geostationary full disks: the loop of the last 24 pictures of this product, rebuilt in the background (dect2/image/gif_loop.h)
+    if ((source.find("GOES") != std::string::npos || source.find("Elektro") != std::string::npos || source.find("GK-2A") != std::string::npos || source.find("FY-4") != std::string::npos) &&
+        !it.detail.empty() && plat::prefs().getB("galleryGeoLoop", true)) {
+        static std::atomic<bool> busy{false};
+        const std::string pk = dect2::img::loopProductKey(it.detail);
+        std::vector<std::pair<double, std::string>> fr;
+        for (const Item& x : S.items) if (x.source == source && x.w == w && x.h == h && dect2::img::loopProductKey(x.detail) == pk) fr.push_back({x.time, S.dir + "/" + x.id + ".png"});
+        std::sort(fr.begin(), fr.end());
+        if (fr.size() > 24) fr.erase(fr.begin(), fr.end() - 24);
+        if (fr.size() >= 3 && !busy.exchange(true)) {
+            std::vector<std::string> paths;
+            for (auto& f : fr) paths.push_back(f.second);
+            const std::string out = S.dir + "/loops/" + fsafe(source) + "-" + fsafe(pk) + ".gif";
+            std::thread([paths, out] { std::string err; dect2::img::gifLoopFromPngs(paths, out, 1000, 25, err); busy.store(false); }).detach();
+        }
+    }
+    Pending& pd = gPending[key];
+    pd.lastWall = (double)std::time(nullptr); pd.path = base + ".png"; pd.source = source; pd.sat = it.sat; pd.detail = it.detail; pd.w = w; pd.h = h; pd.time = unixTime;
+    if (gPending.size() > 200) gPending.erase(gPending.begin());
 }
 
 void publishGray(const std::string& key, const std::string& source, double t, int w, int h, const uint8_t* g, const Meta& meta) {
@@ -323,7 +372,7 @@ void selectItem(const Item& it) {
     v.enh.setSaveName(fileStamp(it.time) + "-" + fsafe(it.sat.empty() ? it.source : it.sat) + "-enhanced.png");
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!readPng(S.dir + "/" + it.id + ".png", w, h, rgba) || w != it.w || h != it.h) { v.msg = "could not read the picture"; v.w = v.h = 0; return; }
+    if (!readPng(S.dir + "/" + it.id + ".png", w, h, rgba) || w != it.w || h != it.h) { DIAG(403938, "The gallery picture %s.png could not be read or has a different size than recorded, so it is not shown.", it.id.c_str()); v.msg = "could not read the picture"; v.w = v.h = 0; return; }
     v.src = std::move(rgba);
     v.planes.assign(6, {});
     for (int c = 0; c < 6; c++)
@@ -848,5 +897,6 @@ void windowPanel(App& a) {
 void galleryDev(int mode) { gDev = mode; }
 
 void galleryWindow(App& a) {
+    { static double last = 0; const double t = ImGui::GetTime(); if (t - last > 2) { last = t; gallery::emitDone(); } }   // image.done for finished pictures
     if (a.galleryOpen) windowPanel(a);
 }

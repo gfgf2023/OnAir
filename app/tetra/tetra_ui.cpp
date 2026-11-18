@@ -1,10 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // TETRA screens: the base station table (frequency, network code, location area, colour code, encryption, last heard), the details of
 // the selected carrier, its neighbour cells, the carriers seen in the spectrum, a scan over a span, and the log. Only what base stations
 // broadcast in the clear to every terminal is shown: nothing is decrypted, no voice, no short data, no subscriber identities.
+#include "../d40/d40_ui.h"
+#include "tetra_map.h"
+#include "../ui/typography.h"
 #include "app.h"
+#include "ui/voice_why_ui.h"
+#include "dect2/voice/voice_why_modes.h"
+#include "ui/kit/mode_panel.h"
+#include "ui/kit/kit.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "voice/voice_monitor_ui.h"
+#include "voice/watch_ui.h"
+#include "voice/tgdir_ui.h"
+#include "tetra_names_ui.h"
 #include "dect2/voice/voice_monitor.h"
 #include "codec/speech_codec_ui.h"
 #include "dect2/audio/audioout.h"
@@ -12,6 +25,11 @@
 #include "dect2/tetra/tetra_traffic.h"
 #include "dect2/tetra/tetra_voice_codec.h"
 #include "state/results_export.h"
+#include "platform/platform.h"
+#include "dect2/session/privacy.h"
+#include <fstream>
+#include <map>
+#include <sstream>
 #include "dect2/gsmr/gsmr_rx.h"
 #include "dect2/tetra/tetra_pdu.h"
 #include "dect2/tetra/tetra_rx.h"
@@ -269,9 +287,10 @@ void slotPanel(App& a) {
         const T::SlotInfo& k = best->slots[i];
         char heard[32] = "never";
         if (k.lastHeardSec >= 0) snprintf(heard, sizeof heard, "%.0f s ago", std::max(0.0, now - k.lastHeardSec));
-        char ids[64] = "";
+        char ids[160] = "";
         if (k.talkgroup) snprintf(ids, sizeof ids, " TG %u", k.talkgroup);
-        if (k.issi) snprintf(ids + strlen(ids), sizeof ids - strlen(ids), " ISSI %u", k.issi);
+        if (k.talkgroup) { std::string nm = tetranames::nameOf(dect2::TetraIdKind::Gssi, k.talkgroup, best->mcc, best->mnc); if (nm.empty()) nm = tgdirui::nameOf(dect2::TgKind::Tetra, k.talkgroup); if (!nm.empty()) snprintf(ids + strlen(ids), sizeof ids - strlen(ids), " %s", nm.c_str()); }
+        if (k.issi) { snprintf(ids + strlen(ids), sizeof ids - strlen(ids), " ISSI %u", k.issi); const std::string nm = tetranames::nameOf(dect2::TetraIdKind::Issi, k.issi, best->mcc, best->mnc); if (!nm.empty()) snprintf(ids + strlen(ids), sizeof ids - strlen(ids), " %s", nm.c_str()); }
         const bool enc = k.state == T::SlotState::Encrypted;
         if (enc) ImGui::PushStyleColor(ImGuiCol_Text, pal::warnAmber());
         ImGui::Text("slot %d: %s%s, last heard %s%s", i + 1, T::slotStateText(k.state), ids, heard,
@@ -448,6 +467,15 @@ void detail(App& a) {
     for (int i = 0; i < 4; i++) { ts += "TS" + std::to_string(i + 1) + " " + dect2::tetra::dlUsageText(c.tsUsage[i]); if (i < 3) ts += ", "; }
     ImGui::Text("timeslots: %s", ts.c_str());
     if (!c.netTime.empty()) ImGui::Text("network time: %s", c.netTime.c_str());
+    // TEDS (3.9): what the cell's extended services broadcast says, and the pi/8-D8PSK slots seen on this carrier
+    if (c.tedsD8psk >= 0 || c.tedsQamMask >= 0 || c.p8Slots > 0) {
+        std::string q;
+        if (c.tedsQamMask < 0) q = tr("not heard yet");
+        else if (c.tedsQamMask == 0) q = tr("none");
+        else { static const char* bw[4] = {"25", "50", "100", "150"}; for (int i = 0; i < 4; i++) if (c.tedsQamMask & (1 << i)) { if (!q.empty()) q += ", "; q += bw[i]; } q += " kHz"; }
+        ImGui::Text(tr("TEDS: pi/8-D8PSK %s, QAM %s"), c.tedsD8psk < 0 ? tr("not heard yet") : c.tedsD8psk ? tr("supported") : tr("not supported"), q.c_str());
+        if (c.p8Slots > 0) ImGui::Text(tr("%llu pi/8-D8PSK slots on this carrier, %llu of their signalling blocks decoded"), (unsigned long long)c.p8Slots, (unsigned long long)c.p8BlocksOk);
+    }
 }
 
 void neighbourView(App& a) {
@@ -473,8 +501,170 @@ void neighbourView(App& a) {
 void carrierView(App& a) {
     const dect2::TetraTelemetry& t = a.rx.tetra;
     if (t.carriers.empty()) { ImGui::TextDisabled("no carriers in the last block"); return; }
-    for (const auto& c : t.carriers)
-        ImGui::BulletText("%.4f MHz, %.0f dB over the floor, %s", c.freqHz / 1e6, c.levelDb, c.synced ? "TETRA synchronisation" : "no TETRA synchronisation in this block");
+    for (const auto& c : t.carriers) {
+        if (c.kind == 3) {   // TEDS QAM (3.9): identified from its sub-carriers, never decoded
+            char ord[48] = "";
+            if (c.qamOrder == 4) snprintf(ord, sizeof ord, ", 4-QAM%s", c.orderSure ? "" : "?");
+            else if (c.qamOrder > 0) snprintf(ord, sizeof ord, c.orderSure ? ", %d-QAM" : ", 16- or 64-QAM", c.qamOrder);
+            ImGui::BulletText(tr("%.4f MHz, %.0f dB over the floor, TEDS QAM %.0f kHz (%d sub-carriers%s), identified only"), c.freqHz / 1e6, c.levelDb, c.bwHz / 1e3,
+                              c.subcarriers, ord);
+            continue;
+        }
+        std::string what = c.synced ? tr("TETRA synchronisation") : tr("no TETRA synchronisation in this block");
+        if (c.kind == 1 && c.p8Slots > 0) what += std::string(", ") + tr("pi/8-D8PSK slots (TEDS)");
+        else if (c.kind == 2) what = tr("pi/8-D8PSK carrier (TEDS), no TETRA synchronisation");
+        ImGui::BulletText("%.4f MHz, %.0f dB over the floor, %s", c.freqHz / 1e6, c.levelDb, what.c_str());
+    }
+}
+
+// clear SDS messages, status and LIP positions (D-SDS-DATA, D-STATUS)
+void messageView(App& a) {
+    const auto& t = a.rx.tetra;
+    static std::string note;
+    resexp::Table x; x.cols = {"time_unix", "from_issi", "to_address", "kind", "text", "lat", "lon", "repeats", "frequency_hz"};
+    for (const auto& r : t.sds)
+        x.add({std::to_string(r.wallTime), r.fromIssi >= 0 ? std::to_string(r.fromIssi) : "", r.toAddr >= 0 ? std::to_string(r.toAddr) : "", r.kind, r.text,
+               r.hasPos ? resexp::num(r.lat, 6) : "", r.hasPos ? resexp::num(r.lon, 6) : "", std::to_string(r.count), resexp::num(r.freqHz, 0)}, (double)r.wallTime);
+    resexp::saveButton(x, "tetra_sds", note, "svtetrasds");
+    if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
+    if (t.sds.empty()) { ImGui::TextDisabled("%s", tr("no clear messages heard")); return; }
+    if (ImGui::BeginTable("##tsds", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Borders, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn(tr("Time"), ImGuiTableColumnFlags_WidthFixed, 66 * gUi);
+        ImGui::TableSetupColumn(tr("From"), ImGuiTableColumnFlags_WidthFixed, 150 * gUi);
+        ImGui::TableSetupColumn(tr("To"), ImGuiTableColumnFlags_WidthFixed, 150 * gUi);
+        ImGui::TableSetupColumn(tr("Kind"), ImGuiTableColumnFlags_WidthFixed, 70 * gUi);
+        ImGui::TableSetupColumn(tr("Content"), 0, 1.f);
+        ImGui::TableHeadersRow();
+        for (const auto& r : t.sds) {
+            ImGui::TableNextRow();
+            char tb[16]; const time_t tt = (time_t)r.wallTime; struct tm tmv; 
+#ifdef _WIN32
+            gmtime_s(&tmv, &tt);
+#else
+            gmtime_r(&tt, &tmv);
+#endif
+            strftime(tb, sizeof tb, "%H:%M:%S", &tmv);
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(tb);
+            ImGui::TableNextColumn(); if (r.fromIssi >= 0) ImGui::TextUnformatted(tetranames::withName(dect2::TetraIdKind::Issi, (uint32_t)r.fromIssi).c_str()); else ImGui::TextDisabled("-");
+            ImGui::TableNextColumn();   // the address is a terminal (ISSI) or a group (GSSI): a name of either is shown
+            if (r.toAddr >= 0) { std::string nm = tetranames::nameOf(dect2::TetraIdKind::Issi, (uint32_t)r.toAddr); if (nm.empty()) nm = tetranames::nameOf(dect2::TetraIdKind::Gssi, (uint32_t)r.toAddr); ImGui::Text("%d%s%s", r.toAddr, nm.empty() ? "" : "  ", nm.c_str()); } else ImGui::TextDisabled("-");
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(r.kind.c_str());
+            ImGui::TableNextColumn();
+            if (r.hasPos) ImGui::Text("%s  (%.5f, %.5f)", r.text.c_str(), r.lat, r.lon); else ImGui::TextWrapped("%s", r.text.c_str());
+        }
+        ImGui::EndTable();
+    }
+}
+
+// ---- the talkgroup (GSSI) log: every talkgroup heard in a call that is not encrypted, kept across restarts in <data folder>/tetra_talkgroups.csv.
+// Only talkgroups: ISSIs (terminals) are not kept. Local only, like the call table. Encrypted calls show no id and so never get here.
+struct TgRow { int64_t first = 0, last = 0; uint32_t count = 0; double hz = 0; int slot = 0; };
+std::map<uint32_t, TgRow> gTg;
+bool gTgLoaded = false, gTgDirty = false;
+double gTgSavedAt = 0;
+std::string tgPath() { return plat::dataDir() + "/tetra_talkgroups.csv"; }
+
+void tgLoad() {
+    if (gTgLoaded) return;
+    gTgLoaded = true;
+    std::ifstream f(tgPath());
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#' || line[0] == 'g') continue;   // comments and the header
+        std::istringstream ss(line);
+        std::string c[6];
+        for (int i = 0; i < 6; i++) if (!std::getline(ss, c[i], ',')) break;
+        const unsigned long g = std::strtoul(c[0].c_str(), nullptr, 10);
+        if (g == 0 || g > 0xFFFFFF) continue;
+        TgRow r;
+        r.first = std::atoll(c[1].c_str()); r.last = std::atoll(c[2].c_str()); r.count = (uint32_t)std::strtoul(c[3].c_str(), nullptr, 10);
+        r.hz = std::atof(c[4].c_str()); r.slot = std::atoi(c[5].c_str());
+        gTg[(uint32_t)g] = r;
+    }
+}
+
+void tgSave() {
+    std::string out = "gssi,first_heard,last_heard,calls_seen,frequency_hz,slot\n";
+    for (const auto& kv : gTg)
+        out += std::to_string(kv.first) + "," + std::to_string((long long)kv.second.first) + "," + std::to_string((long long)kv.second.last) + "," + std::to_string(kv.second.count) + "," +
+               std::to_string((long long)kv.second.hz) + "," + std::to_string(kv.second.slot) + "\n";
+    dect2::sess::writeOwnerOnlyFile(tgPath(), out);
+    gTgDirty = false;
+}
+
+// call every frame: new talkgroups and new activity of known ones, written out at most every 15 s
+void tgCollect(const App& a) {
+    tgLoad();
+    if (live(a)) {
+        for (const auto& c : a.rx.tetra.cells)
+            for (int i = 0; i < 4; i++) {
+                const dect2::tetra::SlotInfo& k = c.slots[i];
+                if (!k.talkgroup || k.state == dect2::tetra::SlotState::Encrypted || k.lastHeardSec < 0) continue;
+                const int64_t t = (int64_t)k.lastHeardSec;
+                TgRow& r = gTg[k.talkgroup];
+                if (r.first == 0) r.first = t;
+                if (t > r.last + 5 || r.count == 0) { r.count++; r.last = std::max(r.last, t); gTgDirty = true; }   // a new call, not the same one again
+                r.hz = c.nominalHz; r.slot = i + 1;
+            }
+    }
+    const double now = ImGui::GetTime();
+    if (gTgDirty && now - gTgSavedAt > 15) { gTgSavedAt = now; tgSave(); }
+}
+
+std::string tgTime(int64_t t) {
+    if (t <= 0) return "-";
+    const time_t tt = (time_t)t; struct tm g;
+#ifdef _WIN32
+    gmtime_s(&g, &tt);
+#else
+    gmtime_r(&tt, &g);
+#endif
+    char b[32]; strftime(b, sizeof b, "%Y-%m-%d %H:%M:%S", &g); return b;
+}
+
+// the name of a talkgroup: the TETRA name book first (any network), else the shared talkgroup directory
+std::string gssiName(uint32_t gssi) {
+    std::string nm = tetranames::nameOf(dect2::TetraIdKind::Gssi, gssi);
+    return nm.empty() ? tgdirui::nameOf(dect2::TgKind::Tetra, gssi) : nm;
+}
+
+void talkgroupView(App& a) {
+    if (typo::collapsingHeader(trw("Talkgroup activity"), 0)) d40TetraActivity();   // 4.0 (app/d40)
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", tr("Talkgroups (GSSI) heard in calls that are not encrypted. The list is kept when you close OnAir (tetra_talkgroups.csv in the data folder) and stays on this computer. Terminal numbers (ISSI) are not kept."));
+    ImGui::PopTextWrapPos();
+    static std::string note;
+    resexp::Table t; t.cols = {"gssi", "name", "first_heard_utc", "last_heard_utc", "calls_seen", "frequency_hz", "slot"};
+    for (const auto& kv : gTg)
+        t.add({std::to_string(kv.first), gssiName(kv.first), tgTime(kv.second.first), tgTime(kv.second.last), std::to_string(kv.second.count),
+               std::to_string((long long)kv.second.hz), std::to_string(kv.second.slot)}, (double)kv.second.last);
+    resexp::saveButton(t, "tetra_talkgroups", note, "svtetratg");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Copy GSSI list##tetratg"))) {
+        std::string l; for (const auto& kv : gTg) l += std::to_string(kv.first) + "\n";
+        ImGui::SetClipboardText(l.c_str());
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("One talkgroup number per line, for programming a scanner."));
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Clear##tetratgc"))) { gTg.clear(); tgSave(); }
+    if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
+    ImGui::TextDisabled("%zu %s", gTg.size(), tr("talkgroups"));
+    if (!ImGui::BeginTable("##tetratg", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn(tr("GSSI")); ImGui::TableSetupColumn(tr("Name")); ImGui::TableSetupColumn(tr("First heard"));
+    ImGui::TableSetupColumn(tr("Last heard")); ImGui::TableSetupColumn(tr("Calls")); ImGui::TableSetupColumn(tr("Frequency"));
+    ImGui::TableHeadersRow();
+    for (const auto& kv : gTg) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::Text("%u", kv.first); ImGui::PopFont();
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(gssiName(kv.first).c_str());
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(tgTime(kv.second.first).c_str());
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(tgTime(kv.second.last).c_str());
+        ImGui::TableNextColumn(); ImGui::Text("%u", kv.second.count);
+        ImGui::TableNextColumn(); ImGui::Text("%.4f MHz, slot %d", kv.second.hz / 1e6, kv.second.slot);
+    }
+    ImGui::EndTable();
 }
 
 void logView(App& a) {
@@ -483,6 +673,9 @@ void logView(App& a) {
 }
 
 void tick(App& a) {
+    watchui::tick(a);
+    tetranames::tick();
+    tgCollect(a);
     // Load the voice codec while the mode runs, whichever tab is drawn (the strip only shows the state).
     if (live(a) && a.engine.running() && !gVoice.hasCodec()) {
         wireVoice(a);
@@ -512,10 +705,16 @@ void tab(App& a) {
     ImGui::TextDisabled("Receive only: the public information every TETRA base station broadcasts to all terminals (network code, location area, services, encryption advertised). Nothing is decrypted; no messages or identities are decoded. Clear (unencrypted) voice can be played only with a speech codec you install yourself; encrypted calls are never decoded.");
     ImGui::PopTextWrapPos();
     voiceStrip(a);
-    slotPanel(a);
+    tetranames::speakingLine(a);
+    if (kit::collapsingSection(tr("Listen"), false)) slotPanel(a);
     kit::modeHeader({46, "TETRA", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("tetrav", S.view, {{tr("Live"), 0}, {tr("Calls"), 4}, {tr("Neighbours"), 1, true}, {tr("Carriers"), 2, true}, {tr("Log"), 3, true}});
+    kit::modeNav("tetrav", S.view, {{tr("Live"), 0}, {tr("Calls"), 4}, {tr("Neighbours"), 1, true}, {tr("Carriers"), 2, true}, {tr("Log"), 3, true}, {tr("Messages"), 5, true}, {tr("Talkgroups"), 6, true}, {tr("Names"), 8, true}, {tr("Map"), 7, true}, {tr("Watch"), 90, true}});
+    if (S.view == 90) { watchui::watchView(a, "tetra"); return; }
     if (S.view == 4) { kit::sessionItems(46, 1, "tetra"); return; }
+    if (S.view == 5) { messageView(a); return; }
+    if (S.view == 6) { talkgroupView(a); return; }
+    if (S.view == 8) { tetranames::view(a); return; }
+    if (S.view == 7) { tetraMap(a); return; }
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to find the TETRA base stations around you"); return; }
     if (S.view == 0) {
         const float h = ImGui::GetContentRegionAvail().y;
@@ -534,8 +733,10 @@ void list(App& a) {
 }
 
 void receiver(App& a) {
+    tgdirui::section(dect2::TgKind::Tetra);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     const dect2::TetraTelemetry& t = a.rx.tetra;
+    voiceWhyRow(a, dect2::tetraWhy(t));
     ImGui::Text("%s", dect2::tetraSummary(t).c_str());
     ImGui::Text("%llu blocks searched, %llu signalling blocks decoded, %llu failed", (unsigned long long)t.blocks, (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad);
     ImGui::Text("input %.2f Msps, %.1f dBFS", t.inputRate / 1e6, t.levelDb);
@@ -559,12 +760,12 @@ void synthOptions(App& a, bool& changed) {
     dect2::SynthConfig& sc = a.tune.synth;
     ImGui::TextDisabled("%s", "TETRA test signal");
     flowNext(10 * gUi);
-    static const char* scenes[] = {"one cell (wide capture from 4 Msps)", "two cells", "wide capture"};
-    int sc0 = std::max(0, std::min(2, sc.modeOpt[0]));
+    static const char* scenes[] = {N_("one cell (wide capture from 4 Msps)"), N_("two cells"), N_("wide capture"), N_("TEDS cell and QAM carrier")};
+    int sc0 = std::max(0, std::min(3, sc.modeOpt[0]));
     if (sc0 == 0 && a.tune.sampleRate >= 4e6) sc0 = 2;
     ImGui::SetNextItemWidth(120 * gUi);
-    if (ImGui::BeginCombo("##tetrascene", scenes[sc0])) {
-        for (int i = 0; i < 3; i++) if (ImGui::Selectable(scenes[i], i == sc0)) { sc.modeOpt[0] = i; changed = true; }
+    if (ImGui::BeginCombo("##tetrascene", tr(scenes[sc0]))) {
+        for (int i = 0; i < 4; i++) if (ImGui::Selectable(tr(scenes[i]), i == sc0)) { sc.modeOpt[0] = i; changed = true; }
         ImGui::EndCombo();
     }
     if (sc0 == 2) {
@@ -581,6 +782,24 @@ void synthOptions(App& a, bool& changed) {
 
 } // namespace
 
+// Simple view: the scan bar and the voice strip, the base stations with the readout of the picked one, the neighbours and the log side by side
+static void command(App& a) {
+    scanBar(a);
+    voiceStrip(a);
+    slotPanel(a);
+    kit::modeHeader({46, "TETRA", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to find the TETRA base stations around you"); return; }
+    voiceWhyRow(a, dect2::tetraWhy(a.rx.tetra));
+    modepanel::panes({{"##tecells", tr("Base stations"), [&a] {
+                           const float h = ImGui::GetContentRegionAvail().y;
+                           if (ImGui::BeginChild("##tcct", ImVec2(0, h * 0.55f))) cellTable(a);
+                           ImGui::EndChild();
+                           detail(a);
+                       }, 1.5f, 300.f},
+                      {"##tecar", tr("Neighbours"), [&a] { neighbourView(a); }, 1.f, 220.f},
+                      {"##telog", tr("Log"), [&a] { logView(a); }, 1.f, 220.f}}, 320.f);
+}
+
 extern const ModeUi kTetraUi;
 const ModeUi kTetraUi = {
     .sideTitle = "CELLS",
@@ -593,4 +812,15 @@ const ModeUi kTetraUi = {
     .summary = summary,
     .synth = synthOptions,
     .tick = tick,
+    .command = command,
 };
+
+// TETRA Direct Mode uses the same clear-speech path as TETRA: wire it, load the codec after the notice gate, and hand the sink over.
+dect2::tetra::SpeechFrameSink* tetraSharedVoiceSink(App& a) {
+    wireVoice(a);
+    if (!gVoice.hasCodec()) {
+        std::unique_ptr<dect2::codec::SpeechCodec> c;
+        if (appcodec::speechCodecPoll("tetra", c).status == dect2::codec::CodecStatus::Ready && c) gVoice.setCodec(std::move(c));
+    }
+    return &gVoice;
+}

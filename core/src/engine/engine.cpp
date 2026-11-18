@@ -1,6 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Engine core: sample ingest (cleaning, offset tuning), stop, recording, applyReset, and the per-receiver feed,
 // reset and auto-select switches. Other Engine members live in engine_*.cpp next to this file.
+#include "dect2/common/diag.h"
+#include "dect2/rs/common.h"
 #include "dect2/engine/engine.h"
+#include "dect2/source/hw_time.h"
 #include "dect2/tv/dvb_text.h"
 #include "dect2/automation/engine.h"
 #include "engine_ctl.h"
@@ -32,6 +38,8 @@
 #include <vector>
 
 namespace dect2 {
+static bool isSatDetectActive(int a) { return satmisc::isSatDetectStd(a + 1); }
+
 
 // "Remove DC spike" and "IQ correction" of the samples (iq_correct.h), with the part skipped that would harm the active mode (tests/engine/test_iq_modes.cpp):
 // the DC removal where the wanted carrier can sit on the centre (FM, and the modes whose ModeTuning says carrierAtCentre), the IQ correction
@@ -52,6 +60,12 @@ bool Engine::offsetAllowed() const {
 }
 
 void Engine::ingest(cf32* x, size_t n) {
+    // the whole receive path is timed (4.0: from here, not from the receiver on; the front end before it is on the same thread and counts
+    // in the load and in the overflow classification as much as the receiver does)
+    const auto a0 = std::chrono::steady_clock::now();
+    const uint64_t c0 = cpu::threadNs();
+    if (rxPipe_) pendingRaw_ += n;   // counted when the block reaches the receiver on its thread (rxPipeRun)
+    else hwtime::board().consumed(&ring_, n);   // a radio with hardware time: which sample has reached the receivers (one relaxed load otherwise)
     if (convSwap_.load(std::memory_order_relaxed)) swapIq(x, n);   // a converter that mirrors the spectrum: the signal reads the right way round from here on
     rec_.push(x, n);   // the raw samples, before anything touches them
     tm_.push(x, n);    // the time machine's rolling memory (a copy into a ring, nothing else)
@@ -74,18 +88,22 @@ void Engine::ingest(cf32* x, size_t n) {
             nbSeen0_ = nb_.seen(); nbBlank0_ = nb_.blanked();
         }
     } else if (nbWas_) { nbWas_ = false; nbPct_ = 0.f; nb_.reset(); }   // switched off: the next start learns the level again
-    const auto a0 = std::chrono::steady_clock::now();
+    if (notches_.active()) {   // the manual notches (dsp/notch_bank.h): before the spectrum and the decoders, at the radio's rate, about the capture centre
+        const double r = srcRate_ > 0 ? srcRate_ : rate_.load();
+        notches_.process(x, n, r, captureCentreHz());
+    } else notches_.process(x, 0, 0, 0);   // takes a pending change of the list (nothing is filtered)
     lastSamples_ = a0;   // the radio is alive, whether or not the resampler gives a sample out of this block
     if (offResample_) { offBuf_.clear(); offRs_.process(x, n, offBuf_); x = offBuf_.data(); n = offBuf_.size(); }
-    if (!n) return;
+    if (!n) { tRx_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - a0).count(); tRxCpu_ += (double)(cpu::threadNs() - c0) * 1e-9; return; }
     if (sigid_.armed()) sigid_.push(x, n);
     if (autodet_.armed()) autodet_.push(x, n);
     feedSpectrum(x, n);
     if (const int s = secAct_.load(); s >= 0 && s != activeStd_.load()) pushSecondary(x, n);   // the second mode: a copy, before the first receiver
     if (monitor_.enabled()) {   // "Monitor audio": the tuned channel, a copy
         double dial;
-        { std::lock_guard<std::mutex> lk(tuneMu_); dial = lastTune_.centerHz; }
-        monitor_.push(x, n, rate_.load(), dial + monitorOffsetHz_.load() - captureCentreHz());
+        bool rec;
+        { std::lock_guard<std::mutex> lk(tuneMu_); dial = lastTune_.centerHz; rec = lastDev_.kind == DeviceInfo::File; }
+        monitor_.push(x, n, rate_.load(), monitorShiftHz(dial, captureCentreHz(), decodeShiftHz_.load(), monitorOffsetHz_.load(), rec));   // the decode shift too (#488)
     }
     // sticky tuning: only the first receiver gets the clicked signal at DC. The spectrum, the signal identifier, the second mode and the
     // monitor see the capture as the radio delivers it (their frequencies are relative to captureCentreHz()), so the display stays put
@@ -94,17 +112,53 @@ void Engine::ingest(cf32* x, size_t n) {
     // a recording with the tune box off its centre: a receiver that watches the whole span (one decoder per carrier, several TV channels, the
     // spectrum analysers) keeps the capture as it is; the tune box is then only a marker for it
     const int act = activeStd_.load();
-    const bool wholeSpan = fileCentreHz_.load() > 0 && ((mtvActive_.load(std::memory_order_relaxed) && (mtvSat_.load(std::memory_order_relaxed) ? act == 7 : act <= 1)) || (wideOn_.load(std::memory_order_relaxed) && WideModes::supports(act)) || act == 42 || act == 43);
+    const bool wholeSpan = fileCentreHz_.load() > 0 && ((mtvActive_.load(std::memory_order_relaxed) && mtvMatches(act)) || (wideOn_.load(std::memory_order_relaxed) && WideModes::supports(act)) || act == 42 || act == 43);
+    if (spurNotch_.load(std::memory_order_relaxed) && !wholeSpan) {   // "Clean the input": the radio's own spurs, never the wanted channel
+        const double r = rate_.load();
+        if (r != spurRate_) { spurRate_ = r; spurn_.configure(r); }
+        double bw = 0, rf = captureCentreHz(), tuneOff = 0;
+        if (const ModeTuning* mt = modeTuning(act + 1)) { bw = mt->bandwidthMhz * 1e6; tuneOff = mt->tuneOffsetHz; }
+        { std::lock_guard<std::mutex> lk(tuneMu_); bw = std::max(bw, lastTune_.bandwidthMhz * 1e6); }
+        // a wide channel (more than a third of the capture) protects all of it; a mode that tunes off its channel has it on either side of the centre
+        if (bw > r / 3) bw = r;
+        spurn_.setChannel(decodeShiftHz_.load() + (tuneOff != 0 ? -tuneOff : 0), bw, rf, tuneOff != 0 ? tuneOff : 0);
+        spurn_.process(x, n);
+        spurLines_ = spurn_.activeCount();
+    } else if (spurLines_.load(std::memory_order_relaxed) != 0 || spurRate_ != 0) { spurLines_ = 0; spurRate_ = 0; spurn_.reset(); }
     {
         cpu::Scope cs(cpuDec_.load(std::memory_order_relaxed));   // the receiver's CPU (and its pool jobs) to the decoder account
         if (!wholeSpan) decodeMix_.mix(x, n);
-        feedRx(x, n);
+        if (rxPipe_) {   // 4.0: the receiver on its own thread gets this block, in order (rxPipeRun)
+            RxBlock b;
+            { std::lock_guard<std::mutex> lk(rxFreeMu_); if (!rxFree_.empty()) { b.x = std::move(rxFree_.back()); rxFree_.pop_back(); } }
+            b.x.assign(x, x + n);
+            b.mode = activeStd_.load();
+            b.raw = pendingRaw_; pendingRaw_ = 0;
+            rxPipe_->push(std::move(b));
+        } else feedRx(x, n);
     }
     tRx_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - a0).count();
+    tRxCpu_ += (double)(cpu::threadNs() - c0) * 1e-9;
+    if (rxPipe_) { const uint64_t pc = rxPipeCpuNs_.load(std::memory_order_relaxed); tRxCpu_ += (double)(pc - rxPipeCpuSeen_) * 1e-9; rxPipeCpuSeen_ = pc; }
     nSamp_ += n;
 }
 
-Engine::Engine() : t0_(std::chrono::steady_clock::now()) { wide_.setTuning(WideTuning()); }   // the whole-span banks get the CPU limit
+namespace {
+// The Rust crates report their diagnostic codes through this: the line is the same as a C++ DIAG (docs/DIAGNOSTICS.md).
+void rustDiagEmit(int32_t level, int32_t code, const uint8_t* text, size_t len) {
+    const diag::Level l = level <= 0 ? diag::Level::Debug : level == 1 ? diag::Level::Warn : diag::Level::Error;
+    diag::emit(l, code, "%.*s", (int)len, reinterpret_cast<const char*>(text));
+}
+int32_t rustDiagDebug() { return diag::debugEnabled() ? 1 : 0; }
+} // namespace
+
+Engine::Engine() : t0_(std::chrono::steady_clock::now()) {
+    static const bool rustDiag = (onair_diag_set_sink(&rustDiagEmit, &rustDiagDebug), true);   // once per process
+    (void)rustDiag;
+    wide_.setTuning(WideTuning());   // the whole-span banks get the CPU limit
+    // DVB-H / IP datacasting: datagrams whose bytes are all known good (section CRCs, MPE-FEC) go to the IP output
+    mpe_.setDatagramCallback([this](const uint8_t* d, size_t n, bool reliable, int) { if (reliable) ipOut_.packet(d, n); });
+}
 
 void Engine::cpuAccounts() {
     const std::string p = "rx" + std::to_string(receiverId_) + " ";
@@ -137,7 +191,7 @@ void Engine::stop() {
     if (!running_ && !src_) return;
     stopReq_ = true;
     if (th_.joinable()) th_.join();
-    mtvActive_ = false; mtvSat_ = false;
+    mtvActive_ = false; mtvSat_ = false; mtvOther_ = -1;
     { std::shared_ptr<MultiTv> m; { std::lock_guard<std::mutex> lk(mtvMu_); m.swap(mtv_); } }   // the channels' receivers stop with the radio
     mtvKeyRate_ = -1;
     rec_.stop();   // a recording ends with the radio (the analysis thread is gone, nothing pushes any more)
@@ -172,8 +226,8 @@ bool Engine::syntheticSource() const {
 bool Engine::startRecording(const std::string& path, FileFormat fmt, std::string& err) {
     DeviceInfo::Kind kind;
     { std::lock_guard<std::mutex> lk(tuneMu_); kind = lastDev_.kind; }
-    if (!running_ || !src_) { err = "start the radio first"; return false; }
-    if (kind == DeviceInfo::File) { err = "recording a file playback is not needed: the file is already there"; return false; }
+    if (!running_ || !src_) { DIAG_DEBUG(402703, "A raw IQ recording was requested while no radio is running, so it is refused."); err = "start the radio first"; return false; }
+    if (kind == DeviceInfo::File) { DIAG_DEBUG(990557, "A raw IQ recording was requested while a file is playing, so it is refused."); err = "recording a file playback is not needed: the file is already there"; return false; }
     TuneSettings t;
     { std::lock_guard<std::mutex> lk(tuneMu_); t = lastTune_; }
     rec_.setSigmf(recSigmf_, kind == DeviceInfo::Synthetic ? 0.0 : radioTune(t).centerHz, recordingModeId(stdMode_.load()));
@@ -209,6 +263,7 @@ bool Engine::timeMachineSaveTo(const std::string& path, double preSeconds, doubl
 }
 
 void Engine::applyReset() {
+    rxStartNs_ = steadyNs();   // an overflow in the next seconds belongs to the reset (overflow_cause.h)
     tm_.discard();   // the history is at the old centre frequency
     std::lock_guard<std::mutex> secLk(secFeedMu_);   // the second mode's receiver is reset with the rest, never while it takes a block
     {
@@ -254,6 +309,7 @@ void Engine::applyReset() {
     rxVor_.reset();
     rxNdb_.reset();
     rxDme_.reset();
+    rxSitor_.reset();
     rxM17_.reset();
     rxHfdl_.reset();
     rxCell_.reset();
@@ -271,6 +327,7 @@ void Engine::applyReset() {
     rxSpecan_.reset();
     rxAstro_.reset();
     rxDvbc_.reset();
+    rxC2_.reset();
     rxOrb_.reset();
     rxUplink_.reset();
     rxAle_.reset();
@@ -285,7 +342,10 @@ void Engine::applyReset() {
     rxGs_.reset();
     rxVdes_.reset();
     rxZb_.reset();
+    rxTh_.reset();
     rxFlarm_.reset();
+    rxAdsl_.reset();
+    rxAvRoad_.reset();
     rxHfb_.reset();
     rxDji_.reset();
     rxNb_.reset();
@@ -315,11 +375,40 @@ void Engine::applyReset() {
     rxEbi_.reset();
     rxInmsat_.reset();
     rxNrf_.reset();
+    rxRc_.reset();
+    rxXlink_.reset();
+    for (auto& r : rxCis_) r.reset();
+    for (auto& r : rxW1a_) r.reset();
+    rxSens_.reset();
+    rxBgan_.reset();
+    rxSfer_.reset();
+    rxLtpos_.reset();
+    rxFbr_.reset();
+    rxX40_.reset();
     rxAtis_.reset();
+    rxSelcal_.reset();
+    rxUmts_.reset();
+    rxCdma_.reset();
+    rxTds_.reset();
+    rxVdl3_.reset();
+    rxCp16_.reset();
+    rxFy3a_.reset();
+    for (auto& w : rxWx_) w.reset();
+    for (auto& h : rxHs_) h.reset();
+    for (auto& w : rxXb_) w.reset();
+    for (auto& w : rxSd3_) w.reset();
+    rxFy3m_.reset();
+    for (auto& h : rxHfu_) h.reset();
+    for (auto& h : rxHfm_) h.reset();
+    rxRpr_.reset();
+    rxPh2_.reset();
+    rxPh3_.reset();
+    rxPh4_.reset();
     rxSw_.reset();
     rxPskd_.reset();
     rxWs_.reset();
     rxZw_.reset();
+    rxBtc_.reset();
     rxEcz_.reset();
     rxFpv_.reset();
     rxWmb_.reset();
@@ -331,12 +420,17 @@ void Engine::applyReset() {
     rxKaal_.reset();
     rxKait_.reset();
     rxMarineVhf_.reset();
+    rxChv_.reset();
     rxMilhf_.reset();
     rxSbas_.reset();
     rxArgos_.reset();
     rxSfx_.reset();
     rxSb_.reset();
+    rxSatd_.reset();
+    rxNavic_.reset();
+    rxTsb_.reset();
     rxIsdbs_.reset();
+    rxDvbsh_.reset();
     rxKaws_.reset();
     rxKapp_.reset();
     rxKavb_.reset();
@@ -344,11 +438,16 @@ void Engine::applyReset() {
     rxCq_.reset();
     rxMs_.reset();
     rxGd_.reset();
+    rxHrdcp_.reset();
     rxRid_.reset();
+    rxEspnow_.reset();
     rxMeteor_.reset();
     rxNr_.reset();
     rxGoes_.reset();
     rxEl_.reset();
+    rxGkL_.reset();
+    rxGkH_.reset();
+    rxFy_.reset();
     rxUat_.reset();
     rxVdl4_.reset();
     rxHrpt_.reset();
@@ -356,12 +455,14 @@ void Engine::applyReset() {
     analyzer_.resize(specFft_.load() > 0 ? (size_t)specFft_.load() : SpectrumAnalyzer::autoSize(rate_.load()));   // finer bins for a wide capture
     analyzer_.setSampleRate(rate_.load());
     analyzer_.reset();
+    zoom_.reset();   // the zoom spectrum's samples belong to the old tuning too (its plan stays: the screen asks again each frame)
     analyzer_.setFastRows(0, 0); analyzer_.setFastRows(fastRps_.load(), rate_.load());   // the sample rate may have changed: the hop and the row transform follow
     {
         std::lock_guard<std::mutex> lk(tsMu_);
         demux_.reset();
+        mpe_.reset();
         unpack_ = BbUnpacker();
-        unpack_.setSink([this](const uint8_t* pkt) { demux_.feed(pkt); if (!playerExternal_) { ttx_.feedTs(pkt); dvbsub_.feedTs(pkt); } frameBuf_.insert(frameBuf_.end(), pkt, pkt + 188); });
+        unpack_.setSink([this](const uint8_t* in) { uint8_t merged[188]; memcpy(merged, in, 188); plpMerge_.step(merged); const uint8_t* pkt = merged; demux_.feed(pkt); if (!playerExternal_) { ttx_.feedTs(pkt); dvbsub_.feedTs(pkt); } frameBuf_.insert(frameBuf_.end(), pkt, pkt + 188); });
         tsSnap_ = TsSnapshot();
         lastT2Frame_ = -1;
         frameBuf_.clear();
@@ -380,14 +481,25 @@ void Engine::applyReset() {
 
 void Engine::onTsPackets(const uint8_t* pk, size_t n, double secs) {
     std::lock_guard<std::mutex> lk(tsMu_);
-    demux_.setGbDefault(stdMode_.load() == 9);   // DTMB
-    dvbsi::setGbDefaultGlobal(stdMode_.load() == 9);
+    const int standard = stdMode_.load();
+    demux_.setTextEncoding(standard == 9 ? dvbsi::TextEncoding::Gb2312 :
+                          standard == 5 || standard == 156 ? dvbsi::TextEncoding::Isdb : dvbsi::TextEncoding::Dvb);
+    // T2-MI: a transmitter feed in this stream. The monitor keeps looking at the outer stream; the demuxer and the player can follow a PLP inside it.
+    t2miInner_.clear();
+    {
+        t2miIn_.setSink([this](int plp, const uint8_t* p) { if (plp == t2miUse_.load()) t2miInner_.insert(t2miInner_.end(), p, p + 188); });
+        for (size_t i = 0; i < n; i++) t2miIn_.feed(pk + i * 188);
+    }
+    const bool innerOnly = t2miUse_.load() >= 0 && t2miIn_.found();
+    if (innerOnly) { pk = t2miInner_.data(); n = t2miInner_.size() / 188; }
     for (size_t i = 0; i < n; i++) {
         const uint8_t* q = pk + i * 188;
         demux_.feed(q);
+        tr290_.feed(q, tr290T_); tr290T_ += n ? secs / (double)n : 0;
         if (!playerExternal_) ttx_.feedTs(q);
         if (!playerExternal_) dvbsub_.feedTs(q);
     }
+    mpe_.feed(pk, n);   // DVB-H and other IP datacasting: MPE / MPE-FEC sections found by themselves
     demux_.advance(secs);
     tsSnap_ = demux_.snapshot();
     outputs_.packets(pk, n, &tsSnap_);
@@ -422,16 +534,60 @@ void Engine::feedReceiver(int a, const cf32* x, size_t n) {
         if (auto sink = std::atomic_load(&pluginSink_)) (*sink)(reinterpret_cast<const float*>(x), n, rate_.load());
         return;
     }
+    if (fmCensusOn_.load(std::memory_order_relaxed) && a == 6) {   // the FM census: every station in the capture, beside the listened one
+        const double c = captureCentreHz(), r = rate_.load();
+        if (!fmCensusReady_ || c != fmCensusC_ || r != fmCensusR_) { fmCensusC_ = c; fmCensusR_ = r; fmCensusReady_ = fmCensus_.configure(r, c); }
+        if (fmCensusReady_) fmCensus_.feed(x, n);
+    }
+    if (dabCensusOn_.load(std::memory_order_relaxed) && a == 3) {  // the DAB census: every ensemble in the capture, beside the listened one
+        const double c = captureCentreHz(), r = rate_.load();
+        if (!dabCensusReady_ || c != dabCensusC_ || r != dabCensusR_) { dabCensusC_ = c; dabCensusR_ = r; dabCensusReady_ = dabCensus_.configure(r, c); }
+        if (dabCensusReady_) dabCensus_.feed(x, n);
+    }
+    if (amCensusOn_.load(std::memory_order_relaxed)) {             // the AM census: every carrier of the capture, analysis only
+        const double c = captureCentreHz(), r = rate_.load();
+        if (!amCensusReady_ || c != amCensusC_ || r != amCensusR_) { amCensusC_ = c; amCensusR_ = r; amCensusReady_ = amCensus_.configure(r, c); }
+        if (amCensusReady_) amCensus_.feed(x, n);
+    }
+    if (pagerFindOn_.load(std::memory_order_relaxed) && a == 24) {   // the pager scan: every pager carrier of the capture, beside the mode's own receiver
+        const double c = captureCentreHz(), r = rate_.load();
+        if (!pagerFindReady_ || c != pagerFindC_ || r != pagerFindR_) { pagerFindC_ = c; pagerFindR_ = r; pagerFindReady_ = pagerFind_.configure(r, c); }
+        if (pagerFindReady_) pagerFind_.feed(x, n);
+    }
+    if (smartCubeOn_.load(std::memory_order_relaxed) && a == 62) { smartCube_.feed(x, n); return; }   // Smart CubeSat takes the capture
+    if (wideAllOn_.load(std::memory_order_relaxed)) { wideAll_.feed(x, n); return; }   // decode everything in view: the session takes the capture
     if (vfoN_.load(std::memory_order_relaxed)) vfoFeed(x, n);   // multi-VFO: the extra channels on the same capture (the mode's own receiver still gets the samples below)
-    if (mtvActive_.load(std::memory_order_relaxed) && (mtvSat_.load(std::memory_order_relaxed) ? a == 7 : a <= 1)) { if (auto m = mtvGet()) { m->feed(x, n); return; } }   // multi-channel TV: one receiver per channel of the span
+    if (mtvActive_.load(std::memory_order_relaxed) && mtvMatches(a)) { if (auto m = mtvGet()) { m->feed(x, n); return; } }   // multi-channel TV: one receiver per channel of the span
     if (wideOn_.load(std::memory_order_relaxed) && WideModes::supports(a)) {
-        if (a == 24) wide_.setPagerOptions(rxPager_.protocols(), rxPager_.pocsagBauds());   // the screens' POCSAG / FLEX / baud choice reaches every carrier
+        if (a == 24) wide_.setPagerOptions(rxPager_.protocols(), rxPager_.pocsagBauds(), rxPager_.selcall());   // the screens' POCSAG / FLEX / baud choice reaches every carrier
         if (a == 24 || a == 25) wide_.setNarrowChannels(rxPager_.narrowChannel(), rxPacket_.narrowChannel());   // the 12.5 / 25 kHz choice too
         if (a == 25) wide_.setPacketOptions(rxPacket_.fixBits(), rxPacket_.emphasis());                         // and fix bits / emphasis
         wide_.feed(a, x, n);
         return;
     }   // whole-span decoding: one decoder per carrier
-    if (a == 5) rxI_.feed(x, n); else if (a == 4) rxA3_.feed(x, n); else if (a == 3) rxD_.feed(x, n); else if (a == 2) rxA_.feed(x, n); else if (a == 1) rxT_.feed(x, n); else if (a == 6) rxFm_.feed(x, n); else if (a == 7) rxDvbs_.feed(x, n); else if (a == 8) rxDtmb_.feed(x, n); else if (a == 9) rxAtv_.feed(x, n); else if (a == 10) rxDmr_.feed(x, n); else if (a == 11) rxDrm_.feed(x, n); else if (a == 12) rxAdsb_.feed(x, n); else if (a == 13) rxGnss_.feed(x, n); else if (a == 14) rxSonde_.feed(x, n); else if (a == 15) rxAis_.feed(x, n); else if (a == 16) rxMarine_.feed(x, n); else if (a == 17) rxAcars_.feed(x, n); else if (a == 18) rxInmc_.feed(x, n); else if (a == 19) rxAero_.feed(x, n); else if (a == 20) rxIridium_.feed(x, n); else if (a == 21) rxMesh_.feed(x, n); else if (a == 22) rxHdr_.feed(x, n); else if (a == 23) rxCdr_.feed(x, n); else if (a == 24) rxPager_.feed(x, n); else if (a == 25) rxPacket_.feed(x, n); else if (a == 26) rxHfdig_.feed(x, n); else if (a == 27) rxAirband_.feed(x, n); else if (a == 28) rxVdl2_.feed(x, n); else if (a == 29) rxIsm_.feed(x, n); else if (a == 30) rxNdb_.feed(x, n); else if (a == 31) rxVor_.feed(x, n); else if (a == 32) rxM17_.feed(x, n); else if (a == 33) rxCell_.feed(x, n); else if (a == 35) rxCw_.feed(x, n); else if (a == 34) rxDstar_.feed(x, n); else if (a == 36) rxHfdl_.feed(x, n); else if (a == 39) rxNxdn_.feed(x, n); else if (a == 46) rxDpmr_.feed(x, n); else if (a == 40) rxGsmr_.feed(x, n); else if (a == 37) rxPsk_.feed(x, n); else if (a == 38) rxJs8_.feed(x, n); else if (a == 42) rxSpecx_.feed(x, n); else if (a == 43) rxSpecan_.feed(x, n); else if (a == 41) rxDvbc_.feed(x, n); else if (a == 45) rxOrb_.feed(x, n); else if (a == 44) rxUplink_.feed(x, n); else if (a == 47) rxTetra_.feed(x, n); else if (a == 50) rxAle_.feed(x, n); else if (a == 48) rxMac_.feed(x, n); else if (a == 49) rxAstro_.feed(x, n); else if (a == 51) rxP25_.feed(x, n); else if (a == 52) rxBle_.feed(x, n); else if (a == 53) rxIono_.feed(x, n); else if (a == 54) rxQo100_.feed(x, n); else if (a == 55) rxWifi_.feed(x, n); else if (a == 56) { rxGeneral_.feed(x, n); for (int i = 0, k = extraGeneralN_.load(std::memory_order_relaxed); i < k; i++) extraGeneral_[(size_t)i].feed(x, n); } else if (a == 59) rxTime_.feed(x, n); else if (a == 57) rxRid_.feed(x, n); else if (a == 60) rxMeteor_.feed(x, n); else if (a == 58) rxNr_.feed(x, n); else if (a == 61) rxGoes_.feed(x, n); else if (a == 62) rxCube_.feed(x, n); else if (a == 63) rxGs_.feed(x, n); else if (a == 64) rxVdes_.feed(x, n); else if (a == 65) rxHrpt_.feed(x, n); else if (a == 66) rxZb_.feed(x, n); else if (a == 67) rxFlarm_.feed(x, n); else if (a == 68) rxHfb_.feed(x, n); else if (a == 69) rxDji_.feed(x, n); else if (a == 70) rxNb_.feed(x, n); else if (a == 71) rxHl_.feed(x, n); else if (a == 73) rxCd_.feed(x, n); else if (a == 74) rxWb_.feed(x, n); else if (a == 75) rxDw_.feed(x, n); else if (a == 77) rxSame_.feed(x, n); else if (a == 78) rxAnt_.feed(x, n); else if (a == 79) rxDect_.feed(x, n); else if (a == 80) rxTetrapol_.feed(x, n); else if (a == 81) rxEl_.feed(x, n); else if (a == 82) rxLbj_.feed(x, n); else if (a == railway::kKlwActiveStandard) rxKlw_.feed(x, n); else if (a == railway::kTdcsActiveStandard) rxTdcs_.feed(x, n); else if (a == horus::kActiveStandard) rxHorus_.feed(x, n); else if (a == 83) rxVdl4_.feed(x, n); else if (a == 84) rxUat_.feed(x, n); else if (a == 85) rxWs_.feed(x, n); else if (a == 86) rxEcz_.feed(x, n); else if (a == 87) rxWmb_.feed(x, n); else if (a == 102) rxFpv_.feed(x, n); else if (a == 90) rxTones_.feed(x, n); else if (a == 93) rxSar_.feed(x, n); else if (a == 96) rxMt63_.feed(x, n); else if (a == 114) rxFsq_.feed(x, n); else if (a == 117) rxIfkp_.feed(x, n); else if (a == 121) rxDgps_.feed(x, n); else if (a == 99) rxZw_.feed(x, n); else if (a == 105) rxMs_.feed(x, n); else if (a == 76) rxMt_.feed(x, n); else if (a == 72) rxLr_.feed(x, n); else if (a == 108) rxCq_.feed(x, n); else if (a == 122) rxDme_.feed(x, n); else if (a == 123) rxKaal_.feed(x, n); else if (a == 127) rxEloran_.feed(x, n); else if (a == 149) rxNfc_.feed(x, n); else if (a == 128) rxMpt_.feed(x, n); else if (a == 129) rxFusion_.feed(x, n); else if (a == 141) rxArd_.feed(x, n); else if (a == 142) rxGd_.feed(x, n); else if (a == 143) rxModeAc_.feed(x, n); else if (a == 144) rxBt_.feed(x, n); else if (a == 145) rxSb_.feed(x, n); else if (a == 124) rxKavb_.feed(x, n); else if (a == 134) rxKaws_.feed(x, n); else if (a == 146) rxMilhf_.feed(x, n); else if (a == 153) rxArgos_.feed(x, n); else if (a == 154) rxSfx_.feed(x, n); else if (a == 151) rxSbas_.feed(x, n); else if (a == 152) rxAsterix_.feed(x, n); else if (a == 130) rxLtr_.feed(x, n); else if (a == 131) rxEdacs_.feed(x, n); else if (a == 181) rxP25p2_.feed(x, n); else if (a == 156) rxMarineVhf_.feed(x, n); else if (a == 132) rxKait_.feed(x, n); else if (a == 125) rxKapp_.feed(x, n); else if (a == 126) rxKaft_.feed(x, n); else if (a == 201) rxLw_.feed(x, n); else if (a == 202) rxLs_.feed(x, n); else if (a == 155) rxIsdbs_.feed(x, n); else if (a == 204) rxPac_.feed(x, n); else if (a == 205) rxEsg_.feed(x, n); else if (a == 206) rxRoshf_.feed(x, n); else if (a == 207) rxSsdv_.feed(x, n); else if (a == 208) rxEbi_.feed(x, n); else if (a == 209) rxInmsat_.feed(x, n); else if (a == 210) {}   /* Internet TV: no receiver, the stream goes straight to the player */ else if (a == 211) rxNrf_.feed(x, n); else if (a == 212) rxAtis_.feed(x, n); else if (a == 213) rxSw_.feed(x, n); else if (a == 203) rxPskd_.feed(x, n); else rx_.feed(x, n);
+    if (x40::variantOfActive(a) >= 0) { rxX40_.feed(x, n); return; }   // 4.0 signal modes
+    if (a >= 401 && a <= 412) { rxAvRoad_.feed(x, n); return; }   // aviation, rail and road modes
+    if (a == 301) { rxAdsl_.feed(x, n); rxFlarm_.feed(x, n); return; }
+    if (a == 900) { rxRpr_.feed(x, n); return; }   // Robust Packet
+    if (a == 899) { rxEspnow_.feed(x, n); return; }   // ESP-NOW   // ADS-L hears FLARM from the same capture
+    if (a == 5) rxI_.feed(x, n); else if (a == 4) rxA3_.feed(x, n); else if (a == 3) rxD_.feed(x, n); else if (a == 2) rxA_.feed(x, n); else if (a == 1) rxT_.feed(x, n); else if (a == 6) rxFm_.feed(x, n); else if (a == 7) rxDvbs_.feed(x, n); else if (a == 8) rxDtmb_.feed(x, n); else if (a == 9) rxAtv_.feed(x, n); else if (a == 10) rxDmr_.feed(x, n); else if (a == 11) rxDrm_.feed(x, n); else if (a == 12) rxAdsb_.feed(x, n); else if (a == 13) rxGnss_.feed(x, n); else if (a == 14) rxSonde_.feed(x, n); else if (a == 15) rxAis_.feed(x, n); else if (a == 16) rxMarine_.feed(x, n); else if (a == 17) rxAcars_.feed(x, n); else if (a == 18) rxInmc_.feed(x, n); else if (a == 19) rxAero_.feed(x, n); else if (a == 20) rxIridium_.feed(x, n); else if (a == 21) rxMesh_.feed(x, n); else if (a == 22) rxHdr_.feed(x, n); else if (a == 23) rxCdr_.feed(x, n); else if (a == 24) rxPager_.feed(x, n); else if (a == 25) rxPacket_.feed(x, n); else if (a == 26) rxHfdig_.feed(x, n); else if (a == 27) rxAirband_.feed(x, n); else if (a == 28) rxVdl2_.feed(x, n); else if (a == 29) rxIsm_.feed(x, n); else if (a == 30) rxNdb_.feed(x, n); else if (a == 31) rxVor_.feed(x, n); else if (a == 32) rxM17_.feed(x, n); else if (a == 33) rxCell_.feed(x, n); else if (a == 35) rxCw_.feed(x, n); else if (a == 34) rxDstar_.feed(x, n); else if (a == 36) rxHfdl_.feed(x, n); else if (a == 39) rxNxdn_.feed(x, n); else if (a == 46) rxDpmr_.feed(x, n); else if (a == 40) rxGsmr_.feed(x, n); else if (a == 37) rxPsk_.feed(x, n); else if (a == 38) rxJs8_.feed(x, n); else if (a == 42) rxSpecx_.feed(x, n); else if (a == 43) rxSpecan_.feed(x, n); else if (a == 41) rxDvbc_.feed(x, n); else if (a == 45) rxOrb_.feed(x, n); else if (a == 44) rxUplink_.feed(x, n); else if (a == 47) rxTetra_.feed(x, n); else if (a == 50) rxAle_.feed(x, n); else if (a == 48) rxMac_.feed(x, n); else if (a == 49) rxAstro_.feed(x, n); else if (a == 51) rxP25_.feed(x, n); else if (a == 52) rxBle_.feed(x, n); else if (a == 53) rxIono_.feed(x, n); else if (a == 54) rxQo100_.feed(x, n); else if (a == 55) rxWifi_.feed(x, n); else if (a == 56) { rxGeneral_.feed(x, n); for (int i = 0, k = extraGeneralN_.load(std::memory_order_relaxed); i < k; i++) extraGeneral_[(size_t)i].feed(x, n); } else if (a == 59) rxTime_.feed(x, n); else if (a == 57) rxRid_.feed(x, n); else if (a == 60) rxMeteor_.feed(x, n); else if (a == 58) rxNr_.feed(x, n); else if (a == 61) rxGoes_.feed(x, n); else if (a == 62 || cubesatViewForActive(a)) rxCube_.feed(x, n);   /* 3.9 framing views share it */ else if (a == 63) rxGs_.feed(x, n); else if (a == 64) rxVdes_.feed(x, n); else if (a == 65) rxHrpt_.feed(x, n); else if (a == 66) rxZb_.feed(x, n); else if (a == 245) rxTh_.feed(x, n); else if (a == 67) rxFlarm_.feed(x, n); else if (a == 68) rxHfb_.feed(x, n); else if (a == 69) rxDji_.feed(x, n); else if (a == 70) rxNb_.feed(x, n); else if (a == 71) rxHl_.feed(x, n); else if (a == 73) rxCd_.feed(x, n); else if (a == 74) rxWb_.feed(x, n); else if (a == 75) rxDw_.feed(x, n); else if (a == 77) rxSame_.feed(x, n); else if (a == 78) rxAnt_.feed(x, n); else if (a == 79) rxDect_.feed(x, n); else if (a == 80) rxTetrapol_.feed(x, n); else if (a == 81) rxEl_.feed(x, n); else if (a == 82) rxLbj_.feed(x, n); else if (a == railway::kKlwActiveStandard) rxKlw_.feed(x, n); else if (a == railway::kTdcsActiveStandard) rxTdcs_.feed(x, n); else if (a == horus::kActiveStandard) rxHorus_.feed(x, n); else if (a == 83) rxVdl4_.feed(x, n); else if (a == 84) rxUat_.feed(x, n); else if (a == 85) rxWs_.feed(x, n); else if (a == 86) rxEcz_.feed(x, n); else if (a == 87) rxWmb_.feed(x, n); else if (a == 102) rxFpv_.feed(x, n); else if (a == 90) rxTones_.feed(x, n); else if (a == 93) rxSar_.feed(x, n); else if (a == 96) rxMt63_.feed(x, n); else if (a == 114) rxFsq_.feed(x, n); else if (a == 117) rxIfkp_.feed(x, n); else if (a == 121) rxDgps_.feed(x, n); else if (a == 99) rxZw_.feed(x, n); else if (a == 105) rxMs_.feed(x, n); else if (a == 76) rxMt_.feed(x, n); else if (a == 72) rxLr_.feed(x, n); else if (a == 108) rxCq_.feed(x, n); else if (a == 122) rxDme_.feed(x, n); else if (a == 120) rxSitor_.feed(x, n); else if (a == 123) rxKaal_.feed(x, n); else if (a == 127) rxEloran_.feed(x, n); else if (a == 149) rxNfc_.feed(x, n); else if (a == 128) rxMpt_.feed(x, n); else if (a == 129) rxFusion_.feed(x, n); else if (a == 141) rxArd_.feed(x, n); else if (a == 142) rxGd_.feed(x, n); else if (a == 701) rxHrdcp_.feed(x, n); else if (a == 143) rxModeAc_.feed(x, n); else if (a == 144) rxBt_.feed(x, n); else if (a == 145) rxSb_.feed(x, n); else if (a == 124) rxKavb_.feed(x, n); else if (a == 134) rxKaws_.feed(x, n); else if (a == 146) rxMilhf_.feed(x, n); else if (a == 153) rxArgos_.feed(x, n); else if (a == 154) rxSfx_.feed(x, n); else if (a == 151) rxSbas_.feed(x, n); else if (a == 152) rxAsterix_.feed(x, n); else if (a == 130) rxLtr_.feed(x, n); else if (a == 131) rxEdacs_.feed(x, n); else if (a == 181) rxP25p2_.feed(x, n); else if (a == 156) rxMarineVhf_.feed(x, n); else if (a == 132) rxKait_.feed(x, n); else if (a == 125) rxKapp_.feed(x, n); else if (a == 126) rxKaft_.feed(x, n); else if (a == 201) rxLw_.feed(x, n); else if (a == 202) rxLs_.feed(x, n); else if (a == 155) rxIsdbs_.feed(x, n); else if (a == 204) rxPac_.feed(x, n); else if (a == 205) rxEsg_.feed(x, n); else if (a == 206) rxRoshf_.feed(x, n); else if (a == 207) rxSsdv_.feed(x, n); else if (a == 208) rxEbi_.feed(x, n); else if (a == 209) rxInmsat_.feed(x, n); else if (a == 210) {}   /* Internet TV: no receiver, the stream goes straight to the player */ else if (a == 211) rxNrf_.feed(x, n); else if (a == 242) rxSens_.feed(x, n); else if (a == 246) rxBgan_.feed(x, n); else if (a == 361) rxRc_.feed(x, n); else if (a >= 261 && a < 261 + kWxNumProfiles) rxWx_[a - 261].feed(x, n); else if (a == 244) rxSfer_.feed(x, n); else if (a == 791) rxLtpos_.feed(x, n); else if (a == 212) rxAtis_.feed(x, n); else if (a == 241) rxSelcal_.feed(x, n); else if (a == 236) rxFy3a_.feed(x, n); else if (a == 237) rxFy3m_.feed(x, n); else if (a == 238) rxPh2_.feed(x, n); else if (a == 239) rxPh3_.feed(x, n); else if (a == 240) rxPh4_.feed(x, n); else if (a == 231) rxGkL_.feed(x, n); else if (a == 232) rxGkH_.feed(x, n); else if (a == 213) rxSw_.feed(x, n); else if (a == 203) rxPskd_.feed(x, n); else if (a >= 233 && a <= 235) rxFy_.feed(x, n); else if (a == 381) rxBtc_.feed(x, n); else if (a >= 341 && a <= 347) rxChv_.feed(x, n); else if ((a >= 291 && a <= 300) || a == 511) rxSd3_[sd3ProfileOfActive(a)].feed(x, n); else if (a >= 431 && a <= 440) rxHfu_[a - 431].feed(x, n); else if (a >= kHfuExtraActiveFirst && a <= kHfuExtraActiveLast) rxHfm_[a - kHfuExtraActiveFirst].feed(x, n); else if (hamsciKindOfActive(a) >= 0) rxHs_[hamsciKindOfActive(a)].feed(x, n); else if (a == 481) rxUmts_.feed(x, n); else if (a == 661) rxCdma_.feed(x, n); else if (a == 662) rxTds_.feed(x, n); else if (a == 641) rxVdl3_.feed(x, n); else if (a == 881) rxCp16_.feed(x, n); else if (isSatDetectActive(a)) rxSatd_.feed(x, n); else if (a == 562) rxNavic_.feed(x, n); else if (a == 731) rxTsb_.feed(x, n); else if (a == 747) rxDvbsh_.feed(x, n); else if (a >= 531 && a <= 550) rxXb_[a - 531].feed(x, n); else if (a == 601 || a == 602) rxXlink_.feed(x, n); else if (a >= 621 && a <= 627) rxCis_[a - 621].feed(x, n); else if (a >= 801 && a <= 803) rxW1a_[a - 801].feed(x, n); else if (a == 742) rxC2_.feed(x, n); else if (a == 871) rxFbr_.feed(x, n); else rx_.feed(x, n);
+}
+
+void Engine::setAmDiversity(bool on, double offsetHz) {
+    if (on) {
+        GeneralReceiver& x = extraGeneral_[0];
+        x.setChannelOffsetHz(offsetHz);
+        if (extraGeneralN_.load() < 1) extraGeneralN_ = 1;
+        amDiv_.start(48000);
+        rxGeneral_.setAudioTap([this](const float* v, size_t n) { amDiv_.pushA(v, n); });
+        x.setAudioTap([this](const float* v, size_t n) { amDiv_.pushB(v, n); });
+        rxGeneral_.setMuted(true);
+    } else {
+        rxGeneral_.setAudioTap(nullptr); extraGeneral_[0].setAudioTap(nullptr);
+        rxGeneral_.setMuted(false);
+        amDiv_.stop();
+    }
+    amDivOn_ = on;
 }
 
 void Engine::changeBandwidth(double mhz) {
@@ -503,6 +659,7 @@ void Engine::resetReceiver(int a) {
     case 29: rxIsm_.reset(); break;
     case 30: rxNdb_.reset(); break;
     case 122: rxDme_.reset(); break;
+    case 120: rxSitor_.reset(); break;
     case 31: rxVor_.reset(); break;
     case 32: rxM17_.reset(); break;
     case 36: rxHfdl_.reset(); break;
@@ -521,6 +678,7 @@ void Engine::resetReceiver(int a) {
     case 43: rxSpecan_.reset(); break;
     case 49: rxAstro_.reset(); break;
     case 41: rxDvbc_.reset(); break;
+    case 742: rxC2_.reset(); break;
     case 45: rxOrb_.reset(); break;
     case 44: rxUplink_.reset(); break;
     case 50: rxAle_.reset(); break;
@@ -530,10 +688,12 @@ void Engine::resetReceiver(int a) {
     case 55: rxWifi_.reset(); break;
     case 56: rxGeneral_.reset(); for (auto& g : extraGeneral_) g.reset(); break;
     case 59: rxTime_.reset(); break;
-    case 62: rxCube_.reset(); break;
+    case 62: case 841: case 844: case 847: case 850: case 853: case 856: rxCube_.reset(); break;   // 841 .. 856: the framing entries (cubesat_rx.h)
     case 63: rxGs_.reset(); break;
     case 64: rxVdes_.reset(); break;
     case 67: rxFlarm_.reset(); break;
+    case 301: rxAdsl_.reset(); rxFlarm_.reset(); break;
+    case 401: case 402: case 403: case 404: case 405: case 406: case 407: case 408: case 409: case 410: case 411: case 412: rxAvRoad_.reset(); break;
     case 68: rxHfb_.reset(); break;
     case 69: rxDji_.reset(); break;
     case 72: rxLr_.reset(); break;
@@ -545,12 +705,81 @@ void Engine::resetReceiver(int a) {
     case 207: rxSsdv_.reset(); break;
     case 208: rxEbi_.reset(); break;
     case 209: rxInmsat_.reset(); break;
+    case 361: rxRc_.reset(); break;
+    case 601: case 602: rxXlink_.reset(); break;
+    case 621: case 622: case 623: case 624: case 625: case 626: case 627: rxCis_[a - 621].reset(); break;
+    case 801: case 802: case 803: rxW1a_[a - 801].reset(); break;
     case 211: rxNrf_.reset(); break;
+    case 242: rxSens_.reset(); break;   // 4.0: the sensor-family entries (sensors_rx.h)
+    case 246: rxBgan_.reset(); break;
+    case 244: rxSfer_.reset(); break;
+    case 791: rxLtpos_.reset(); break;
+    case 871: rxFbr_.reset(); break;
+    DECT2_X40_ACTIVE_CASES rxX40_.reset(); break;
     case 212: rxAtis_.reset(); break;
+    case 241: rxSelcal_.reset(); break;
+    case 481: rxUmts_.reset(); break;
+    case 661: rxCdma_.reset(); break;
+    case 662: rxTds_.reset(); break;
+    case 641: rxVdl3_.reset(); break;
+    case 881: rxCp16_.reset(); break;
+    case 236: rxFy3a_.reset(); break;
+    case 461: rxHs_[0].reset(); break;
+    case 462: rxHs_[1].reset(); break;
+    case 463: rxHs_[2].reset(); break;
+    case 464: rxHs_[3].reset(); break;
+    case 465: rxHs_[4].reset(); break;
+    case 466: rxHs_[5].reset(); break;
+    case 501: rxHs_[6].reset(); break;
+    case 502: rxHs_[7].reset(); break;
+    case 503: rxHs_[8].reset(); break;
+    case 751: rxHs_[9].reset(); break;
+    case 821: rxHs_[10].reset(); break;
+    case 824: rxHs_[11].reset(); break;
+    case 827: rxHs_[12].reset(); break;
+    case 830: rxHs_[13].reset(); break;
+    case 833: rxHs_[14].reset(); break;
+    case 836: rxHs_[15].reset(); break;
+    case 531: case 532: case 533: case 534: case 535: case 536: case 537: case 538: case 539: case 540:
+    case 541: case 542: case 543: case 544: case 545: case 546: case 547: case 548: case 549: case 550: rxXb_[a - 531].reset(); break;
+    case 291: rxSd3_[0].reset(); break;
+    case 292: rxSd3_[1].reset(); break;
+    case 293: rxSd3_[2].reset(); break;
+    case 294: rxSd3_[3].reset(); break;
+    case 295: rxSd3_[4].reset(); break;
+    case 296: rxSd3_[5].reset(); break;
+    case 297: rxSd3_[6].reset(); break;
+    case 298: rxSd3_[7].reset(); break;
+    case 299: rxSd3_[8].reset(); break;
+    case 300: rxSd3_[9].reset(); break;
+    case 511: rxSd3_[10].reset(); break;
+    case 261: rxWx_[0].reset(); break;
+    case 262: rxWx_[1].reset(); break;
+    case 263: rxWx_[2].reset(); break;
+    case 264: rxWx_[3].reset(); break;
+    case 265: rxWx_[4].reset(); break;
+    case 266: rxWx_[5].reset(); break;
+    case 267: rxWx_[6].reset(); break;
+    case 268: rxWx_[7].reset(); break;
+    case 269: rxWx_[8].reset(); break;
+    case 270: rxWx_[9].reset(); break;
+    case 271: rxWx_[10].reset(); break;
+    case 272: rxWx_[11].reset(); break;
+    case 237: rxFy3m_.reset(); break;
+    case 431: case 432: case 433: case 434: case 435: case 436: case 437: case 438: case 439: case 440: rxHfu_[a - 431].reset(); break;
+    case kHfuHdrFamily + 1: case kHfuAle3gFamily + 1: case kHfuLink11Family + 1: case kHfu4481Family + 1: rxHfm_[a - kHfuExtraActiveFirst].reset(); break;
+    case 900: rxRpr_.reset(); break;
+    case 238: rxPh2_.reset(); break;
+    case 239: rxPh3_.reset(); break;
+    case 240: rxPh4_.reset(); break;
     case 213: rxSw_.reset(); break;
+    case 231: rxGkL_.reset(); break;
+    case 232: rxGkH_.reset(); break;
+    case 233: case 234: case 235: rxFy_.reset(); break;
     case 203: rxPskd_.reset(); break;
     case 85: rxWs_.reset(); break;
     case 99: rxZw_.reset(); break;
+    case 381: rxBtc_.reset(); break;
     case 86: rxEcz_.reset(); break;
     case 102: rxFpv_.reset(); break;
     case 87: rxWmb_.reset(); break;
@@ -568,6 +797,7 @@ void Engine::resetReceiver(int a) {
     case 108: rxCq_.reset(); break;
     case 105: rxMs_.reset(); break;
     case 142: rxGd_.reset(); break;
+    case 701: rxHrdcp_.reset(); break;
     case 143: rxModeAc_.reset(); break;
     case 144: rxBt_.reset(); break;
     case 146: rxMilhf_.reset(); break;
@@ -576,14 +806,23 @@ void Engine::resetReceiver(int a) {
     case 153: rxArgos_.reset(); break;
     case 154: rxSfx_.reset(); break;
     case 145: rxSb_.reset(); break;
+    case 551: case 552: case 553: case 554: case 555: case 556: case 557: case 558: case 559: case 560: case 561: case 563: rxSatd_.reset(); break;
+    case 562: rxNavic_.reset(); break;
+    case 731: rxTsb_.reset(); break;
     case 155: rxIsdbs_.reset(); break;
+    case 747: rxDvbsh_.reset(); break;
     case 130: rxLtr_.reset(); break;
     case 131: rxEdacs_.reset(); break;
+    case 321: rxSmartnet_.reset(); break;
+    case 322: rxTetraDmo_.reset(); break;
+    case 323: rxOpenSky_.reset(); break;
     case 156: rxMarineVhf_.reset(); break;
+    case 341: case 342: case 343: case 344: case 345: case 346: case 347: case 348: rxChv_.setService((chv::Service)(a - 341)); rxChv_.reset(); break;   // a mode change: its service
     case 181: rxP25p2_.reset(); break;
     case 61: rxGoes_.reset(); break;
     case 65: rxHrpt_.reset(); break;
     case 66: rxZb_.reset(); break;
+    case 245: rxTh_.reset(); break;
     case 70: rxNb_.reset(); break;
     case 71: rxHl_.reset(); break;
     case 73: rxCd_.reset(); break;
@@ -608,6 +847,7 @@ void Engine::resetReceiver(int a) {
     case 83: rxVdl4_.reset(); break;
     case 76: rxMt_.reset(); break;
     case 57: rxRid_.reset(); break;
+    case 899: rxEspnow_.reset(); break;
     case 60: rxMeteor_.reset(); break;
     case 58: rxNr_.reset(); break;
     default: break;

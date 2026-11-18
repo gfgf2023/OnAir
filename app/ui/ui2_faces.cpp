@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The new interface: the Faceplate, Cinema, Meters, Dock and Panel layouts of the body (the "Scope: Cinema" and
 // "Faceplate" variants are instruments in a chassis; Dock and Panel are the two-column ones).
 // Split from ui2.cpp; the shared declarations are in ui2_internal.h.
 #include "ui2_internal.h"
 #include "dect2/dsp/baseband_filter.h"
 #include "typography.h"
+#include "font_size.h"
 
 using namespace ui2;
 
@@ -141,7 +145,7 @@ void drawMeters(const std::vector<Meter>& ms, float w) {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float bh = 9 * gUi;
         dl->AddText(p, u32(T.dim), m.label.c_str());
-        ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * 1.45f);
+        ImGui::PushFont(ImGui::GetFont(), fontBase() * 1.45f);
         const ImVec2 ts = ImGui::CalcTextSize(m.value.c_str());
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p.x + w - ts.x, p.y - 4 * gUi), u32(T.bright), m.value.c_str());
         ImGui::PopFont();

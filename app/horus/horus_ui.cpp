@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Project Horus balloon screens: the map with every payload's track, the table of payloads heard, the detail of the selected one
 // (last packet, custom fields, the sentence), the packet log, the user's payload ID and custom field tables, and the bottom row with
 // altitude against time and the tone estimator's view of the dial channel.
@@ -88,9 +91,9 @@ void mapView(App& a, ImVec2 size) {
     const HorusTelemetry& t = a.rx.horus;
     const bool on = live(a);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImVec2 click;
     const bool clicked = adsbmap::clickedAt(click);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -120,7 +123,7 @@ void mapView(App& a, ImVec2 size) {
         }
         if (isSel) dl->AddCircle(q, 10 * gUi, IM_COL32(255, 255, 255, 230), 28, 1.6f);
         char b[64]; snprintf(b, sizeof b, "%s  %.1f km", p.callsign.c_str(), last.altM / 1000.0);
-        dl->AddText(ImVec2(q.x + 9 * gUi, q.y - 8 * gUi), IM_COL32(235, 238, 240, p.active ? 255 : 150), b);
+        if (adsbmap::labelsAt(S.map.zoom, isSel)) dl->AddText(ImVec2(q.x + 9 * gUi, q.y - 8 * gUi), IM_COL32(235, 238, 240, p.active ? 255 : 150), b);
         const float d = std::hypot(q.x - click.x, q.y - click.y);
         if (clicked && d < hitD) { hitD = d; hit = &p; }
     }

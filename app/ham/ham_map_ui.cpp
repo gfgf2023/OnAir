@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Ham view's world map (decoded stations, great-circle lines, the grayline, distance and bearing) and the spots panel (every station
 // heard, from the decodes; nothing is fetched from the network): see ham_ops_ui.h.
 #include "ham_ops_ui.h"
@@ -86,7 +89,7 @@ void hamMapTab(App& a) {
         const ham::DecodeMarks m = o.worked.mark(s.call, s.grid, s.band, s.mode, hamDxccKey(s.call));
         const ImU32 c = spotColour(s, m);
         dl->AddCircleFilled(q, 3.5f * gUi, c);
-        if (M.labels && M.view.zoom >= 3) dl->AddText(ImVec2(q.x + 5 * gUi, q.y - 7 * gUi), c, s.call.c_str());
+        if (M.labels && adsbmap::labelsAt(M.view.zoom, false)) dl->AddText(ImVec2(q.x + 5 * gUi, q.y - 7 * gUi), c, s.call.c_str());
         hits.push_back({q, &s});
     }
     // lines: the running QSO (red), the picked station (white)
@@ -104,11 +107,6 @@ void hamMapTab(App& a) {
     };
     if (!o.selGrid.empty() && o.selCall != o.dxCall) pathTo(o.selGrid, IM_COL32(255, 255, 255, 230), o.selCall);
     if (!o.dxGrid.empty()) pathTo(o.dxGrid, IM_COL32(255, 90, 80, 240), o.dxCall);
-    if (haveMe) {
-        const ImVec2 h = adsbmap::project(la, lo);
-        dl->AddCircleFilled(h, 4 * gUi, IM_COL32(110, 210, 230, 255));
-        dl->AddCircle(h, 8 * gUi, IM_COL32(110, 210, 230, 220), 24, 1.5f * gUi);
-    }
     dl->PopClipRect();
     // hover and click on a station
     const ImVec2 mp = ImGui::GetIO().MousePos;

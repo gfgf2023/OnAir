@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV test signal: a live test card (colour bars, grey ramp, multiburst, a moving box, a running clock, the text ONAIR TEST) as composite
 // video with the timing and levels of the chosen system (BT.470-6), amplitude modulated with a negative vision carrier through a
 // vestigial-sideband filter, plus an FM sound carrier that plays a 1 kHz tone with short interruptions or a melody.
@@ -51,7 +54,11 @@ struct AtvGenConfig {
     // 48 kHz interleaved stereo for the sound carrier (mic / file). Empty: the built-in tone / melody of `sound`.
     std::function<int(float* stereo, int frames)> pullAudio;
     // Live camera / file: full-frame analog YUV at picW x picH (Y 0..1). Empty: the test card / bars of `pattern`.
-    std::function<bool(int w, int h, float* y, float* u, float* v)> pullVideo;
+    std::function<bool(double t, int w, int h, float* y, float* u, float* v)> pullVideo;   // t: the time in the signal of this field (s)
+    // the picture format (atv_aspect.h): 0 Auto, 1 4:3, 2 16:9. The source (live picture or test card) is fitted into the frame without distortion and the WSS
+    // of line 23 is sent to match (625 lines). pullAspect: the live source's width / height (empty or <= 0: 4:3, as the card). A source of the frame's own aspect is not changed.
+    int aspect = 0;
+    std::function<double()> pullAspect;
     bool groupDelay = true;
     bool nyquistTx = false;
     bool setup = true;            // 7.5 IRE black level in M
@@ -59,6 +66,10 @@ struct AtvGenConfig {
     double level = 0.4;           // peak carrier amplitude (the complex samples then have an rms of about 0.2)
     double startSec = 0;          // time shown by the clock at the start
     uint64_t seed = 1;
+    bool vbiTeletext = false;     // 625 lines: teletext page 100 in the blanking lines
+    int vbiWss = -1;              // 625 lines: wide screen signalling on line 23, the 4 aspect bits b0..b3
+    std::string vbiCaptions;      // 525 lines: line 21 captions, two characters a frame
+    int vbiTestLine = 0;          // 625 lines: insertion test lines on this line of both fields (a white bar, 12 - 22 us) and the next (a multiburst 0.5 - 4 MHz); 0 none
 };
 
 class AtvCard;

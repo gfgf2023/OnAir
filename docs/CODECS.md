@@ -1,6 +1,8 @@
 # Voice and audio codecs
 
 > **DMR, P25, NXDN, dPMR and D-STAR voice is silent until you install mbelib.** The calls, IDs and data are shown without it. Its vocoders are patented, so OnAir does not include it: put `libmbe` / `mbelib` in the codecs folder (the **?** button next to the sound has an **Open codecs folder** button), then press **Look again**.
+>
+> **Built codecs on Discord.** Every codec install screen and notice in OnAir (the **?** help, **Help > Voice codecs**, the setup wizard and the voice and sound panels) has a **Join the Discord to get access to built codecs** button. It opens <https://discord.gg/ptxkzCuzR> in your browser and nothing else: OnAir itself never downloads, bundles or installs a codec, so the install-it-yourself steps below stay the way to do it, and you still copy the file into the codecs folder yourself. The Dropbox link with the ready-built files for every codec above (Windows, macOS, Linux) is posted in the [OnAir Discord](https://discord.gg/ptxkzCuzR): join it, download the files for your system, put them in the codecs folder and press **Look again**.
 
 > **CDR (China Digital Radio) sound is silent until you install the DRA+ add-on.** The services, signal information and data work without it. See [DRA+ (CDR sound)](#dra-cdr-sound).
 
@@ -12,6 +14,8 @@ install or use them is your own responsibility: follow the patent and radio-list
 Every mode that needs a codec has a small **?** button. It shows whether the library was found and where, the exact file names OnAir
 looks for, the exact folders it searches, an **Open codecs folder** button (it makes the folder if it is missing) and **Look again**
 (searches again, no restart).
+
+> **All the optional libraries in one list** (LAME MP3, libfaad2, libfdk-aac, mbelib, radio drivers such as `fobos_sdr.dll`, ...), the folder for each on Windows, macOS and Linux and where to get each one: [OPTIONAL-LIBRARIES.md](OPTIONAL-LIBRARIES.md).
 
 ## Quick start: install the voice codecs (Codec Setup)
 
@@ -25,6 +29,7 @@ looks for, the exact folders it searches, an **Open codecs folder** button (it m
    | Windows | MSYS2 with `mingw-w64-x86_64-gcc cmake make git` | `powershell -ExecutionPolicy Bypass -File tools\codec-builder\build-codecs.ps1` |
 
    Type `all` (or the ids you want: `ambe2` DMR/NXDN/dPMR, `ambe` D-STAR, `imbe` P25 phase 1, `tetra`, `ysf` Yaesu Fusion), read the patent and licence notice, type `yes`. The helper downloads the open-source mbelib-neo from its authors at a pinned commit, builds the plug-ins for **this** computer and copies them into the codecs folder. For an unattended run: `bash tools/codec-builder/build-codecs.sh --ids all --yes` (adds `--src <folder>` to use an mbelib-neo source you already have, `--out <folder>` for another codecs folder).
+   **The helper makes only these five ids (`tetra`, `ambe2`, `ambe`, `imbe`, `ysf`).** It does not make `onair-codec-aeroambe` (Inmarsat Aero voice: build `tools/addons/aeroambe` against libaeroambe's mbelib, see [AMBE (Inmarsat Aero voice)](#ambe-inmarsat-aero-voice)), `onair-codec-iridium` or `onair-codec-tetrapol` (OnAir has no source for these two: you need a plug-in of your own that exports the four `onair_speech_*` functions of `core/include/dect2/codec/speech_codec.h`, or a file somebody gave you). After following only the helper those three stay **missing** in Help > Voice codecs (issue #533); that is correct, not a scan fault. A missing row names the exact file OnAir looked for, every folder it looked in and how to get that plug-in, and says when it finds a file with a near-miss name in a codecs folder (`onair-codec-iridium (1).dll`, `onair-codec-iridium.dll.dll` from a hidden extension: rename it to exactly the name shown).
 3. Back in OnAir press **Rescan all**, open a voice mode once and accept the notice for each codec (shown once). Encrypted calls are never decoded.
 
 The built files are yours: they are never committed to the OnAir repository and never added to a release package.
@@ -38,10 +43,10 @@ The built files are yours: they are never committed to the OnAir repository and 
 | DMR, P25 Phase 1 and 2, NXDN, dPMR | AMBE+2 / IMBE (patented) | **mbelib** (not included: you install it yourself; voice is silent until you do) |
 | D-STAR | AMBE (patented) | **mbelib** |
 | HD Radio (NRSC-5, FM and AM) | HDC (patented, owned by Xperi) | a **patched FAAD2** (`libfaad_hdc`) that you build yourself (see below); sound is silent until you do |
-| CDR (China Digital Radio) | DRA+ (patent and licence status not verified) | the **DRA+ add-on** (`libonair_dra`) that you build yourself (see [DRA+ (CDR sound)](#dra-cdr-sound)); sound is silent until you do |
+| CDR (China Digital Radio) | DRA+ (patent and licence status not verified) | the **DRA+ add-on** (`libonair_dra`) that you build yourself (see [DRA+ (CDR sound)](#dra-cdr-sound); on Android: [DRA+ on Android](#dra-on-android)); sound is silent until you do |
 | FreeDV 700D / 700E / 1600, M17 | codec2 (open, LGPL) | **codec2**: comes with OnAir (the library `libcodec2` next to the program) |
-| FreeDV RADE | RADE neural modem (open, BSD) | **librade** (not codec2): optional; without it the RADE slot stays dark |
-| Yaesu System Fusion (WIP) | AMBE+2 class (proprietary, DVSI) | a speech codec **plug-in with the id `ysf`** that you install yourself (see [Speech codec plug-ins](#speech-codec-plug-ins-voice-modes)); callsigns and data are shown without it, no sound |
+| Inmarsat Aero C channel voice (Inmarsat > Voice) | AMBE 4800x3600 (patented) | a **speech codec plug-in** `onair-codec-aeroambe` that you build yourself from `tools/addons/aeroambe` and libaeroambe's mbelib (see [AMBE (Inmarsat Aero voice)](#ambe-inmarsat-aero-voice)); calls, aircraft and ground station are shown without it |
+| Yaesu System Fusion | AMBE+2 class (proprietary, DVSI) | a speech codec **plug-in with the id `ysf`** that you install yourself (see [Speech codec plug-ins](#speech-codec-plug-ins-voice-modes)); callsigns and data are shown without it, no sound |
 | TETRA | its own speech codec | nothing from you: it is not mbelib and not codec2 |
 | TETRA voice (unencrypted calls only) | TETRA ACELP | a **speech codec plug-in** `onair-codec-tetra` that you build yourself, for example around **mbelib-neo** (see [Speech codec plug-ins](#speech-codec-plug-ins-voice-modes)); the cell, network and call information work without it |
 | TETRAPOL voice (clear calls only) | RP-CELP (PAS 0001-7, patented) | a **speech codec plug-in** `onair-codec-tetrapol` that you install yourself (see [TETRAPOL voice](#tetrapol-voice-id-tetrapol)); cells, frame sync and the call table work without it |
@@ -316,6 +321,30 @@ downloading, you can point it at a copy of the patch you already have: `python3 
 Whether you may build and use it depends on the patent and licence rules of your country; check them first. OnAir has been tested with a stand-in
 library in its automated tests and with the decoder built from the source above on recordings; there is no guarantee for other builds.
 
+### DRA+ on Android
+
+The Android app (4.0) has a **Sound** tab on the CDR mode. Without the add-on it says that the sound is silent and why, in place of silence.
+The phone cannot build the add-on itself: build it on a computer with the **Android NDK** (Android Studio's SDK Manager > SDK Tools > NDK,
+or the zip from developer.android.com/ndk), for arm64:
+```
+git clone https://github.com/adswill/OnAir && cd OnAir/tools/addons/dra
+python3 extract_dra.py
+cmake -S . -B build-android -DDRA_SRC=dra_src -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28
+cmake --build build-android
+```
+(`$ANDROID_NDK` is the NDK folder, for example `~/Library/Android/sdk/ndk/27.2.12479018` on a Mac or `%LOCALAPPDATA%\Android\Sdk\ndk\...`
+on Windows; on Windows run it in a shell that has CMake and Ninja, and add `-G Ninja`.) Then:
+
+1. Copy `build-android/libonair_dra.so` to the phone (USB cable, cloud drive, e-mail to yourself: anywhere the file picker can reach).
+2. In OnAir, pick the CDR mode, open the **Sound** tab and tap **Import add-on (.so)**; choose the file.
+3. The line turns green (*DRA+ decoder loaded*) and the first audio service plays; tap **Listen** on another service to change it.
+
+The file is copied into the app's own folder (`files/codecs/libonair_dra.so`; Android does not run code from shared storage) and stays there
+across updates. **Remove add-on** deletes it (it stays loaded until the app is closed). A file built for another processor (x86, 32-bit ARM)
+or a library without the five DRA functions is refused with the reason on the same tab. The CI builds the add-on with the NDK as a check that
+these steps work; it is never packaged. The add-on was not run on a phone when this was written (no phone and no CDR signal were available).
+
 ## AVS+, AVS2, AVS3 and DRA (DTMB television in China)
 
 DTMB channels in China send their pictures as AVS+ (stream type 0x42; some as AVS2, 0xD2, or AVS3, 0xD4) and some send their sound as
@@ -362,26 +391,50 @@ pictures are 4:2:0 8 bit (anything else is refused with a message), interlaced a
 Licences: the project is MIT and FFmpeg LGPL, so building it yourself is fine for copyright; AVS+ is covered by patents (check where you live).
 OnAir ships and downloads nothing of it.
 
-Details and the external-player route (save the TS / stream UDP, copy the VLC / mpv command): [AVSPLUS.md](AVSPLUS.md).
+The external-player route (save the TS / stream UDP, copy the VLC / mpv command) is in the TV tab.
 
 The player panel has a **?** button next to these messages. A channel that signals a CA system (a CA descriptor, free_CA_mode) but sends
 its streams in the clear is not shown as scrambled: OnAir goes by the scrambling bits of the stream packets.
 
 ## AMBE (Inmarsat Aero voice)
 
-Aero C channel voice uses an AMBE vocoder. OnAir decodes the P channel data only and does not tune voice channels. Separate programs,
-for example JAERO (<https://github.com/jontio/JAERO>), work on C channels.
+OnAir demodulates and decodes Aero C channels (8400 bit/s, circuit-mode voice; Inmarsat > Voice tab) after JAERO. The vocoder is AMBE 4800x3600 (the "mini-M" frame: 96 bits per 20 ms), patented, so OnAir ships none and loads yours as the plug-in **`onair-codec-aeroambe`** (id `aeroambe`, the usual `onair_speech_*` ABI, 8 kHz PCM, 160 samples per call). Each call gets **12 bytes**: one voice frame exactly as JAERO hands it to libaeroambe, bits packed least significant bit first, in transmission order. Without the plug-in the calls are listed and the coded frames are saved to `.bits` files (12 bytes per frame).
+
+Build it (the source of the plug-in is `tools/addons/aeroambe` and contains no vocoder; the vocoder is the mbelib copy inside libaeroambe, MIT licence with mbelib's patent notice):
+
+```
+git clone https://github.com/jontio/libaeroambe
+cmake -S libaeroambe/mbelib-master -B libaeroambe/mbelib-master/build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build libaeroambe/mbelib-master/build
+cd OnAir/tools/addons/aeroambe
+cmake -S . -B build -DAEROAMBE_MBELIB=/path/to/libaeroambe/mbelib-master
+cmake --build build
+```
+
+Copy `libmbe` (from the mbelib build folder) next to the plug-in or install it. The plug-in sets the unvoiced-sound quality to 3 and silences a frame with more than 3 corrected errors (mbelib would otherwise repeat the previous frame's parameters; chosen by ear on real calls). `ONAIR_AEROAMBE_UVQ`, `ONAIR_AEROAMBE_MUTE` and `ONAIR_AEROAMBE_POST=1` (a 250-3400 Hz band-pass with a slow AGC, off by default) change that for tests. `decode_bits` (built beside the plug-in) turns a call's `.bits` file into a WAV with the same options, to compare them by ear.
+
+Copy `onair-codec-aeroambe.dylib` / `.so` / `onair-codec-aeroambe.dll` into the OnAir codecs folder (see "File names and search order") and accept the notice once. The plug-in unpacks the 12 bytes, moves bit i to `ambe_fr[rW[i]][rX[i]]` (libaeroambe's tables) and calls `mbe_processAmbe4800x3600Frame`. It was run on a real C-channel recording (JAERO's 8400bps sample): zero Golay/Hamming errors in the frames and speech-like bursts at the output. It does not decode encrypted traffic and there is no key handling. The old mention of the `ambe` id for Inmarsat is gone: `ambe` stays D-STAR's.
 
 ## AMBE variant (Iridium voice)
 
 OnAir ships no Iridium vocoder. Voice slots are grouped into calls (Iridium > Calls: time, frequency, direction, length, satellite and
-beam when a broadcast frame on that frequency named them, status) with a Listen selector and one WAV recording per call in the recordings
-folder. Sound needs a plug-in `onair-codec-iridium` (id `iridium`, ABI in `core/include/dect2/codec/speech_codec.h`) that you install
-yourself. Each call to `onair_speech_decode` gets the 39 bytes (312 bits) of the voice field exactly as received (over-the-air bit order,
-MSB first; no de-scrambling or de-interleaving by OnAir) and returns PCM. **Unverified:** this has only been tested with synthetic
-bursts and a stub plug-in, never a real Iridium recording; whether the voice field needs further de-interleaving or FEC before the vocoder
-is for the plug-in. **The Iridium voice plug-in is not distributed with OnAir.** Without one the voice stays silent; use **Save for iridium-toolkit** below. No public description defines an "encrypted" marker, so none is shown: frames that fail their checks or that the
-plug-in refuses are listed as "not readable" and stay silent, and OnAir never decodes encrypted traffic or works on keys.
+beam when a broadcast frame on that frequency named them, a level meter, **Mute** and **Solo** per call, status) with a Listen selector and, with **Record calls** on, one WAV
+recording per call in the recordings folder (written when the call ends). A soloed call is heard alone (several soloed calls are mixed) and
+the Listen choice is ignored while any call is soloed; a muted call is still decoded and recorded. Frames that the network marks as silence
+(link control word 001111 / 100000000000000000000, the toolkit's "silent") are counted and not sent to the codec.
+
+Sound needs a plug-in `onair-codec-iridium` (id `iridium`, ABI in `core/include/dect2/codec/speech_codec.h`) that you install yourself. Each call
+to `onair_speech_decode` gets the **39 bytes (312 bits) of the voice field** of one voice frame, in the byte order of iridium-toolkit's
+`bits_to_dfs.py` (the file its `ir77_ambe_decode` reads): the first bit received is the least significant bit of each byte. OnAir does no
+de-scrambling, de-interleaving or error correction of its own; a plug-in that wraps osmo-ir77's decoder (or a decoder extracted from firmware,
+see the toolkit's `ambe_emu`) therefore gets exactly what the toolkit would give it, and returns 8 kHz PCM. **Unverified:** this has been tested
+with synthetic bursts through the whole receiver (offsets, Doppler, clock error, noise) and a stub plug-in, never a real Iridium recording.
+
+3.7: Iridium voice never writes a silent WAV. Slots that carry data (Reed-Solomon and zero-sum checks as in iridium-toolkit) are no longer sent to the codec, lost frames leave a silent gap of the right length instead of shortening the call, and a call with no sound says why (no plug-in, plug-in refused the frames, data only). If your plug-in expects a different byte order from the toolkit's 39-byte `.dfs` frames the calls stay silent; the counters on the call row show it. Not proven on a real recording (docs/IRIDIUM-3.7.md).
+
+**The Iridium voice plug-in is not distributed with OnAir.** Without one the voice stays silent; use **Save for iridium-toolkit** below. No public
+description defines an "encrypted" marker, so none is shown: frames that fail their checks or that the plug-in refuses are listed as "not
+readable" and stay silent. OnAir never decodes encrypted traffic itself; a key handed to your own plug-in is your own business and OnAir has no key handling.
 
 Alternatively, **Save for iridium-toolkit** writes a `.bits` file. Then:
 
@@ -414,6 +467,19 @@ not loaded* with the reason: on Windows "a DLL it needs is missing" (an MSYS2/Mi
 **Look again** loads it without restarting OnAir.
 Check the licence and your local patent situation before installing it. Status: the frames and the stream configuration follow ETSI ES 201 980;
 the decoding with a real libfdk-aac against a real DRM xHE-AAC recording has not been verified yet.
+
+### xHE-AAC for DRM on Android (the phone's own decoder)
+On Android OnAir ships no codec for xHE-AAC either. Android 9 (API 28) and later have an xHE-AAC (USAC) decoder in MediaCodec; OnAir hands
+the DRM access units to it (the AudioSpecificConfig, audio object type 42, is built from the SDC as on the desktop) and plays the PCM that
+comes back. A phone without that decoder shows "This phone has no xHE-AAC decoder; DRM audio of this service cannot play" as the DRM audio
+status (card **Audio**) instead of staying silent. The core side is a plain hand-off (`core/include/dect2/drm/drm_usac_ext.h`): compressed
+frames out, PCM in; a desktop plug-in can register the same way later. Order tried: libfdk-aac, this hand-off, FFmpeg.
+
+## Your own FFmpeg (Settings > Advanced > FFmpeg libraries)
+
+Default **Bundled**: OnAir uses the FFmpeg inside it. Choose **External folder** and pick a folder with shared `libavcodec` / `libavutil` (for example
+an official FFmpeg build) and the optional add-ons that load FFmpeg at run time (AC-4, AVS+) search that folder first. OnAir ships and downloads
+nothing for this. The TV, DAB and DRM decoders are linked to the bundled FFmpeg and do not switch to the external one.
 
 ## AC-4 (ATSC 3.0 sound)
 
@@ -451,7 +517,7 @@ after you accept it once. The plug-in's C interface is in `core/include/dect2/co
 
 TETRA voice: OnAir removes the radio channel coding (ETSI EN 300 395-2 clause 5.5) and gives the plug-in one speech frame per call of `onair_speech_decode`: 137 bytes, one bit per byte (0 or 1), byte i is speech frame bit B(i+1) of table 4 of that standard (the output order of the source encoder). Two frames per burst, 30 ms each, in order. Frames whose CRC fails are dropped, not passed on. Encrypted calls, and calls whose set-up OnAir did not hear saying "clear", are never decoded and never reach the plug-in.
 Yaesu Fusion (id `ysf`) hands the plug-in one voice frame per call, as it was sent: 9 bytes (the 72 channel bits of V/D mode 1), 7 bytes (the 49 voice
-bits of V/D mode 2 after the error correction, MSB first) or 18 bytes (the 144 channel bits of voice FR). The bit order inside the V/D mode 1 and voice FR frames is not in
+bits of V/D mode 2 after the error correction, MSB first) or 18 bytes (the 144 channel bits of voice FR). V/D mode 1 frames are the same 72-bit AMBE+2 frame as DMR and NXDN (the bit positions agree with MMDVMHost's tables), so with the mbelib you installed for DMR and NXDN they play without the `ysf` plug-in. The bit order inside voice FR frames is not in
 Yaesu's public specification, so the plug-in has to do that part itself.
 
 Recommended source for a TETRA plug-in: mbelib-neo (https://github.com/arancormonk/mbelib-neo), GPL-2.0-or-later. It has a TETRA full-rate speech decoder (`mbe_tetraDecodeFrame`) that takes the same 137 bytes, one bit per byte, B(1)..B(137), so a small wrapper exporting the four `onair_speech_*` functions is enough. Its authors have not cleared the patent status of the TETRA codec, so check that you may use it where you live. You build it yourself; OnAir does not include it.
@@ -489,6 +555,8 @@ Three more plug-in ids, one registry (`core/include/dect2/codec/codec_registry.h
 |---|---|---|
 | `ambe2` | DMR, NXDN, dPMR (AMBE+2 3600x2450) | 12: the four de-interleaved code words C0..C3 of mbelib, 24 bits each, row by row, most significant bit first |
 | `ambe` | D-STAR (AMBE 3600x2400) | 12, the same layout |
+| `aeroambe` | Inmarsat Aero C channel (AMBE 4800x3600) | 12, one JAERO voice frame, bits packed LSB first (see above) |
+| `iridium` | Iridium voice (AMBE family) | 39, the 312 bit voice field, first bit received = least significant bit of the byte (toolkit `.dfs` order) |
 | `imbe` | P25 phase 1 (IMBE 7200x4400) | 23: the eight code words c0..c7, 23 bits each, row by row, MSB first (184 bits) |
 
 OnAir does the de-interleaving; the plug-in only has to expand the bits back into mbelib's `char fr[4][24]` (or `fr[8][23]`) and call `mbe_processAmbe3600x2450Frame` / `mbe_processAmbe3600x2400Frame` / `mbe_processImbe7200x4400Frame`, then return the 160 samples. A small reference wrapper is in `tools/codec-plugin-example/mbelib_wrapper.c` (compile it yourself against your own mbelib; no codec code is in this repository).

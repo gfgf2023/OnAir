@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
 #include "dect2/atsc3/atsc3_route.h"
 #include "dect2/common/inflate.h"
 #include "dect2/common/xmlmini.h"
@@ -26,10 +30,17 @@ bool parseRoutePacket(const uint8_t* d, size_t n, LctPacket& p) {
     p.closeObject = d[1] & 1;
     const int hdrLen = d[2] * 4;
     p.codePoint = d[3];
-    if (p.psi != 2 || p.version != 1 || hdrLen < 4 || (size_t)hdrLen > n) return false;   // ROUTE source packets: PSI = 10
+    // ROUTE source packets: the most significant bit of the PSI is 1 (A/331 A.3.4); the other bit is not defined there and is not checked
+    if (!(p.psi & 2) || p.version != 1 || hdrLen < 4 || (size_t)hdrLen > n) {
+        DIAG_DEBUG_EVERY(513579, 10.0, "A ROUTE packet of %zu bytes was dropped: it is not a ROUTE source packet of version 1 or its LCT header length (%d bytes) is invalid.", n, hdrLen);
+        return false;
+    }
     const int cciBytes = (c + 1) * 4, tsiBytes = s * 4 + h * 2, toiBytes = o * 4 + h * 2;
     int pos = 4;
-    if (pos + cciBytes + tsiBytes + toiBytes > hdrLen) return false;
+    if (pos + cciBytes + tsiBytes + toiBytes > hdrLen) {
+        DIAG_DEBUG_EVERY(360354, 10.0, "A ROUTE packet was dropped: its LCT header of %d bytes is too short for the congestion control, session and object identifiers it announces.", hdrLen);
+        return false;
+    }
     pos += cciBytes;
     auto rd = [&](int bytes) { uint32_t v = 0; for (int i = 0; i < bytes; i++) v = (v << 8) | d[pos + i]; pos += bytes; return v; };
     p.tsi = tsiBytes ? rd(tsiBytes) : 0;
@@ -38,13 +49,22 @@ bool parseRoutePacket(const uint8_t* d, size_t n, LctPacket& p) {
     while (pos < hdrLen) {
         const int het = d[pos];
         if (het >= 128) {   // fixed length: one 32-bit word
-            if (pos + 4 > hdrLen) return false;
+            if (pos + 4 > hdrLen) {
+                DIAG_DEBUG_EVERY(425692, 10.0, "A ROUTE packet was dropped: a fixed-length LCT header extension (type %d) runs past the end of its header.", het);
+                return false;
+            }
             if (het == 194) p.transferLength = ((int64_t)d[pos + 1] << 16) | (d[pos + 2] << 8) | d[pos + 3];
             pos += 4;
         } else {
-            if (pos + 2 > hdrLen) return false;
+            if (pos + 2 > hdrLen) {
+                DIAG_DEBUG_EVERY(479628, 10.0, "A ROUTE packet was dropped: a variable-length LCT header extension (type %d) starts past the end of its header.", het);
+                return false;
+            }
             const int words = d[pos + 1];
-            if (words < 1 || pos + words * 4 > hdrLen) return false;
+            if (words < 1 || pos + words * 4 > hdrLen) {
+                DIAG_DEBUG_EVERY(180195, 10.0, "A ROUTE packet was dropped: a variable-length LCT header extension (type %d) of %d words does not fit in its header.", het, words);
+                return false;
+            }
             if (het == 67 && words >= 2) {   // EXT_TOL, 48 bit
                 int64_t v = 0;
                 for (int i = 0; i < 6; i++) v = (v << 8) | d[pos + 2 + i];
@@ -108,8 +128,16 @@ bool wholeBoxes(const std::vector<uint8_t>& d, size_t n) {
 }
 
 void RouteReceiver::push(const LctPacket& p, std::vector<RouteObject>& done) {
+    // offsets and lengths come from the air: the end of the payload is computed in 64 bits (a 32-bit sum wraps and the copy below would
+    // write before the buffer it sized), and an object larger than any ATSC 3.0 object is not taken (fuzz_parsers)
+    const uint64_t end = (uint64_t)p.startOffset + p.payload.size();
+    if (end > kMaxObjectBytes || p.transferLength > (int64_t)kMaxObjectBytes) {
+        DIAG_DEBUG_EVERY(438644, 10.0, "A ROUTE object of TSI %u is larger than the %llu bytes this receiver accepts, so its packets are dropped.", p.tsi, (unsigned long long)kMaxObjectBytes);
+        return;
+    }
     counter_++;
     auto key = std::make_pair(p.tsi, p.toi);
+    auto drop = [&](std::map<std::pair<uint32_t, uint32_t>, Open>::iterator it) { openBytes_ -= it->second.data.size(); return open_.erase(it); };
     if (!open_.count(key) && p.startOffset == 0) {   // a new object: older ones of the TSI without a signalled length may have ended
         for (auto it = open_.begin(); it != open_.end();) {
             Open& q = it->second;
@@ -118,19 +146,27 @@ void RouteReceiver::push(const LctPacket& p, std::vector<RouteObject>& done) {
                 r.tsi = it->first.first; r.toi = it->first.second; r.codePoint = q.codePoint; r.hasSct = q.hasSct; r.sct = q.sct;
                 r.data.assign(q.data.begin(), q.data.begin() + q.ranges[0].second);
                 done.push_back(std::move(r));
-                it = open_.erase(it);
+                it = drop(it);
             } else ++it;
         }
+    }
+    // room for this packet among the unfinished objects: the oldest other ones go first
+    while (!p.payload.empty() && openBytes_ + end > kMaxOpenBytes && !open_.empty()) {
+        auto oldest = open_.end();
+        for (auto it = open_.begin(); it != open_.end(); ++it)
+            if (it->first != key && (oldest == open_.end() || it->second.age < oldest->second.age)) oldest = it;
+        if (oldest == open_.end()) break;
+        drop(oldest);
     }
     Open& o = open_[key];
     o.age = counter_;
     o.codePoint = p.codePoint;
     if (p.hasSct) { o.hasSct = true; o.sct = p.sct; }
     if (p.transferLength >= 0) o.length = p.transferLength;
-    if (p.closeObject) o.length = (int64_t)p.startOffset + (int64_t)p.payload.size();
+    if (p.closeObject) o.length = (int64_t)end;
     if (!p.payload.empty()) {
-        const uint32_t from = p.startOffset, to = p.startOffset + (uint32_t)p.payload.size();
-        if (o.data.size() < to) o.data.resize(to);
+        const uint32_t from = p.startOffset, to = (uint32_t)end;
+        if (o.data.size() < to) { openBytes_ += to - o.data.size(); o.data.resize(to); }
         std::copy(p.payload.begin(), p.payload.end(), o.data.begin() + from);
         o.ranges.push_back({from, to});
         std::sort(o.ranges.begin(), o.ranges.end());
@@ -146,10 +182,10 @@ void RouteReceiver::push(const LctPacket& p, std::vector<RouteObject>& done) {
         r.tsi = p.tsi; r.toi = p.toi; r.codePoint = o.codePoint; r.hasSct = o.hasSct; r.sct = o.sct;
         r.data.assign(o.data.begin(), o.data.begin() + o.length);
         done.push_back(std::move(r));
-        open_.erase(key);
+        drop(open_.find(key));
     }
     if (open_.size() > 256) {   // objects that never completed
-        for (auto it = open_.begin(); it != open_.end();) { if (counter_ - it->second.age > 5000) it = open_.erase(it); else ++it; }
+        for (auto it = open_.begin(); it != open_.end();) { if (counter_ - it->second.age > 5000) it = drop(it); else ++it; }
     }
 }
 
@@ -187,16 +223,26 @@ std::vector<MimePart> parseMultipart(const std::vector<uint8_t>& doc) {
     if (hend == std::string::npos) { hend = s.find("\n\n"); skip = 2; }
     if (hend == std::string::npos) return parts;
     std::map<std::string, std::string> top;
-    parseHeaders(s.substr(0, hend), top);
-    auto ct = top.find("content-type");
-    if (ct == top.end() || lower(ct->second).find("multipart/") != 0) return parts;
-    size_t bp = lower(ct->second).find("boundary=");
-    if (bp == std::string::npos) return parts;
-    std::string boundary = trim(ct->second.substr(bp + 9));
-    if (!boundary.empty() && boundary[0] == '"') { size_t q = boundary.find('"', 1); boundary = boundary.substr(1, q == std::string::npos ? std::string::npos : q - 1); }
-    else { size_t q = boundary.find(';'); if (q != std::string::npos) boundary = trim(boundary.substr(0, q)); }
+    std::string boundary;
+    size_t from = hend + skip;
+    if (s.compare(0, 2, "--") == 0) {   // no header block: the document starts with its first delimiter line
+        size_t le = s.find('\n');
+        if (le == std::string::npos) return parts;
+        boundary = trim(s.substr(2, le - 2));
+        from = 0;
+    } else {
+        parseHeaders(s.substr(0, hend), top);
+        auto ct = top.find("content-type");
+        if (ct == top.end() || lower(ct->second).find("multipart/") != 0) return parts;
+        size_t bp = lower(ct->second).find("boundary=");
+        if (bp == std::string::npos) return parts;
+        boundary = trim(ct->second.substr(bp + 9));
+        if (!boundary.empty() && boundary[0] == '"') { size_t q = boundary.find('"', 1); boundary = boundary.substr(1, q == std::string::npos ? std::string::npos : q - 1); }
+        else { size_t q = boundary.find(';'); if (q != std::string::npos) boundary = trim(boundary.substr(0, q)); }
+    }
+    if (boundary.empty()) return parts;
     const std::string delim = "--" + boundary;
-    size_t pos = s.find(delim, hend + skip);
+    size_t pos = s.find(delim, from);
     while (pos != std::string::npos) {
         size_t after = pos + delim.size();
         if (s.compare(after, 2, "--") == 0) break;   // closing delimiter
@@ -240,7 +286,10 @@ std::vector<uint8_t> makeMultipart(const std::vector<MimePart>& parts, const std
 
 bool parseStsid(const std::string& xml, Stsid& out) {
     auto root = parseXml(xml);
-    if (!root || root->local() != "S-TSID") return false;
+    if (!root || root->local() != "S-TSID") {
+        DIAG_DEBUG_EVERY(993616, 10.0, "An ATSC 3.0 signalling document was expected to be an S-TSID but is not valid XML or has another root element, so it is ignored.");
+        return false;
+    }
     out = Stsid();
     for (auto& rs : root->all("RS")) {
         StsidSession s;
@@ -279,27 +328,58 @@ bool parseStsid(const std::string& xml, Stsid& out) {
 
 RouteService::RouteService(uint32_t src, uint32_t dst, int port) : slsSrc_(src), slsDst_(dst), slsPort_(port) {}
 
-void RouteService::handleSls(const RouteObject& o) {
-    // the SLS arrives as a multipart package (formatId 3); a bare XML document is accepted too
-    auto parts = parseMultipart(o.data);
-    std::vector<std::pair<std::string, std::string>> docs;   // content type, text
-    if (parts.empty()) docs.push_back({"", std::string(o.data.begin(), o.data.end())});
-    for (auto& p : parts) {
-        std::string ct = p.headers.count("content-type") ? lower(p.headers["content-type"]) : "";
-        std::vector<uint8_t> body = p.body;
-        if (p.headers.count("content-encoding") && lower(p.headers["content-encoding"]).find("gzip") != std::string::npos) {
-            std::vector<uint8_t> plain;
-            if (gunzip(body.data(), body.size(), plain)) body.swap(plain);
-        }
-        docs.push_back({ct, std::string(body.begin(), body.end())});
+namespace {
+bool isGzip(const std::vector<uint8_t>& b) { return b.size() >= 18 && b[0] == 0x1F && b[1] == 0x8B; }
+// The documents of an SLS delivery object (A/331 7.1.6.1, A.3.3.4, A.3.3.5): a multipart/related package, which may be gzip compressed as a
+// whole; in Signed Package Mode a multipart/signed whose first part is that package and whose last is the signature; a part may carry its own
+// Content-Encoding: gzip. A bare XML document is accepted too. Nested packages are opened down to a few levels.
+void slsDocuments(std::vector<uint8_t> data, int depth, std::vector<std::string>& docs) {
+    if (depth > 4) {
+        DIAG_DEBUG_EVERY(473433, 10.0, "An ATSC 3.0 service signalling package is nested more than 4 levels deep, so the inner documents are ignored.");
+        return;
     }
+    if (isGzip(data)) { std::vector<uint8_t> plain; if (gunzip(data.data(), data.size(), plain)) data.swap(plain);
+        else {
+            DIAG_DEBUG_EVERY(922364, 10.0, "A gzip-compressed ATSC 3.0 service signalling object of %zu bytes could not be decompressed, so it is ignored.", data.size());
+            return;
+        }
+    }
+    auto parts = parseMultipart(data);
+    if (parts.empty()) { docs.emplace_back(data.begin(), data.end()); return; }
+    for (auto& p : parts) {
+        const std::string ct = p.headers.count("content-type") ? lower(p.headers["content-type"]) : "";
+        std::vector<uint8_t> body = std::move(p.body);
+        const bool gz = (p.headers.count("content-encoding") && lower(p.headers["content-encoding"]).find("gzip") != std::string::npos) || isGzip(body);
+        if (gz) { std::vector<uint8_t> plain; if (gunzip(body.data(), body.size(), plain)) body.swap(plain); }
+        if (ct.compare(0, 10, "multipart/") == 0) {   // a package inside (the signed content of multipart/signed): give it its header back
+            const std::string h = "Content-Type: " + p.headers["content-type"] + "\r\n\r\n";
+            std::vector<uint8_t> inner(h.begin(), h.end());
+            inner.insert(inner.end(), body.begin(), body.end());
+            slsDocuments(std::move(inner), depth + 1, docs);
+            continue;
+        }
+        if (ct.find("pkcs7") != std::string::npos || ct.find("signature") != std::string::npos) continue;   // the signature (not checked)
+        if (isGzip(body) || (!body.empty() && body[0] == '-')) { slsDocuments(std::move(body), depth + 1, docs); continue; }
+        docs.emplace_back(body.begin(), body.end());
+    }
+}
+} // namespace
+
+void RouteService::handleSls(const RouteObject& o) {
+    slsObjects_++;
+    std::vector<std::string> docs;
+    slsDocuments(o.data, 0, docs);
     for (auto& d : docs) {
-        auto root = parseXml(d.second);
+        auto root = parseXml(d);
         if (!root) continue;
         const std::string n = root->local();
         if (n == "S-TSID") {
             Stsid st;
-            if (!parseStsid(d.second, st)) continue;
+            if (!parseStsid(d, st)) {
+                DIAG_DEBUG_EVERY(280667, 10.0, "The S-TSID of the selected ATSC 3.0 service has no ROUTE sessions, so its components are not updated.");
+                continue;
+            }
+            slsTables_++;
             stsid_ = st;
             haveStsid_ = true;
             components_.clear();
@@ -312,8 +392,8 @@ void RouteService::handleSls(const RouteObject& o) {
                     components_.push_back(rc);
                 }
             }
-        } else if (n == "MPD") mpd_ = d.second;
-        else if (n == "UserServiceDescription" || n == "BundleDescription") usbd_ = d.second;
+        } else if (n == "MPD") { mpd_ = d; slsTables_++; }
+        else if (n == "UserServiceDescription" || n == "BundleDescription") { usbd_ = d; slsTables_++; }
     }
 }
 

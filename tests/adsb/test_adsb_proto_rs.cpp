@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the Rust ADS-B / Mode S message layer (rust/onair_adsb, dect2::adsb): every code of the altitude / identity / character tables, CRC and
 // single-bit correction on frames and damaged frames, CPR with real and absurd values (NaN references too), geometry, Comm-B registers built to pass each BDS
 // inference plus damaged ones, and decoded messages of every DF and type code. ONAIR_DIFF_ITERS (default 200000) seeded random inputs per family. Every result
@@ -297,5 +300,6 @@ int main() {
     printf("  Comm-B inference results:");
     for (auto& kv : found) printf(" %02x:%ld", kv.first, kv.second);
     printf("\n");
-    return golden::checkDual("adsb_proto_rs", dig, 0xccbaa93e37f1e80dull, 0x486a022706e9ea78ull, !it);
+    // re-recorded 2026-11-10: DF18 control field 3 (coarse TIS-B) is no longer read as an ADS-B ME, the operational status capability and NACv, and the RA broadcast (TC 28 subtype 2) fill fields that were empty (was 0xccbaa93e37f1e80d, 0x486a022706e9ea78)
+    return golden::checkDual("adsb_proto_rs", dig, 0x8b2ea87a44285088ull, 0x8c063a53f2b340dcull, !it);
 }

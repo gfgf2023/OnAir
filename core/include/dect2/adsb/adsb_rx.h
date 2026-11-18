@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B receiver: ADS-B / Mode S aircraft messages on 1090 MHz.
 // Written to the engine's contract: configure() once the sample rate is known, feed() from the analysis thread (never blocks),
 // telemetry() and the setters from the interface thread (they must be safe while feed() runs).
@@ -47,6 +50,7 @@ public:
     void setThresholds(float pulseOverNoise, float pulseOverGap);   // preamble test, normally 3.0 and 2.0
     void setDetector(float sum, float minPulse, float data, float worthDb);   // test knob: AdsbDemod::setDetector
     void setCoherent(bool on);
+    void setOverlap(bool on);                                            // test knob: overlapping-reply recovery (AdsbDemod::setOverlap), on by default
     // How much extra decoding the weak candidates get: -1 automatic (default: all passes, fewer when feed() takes more than half of the signal's
     // duration, back when it drops below a quarter), or 2 / 1 / 0 fixed (AdsbDemod::setEffort)
     void setEffort(int e);

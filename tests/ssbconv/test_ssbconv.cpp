@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // SSB conversations: the voice analyzer on speech-like audio and on decoys, the scanner on synthetic wide captures (two alternating stations on one
 // frequency with different offsets, drift, fading, a second conversation on the other sideband, adjacent AM, ALE / RTTY / PSK31 / FT8 / multi-tone
 // decoys, a carrier, band noise, noise only), the conversation state machine, filters, auto-listen, sweep plan, callsigns, export and clips.
@@ -7,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -224,7 +228,7 @@ static void testSweep() {
 }
 
 static void testClips() {
-    ClipRecorder r("/tmp");
+    ClipRecorder r(std::filesystem::temp_directory_path().string());   // no /tmp on Windows
     Conversation c; c.id = 777; c.dialHz = 7.143e6; c.side = Side::Lsb; c.band = "40 m"; c.service = "Amateur"; c.clues = {"DL1XYZ"};
     std::vector<float> a(8000, 0.1f);
     r.append(c, a.data(), a.size(), 8000, 1.7e9);

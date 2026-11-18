@@ -1,12 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital, the FT8 / FT4 / FT2 / WSPR view of the main tab (called by hfdig_ui.cpp): which modes decode, the slot clock and its
 // error, and the decodes: a list per slot (UTC, dB, DT, Hz, mode, message; CQ calls highlighted), the stations on the map (the ADS-B
 // map, by their locators) and the WSPR spots.
 #include "dect2/common/time_fmt.h"
 #include "app.h"
+#include "../d40/d40_ui.h"
+#include "ham/ham_events_ui.h"
 #include "../adsb/adsb_map.h"
+#include "ui/kit/kit.h"
+#include "ui/kit/export.h"
+#include "ui/msglog_ui.h"
 #include "dect2/hfdig/hfdig_ftx.h"
 #include "dect2/hfdig/hfdig_rx.h"
 #include "dect2/hfdig/hfdig_tel.h"
+#include "dect2/hfdig/hfdig_balloon.h"
 #include "dect2/map/contact_graph.h"
 #include "../map/contact_lines.h"
 #include <algorithm>
@@ -61,6 +70,23 @@ bool shown(const dect2::FtxDecode& d) {
 }
 
 void decodeTable(App& a, const dect2::HfdigFtxTelemetry& f, bool wsprOnly) {
+    if (!wsprOnly)   // who hears me and the antenna pattern (View > Insights); the hub keeps only what is new
+        for (const dect2::FtxDecode& d : f.decodes) if (d.mode != 3) insightFeedFtx(d.slotUtc, d.dialHz, d.msg, d.snrDb);
+    {   // the decodes as a file: Save results (CSV / JSON ...), Copy CSV, and the text log with Auto-save (a new file each day) (#432)
+        static std::string note;
+        resexp::Table x; x.cols = {"time_utc_s", "mode", "snr_db", "dt_s", "audio_hz", "dial_hz", "call", "grid", "dbm", "message"};
+        std::vector<dect2::msglog::Row> rows;
+        for (const dect2::FtxDecode& d : f.decodes) {   // oldest first
+            if (wsprOnly ? d.mode != 3 : !shown(d)) continue;
+            x.add({resexp::num(d.slotUtc, 0), dect2::ftxModeName(d.mode), resexp::num(d.snrDb, 0), resexp::num(d.dt, 1), resexp::num(d.hz, d.mode == 3 ? 1 : 0),
+                   d.dialHz > 0 ? resexp::num(d.dialHz, 0) : "", d.call, d.grid, d.dbm >= 0 ? std::to_string(d.dbm) : "", d.msg}, d.slotUtc);
+            dect2::msglog::Row r; r.epoch = (int64_t)d.slotUtc; r.mode = dect2::ftxModeName(d.mode); r.freqHz = d.dialHz; r.address = d.call; r.text = d.msg;
+            rows.push_back(std::move(r));
+        }
+        kit::exportBar(x, wsprOnly ? "wspr" : "ftx", note, wsprOnly ? "ftxxw" : "ftxxd");
+        ImGui::SameLine();
+        msglog_ui::bar(wsprOnly ? "wspr" : "ftx", wsprOnly ? "WSPR" : "FT8", rows);
+    }
     const ImGuiTableFlags fl = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV;
     const bool mb = hfdigMultiBandActive();   // the monitor is on: the dial frequency of every decode is shown
     const int cols = (wsprOnly ? 8 : 6) + (mb ? 2 : 0);
@@ -113,7 +139,19 @@ void decodeTable(App& a, const dect2::HfdigFtxTelemetry& f, bool wsprOnly) {
         ImGui::TableNextColumn();
         if (d.cq && d.mode != 3) ImGui::TextColored(pal::okGreen(), "%s", d.msg.c_str());
         else ImGui::TextUnformatted(d.msg.c_str());
+        if (wsprOnly) { const dect2::WsprBalloon bl = dect2::wsprBalloonDecode(d.call, d.grid, d.dbm); if (bl.ok) { ImGui::SameLine(); ImGui::TextDisabled("%s", dect2::wsprBalloonText(bl).c_str()); } }
+        if (!wsprOnly && d.mode != 3 && !d.call.empty()) {   // a call heard once that is one character from a call heard often (View > Insights > Ham)
+            std::string why;
+            const std::string likely = insightBustedHint(d.call, &why);
+            if (!likely.empty()) {
+                ImGui::SameLine(); ImGui::TextColored(pal::warnAmber(), "(%s?)", likely.c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(tr("%s may be a busted copy: %s"), d.call.c_str(), why.c_str());
+            }
+        }
         if (d.mirrored) { ImGui::SameLine(); ImGui::TextDisabled("(upside down)"); }
+        if (d.early) { ImGui::SameLine(); ImGui::TextDisabled("(early)"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decoded before the slot ended; the full decode replaces it."); }
+        if (d.how == 1) { ImGui::SameLine(); ImGui::TextDisabled("(combined)"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decoded by adding this signal's soft bits from earlier slots (the same message repeated)."); }
+        else if (d.how == 2) { ImGui::SameLine(); ImGui::TextDisabled("(a-priori)"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decoded with the calls of a conversation heard on the band taken as known."); }
         ImGui::PopFont();
     }
     ImGui::EndTable();
@@ -141,9 +179,9 @@ void mapView(App& a, const dect2::HfdigFtxTelemetry& f, ImVec2 size) {
         const double span = std::max(2.0, std::max(lo1 - lo0, (la1 - la0) * 1.4));
         S.map.zoom = std::max(adsbmap::kMinZoom, std::min(8, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     const auto& co = contactlines::options();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
@@ -167,10 +205,12 @@ void mapView(App& a, const dect2::HfdigFtxTelemetry& f, ImVec2 size) {
         dl->AddCircleFilled(q, 4.5f * gUi, col);
         contactlines::markSelected(dl, p.call, q);
         dl->AddCircle(q, 4.5f * gUi, p.cq ? IM_COL32(120, 230, 140, 255) : IM_COL32(0, 0, 0, 150), 16, p.cq ? 1.8f : 1.f);
+        if (adsbmap::labelsAt(S.map.zoom, false)) {
         const ImVec2 ts = ImGui::CalcTextSize(p.call.c_str());
         const ImVec2 lp(q.x + 8 * gUi, q.y - ts.y * 0.5f - 2 * gUi);
         dl->AddRectFilled(lp, ImVec2(lp.x + ts.x + 8 * gUi, lp.y + ts.y + 4 * gUi), IM_COL32(10, 12, 14, 210), 2.f);
         dl->AddText(ImVec2(lp.x + 4 * gUi, lp.y + 2 * gUi), IM_COL32(235, 238, 240, 255), p.call.c_str());
+        }
     }
     dl->PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 8 * gUi, p0.y + 8 * gUi));
@@ -244,9 +284,9 @@ void bandButtons(App& a, int mode) {
 
 // The sub-mode and the T/R period of the modes that have a choice (JT65 A B C, Q65 A .. E and 15 .. 300 s, FST4 / FST4W 15 .. 1800 s, MSK144 15 / 30 s),
 // remembered in the settings and handed to the decoder every frame.
-struct ModeOpt { int sub; double per; };
+struct ModeOpt { int sub; double per; bool autoOn; };
 ModeOpt& modeOpt(int m) {
-    static ModeOpt o[dect2::kFtxModes] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 60}, {0, 60}, {0, 60}, {0, 60}, {0, 15}, {0, 120}, {0, 60}};
+    static ModeOpt o[dect2::kFtxModes] = {{0, 0, true}, {0, 0, true}, {0, 0, true}, {0, 0, true}, {0, 60, true}, {0, 60, true}, {0, 60, true}, {0, 60, true}, {0, 15, true}, {0, 120, true}, {0, 60, true}};
     static bool loaded = false;
     if (!loaded) {
         loaded = true;
@@ -254,18 +294,20 @@ ModeOpt& modeOpt(int m) {
             char key[24];
             snprintf(key, sizeof key, "ftxSub%d", k); o[k].sub = (int)plat::prefs().getI(key, o[k].sub);
             snprintf(key, sizeof key, "ftxPer%d", k); o[k].per = (double)plat::prefs().getI(key, (long)o[k].per);
+            snprintf(key, sizeof key, "ftxAuto%d", k); o[k].autoOn = plat::prefs().getB(key, true);
         }
     }
     return o[m];
 }
 
-void modeOptions(App& a, int only) {
+void modeOptions(App& a, int only, const dect2::HfdigFtxTelemetry& f) {
     using namespace dect2;
     HfdigFtx& dec = a.engine.hfdig().ftx();
     auto save = [&](int m) {
         char key[24];
         snprintf(key, sizeof key, "ftxSub%d", m); plat::prefs().setI(key, modeOpt(m).sub);
         snprintf(key, sizeof key, "ftxPer%d", m); plat::prefs().setI(key, (long)modeOpt(m).per);
+        snprintf(key, sizeof key, "ftxAuto%d", m); plat::prefs().setB(key, modeOpt(m).autoOn);
     };
     auto periodCombo = [&](int m, const double* list, int n, const char* id) {
         ModeOpt& o = modeOpt(m);
@@ -276,7 +318,7 @@ void modeOptions(App& a, int only) {
             for (int i = 0; i < n; i++) {
                 char b[16];
                 snprintf(b, sizeof b, "%g s", list[i]);
-                if (ImGui::Selectable(b, std::fabs(list[i] - o.per) < 0.5)) { o.per = list[i]; save(m); }
+                if (ImGui::Selectable(b, std::fabs(list[i] - o.per) < 0.5)) { o.per = list[i]; o.autoOn = false; save(m); }
             }
             ImGui::EndCombo();
         }
@@ -286,7 +328,7 @@ void modeOptions(App& a, int only) {
         ModeOpt& o = modeOpt(m);
         ImGui::SetNextItemWidth(52 * gUi);
         if (ImGui::BeginCombo(id, names[std::max(0, std::min(n - 1, o.sub))])) {
-            for (int i = 0; i < n; i++) if (ImGui::Selectable(names[i], i == o.sub)) { o.sub = i; save(m); }
+            for (int i = 0; i < n; i++) if (ImGui::Selectable(names[i], i == o.sub)) { o.sub = i; o.autoOn = false; save(m); }
             ImGui::EndCombo();
         }
     };
@@ -294,12 +336,37 @@ void modeOptions(App& a, int only) {
     static const char* const ae[] = {"A", "B", "C", "D", "E"};
     static const double q65p[] = {15, 30, 60, 120, 300}, fstp[] = {15, 30, 60, 120, 300, 900, 1800}, mskp[] = {15, 30};
     auto label = [&](const char* t) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%s", t); ImGui::SameLine(0, 4 * gUi); };
+    // The one mode on screen: Auto (the default), the options under Advanced. With several modes listed the options stay as they are.
+    const bool single = only >= 4 && only < kFtxModes && only != 5;
+    if (single) {
+        const int m = only;
+        ModeOpt& o = modeOpt(m);
+        if (ImGui::Checkbox(tr("Auto##ftx"), &o.autoOn)) { char key[24]; snprintf(key, sizeof key, "ftxAuto%d", m); plat::prefs().setB(key, o.autoOn); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Listens with every sub-mode and period at once and shows what decodes; a wrong one fails its check. Uses more CPU than one setting."));
+        flowNext(6 * gUi);
+        ImGui::AlignTextToFramePadding();
+        if (!o.autoOn) ImGui::TextDisabled("%s", tr("manual settings (Advanced)"));
+        else if (!f.autoFound[m]) ImGui::TextDisabled("%s", tr("Auto: listening on every setting"));
+        else {
+            static const char* const ae2[] = {"A", "B", "C", "D", "E", "F", "G"};
+            const int sb = std::max(0, std::min(6, f.autoSub[m]));
+            if (m == 7 || m == 8 || m == 9) ImGui::TextDisabled(tr("Found: %g s"), f.autoPeriod[m]);
+            else if (m == 6) ImGui::TextDisabled(tr("Found: %s, %g s"), ae2[sb], f.autoPeriod[m]);
+            else ImGui::TextDisabled(tr("Found: %s"), ae2[sb]);
+        }
+        flowEnd();
+    }
+    const bool showManual = !single || ImGui::TreeNode(trw("Advanced##ftxopt"));
+    if (showManual) {
     if (only < 0 || only == 4) { label("JT65"); subCombo(4, abc, 3, "##jt65sub"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("JT65 sub-mode: A, B and C have tone spacings of 2.7, 5.4 and 10.8 Hz"); flowNext(10 * gUi); }
     if (only < 0 || only == 10) { static const char* const ag[] = {"A", "B", "C", "D", "E", "F", "G"}; label("JT4"); subCombo(10, ag, 7, "##jt4sub"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("JT4 sub-mode: A to G have tone spacings of 4.4 Hz doubling up to 280 Hz"); flowNext(10 * gUi); }
     if (only < 0 || only == 6) { label("Q65"); subCombo(6, ae, 5, "##q65sub"); flowNext(4 * gUi); periodCombo(6, q65p, 5, "##q65per"); flowNext(10 * gUi); }
     if (only < 0 || only == 7) { label("FST4"); periodCombo(7, fstp, 7, "##fst4per"); flowNext(10 * gUi); }
     if (only < 0 || only == 7) { label("FST4W"); periodCombo(9, fstp, 7, "##fst4wper"); flowNext(10 * gUi); }
     if (only < 0 || only == 8) { label("MSK144"); periodCombo(8, mskp, 2, "##mskper"); flowNext(10 * gUi); }
+        if (single) { flowEnd(); ImGui::TextDisabled("%s", tr("Changing one of these turns Auto off.")); ImGui::TreePop(); }
+    }
+    for (int m = 4; m < kFtxModes; m++) dec.setAutoOption(m, single && m == only && modeOpt(m).autoOn);
     for (int m = 4; m < kFtxModes; m++) dec.setModeOption(m, modeOpt(m).sub, modeOpt(m).per);
 }
 
@@ -312,6 +379,8 @@ void hfdigFtxTab(App& a, const dect2::HfdigTelemetry& t) {
     const SubMode* sm = curSub(a);
     const int only = hfdigMultiBandActive() ? -1 : (sm ? sm->sel : -1);   // the monitor lists every mode of every band in one list
     if (only >= 0) S.filter = only + 1;
+    { void hfdigHopPanel(App& a, int mode); if (!hfdigMultiBandActive()) hfdigHopPanel(a, only >= 0 && only < kFtxModes ? only : -1); }   // band hopping (hfdig_hop_ui.cpp)
+    hamBandOpenPanel();   // when is the band open (ham/ham_events_ui.h)
     for (int m = 0; m < kFtxModes && only < 0; m++) {
         bool on = dec.enabled(m);
         ImGui::PushStyleColor(ImGuiCol_CheckMark, modeColour(m));
@@ -323,6 +392,10 @@ void hfdigFtxTab(App& a, const dect2::HfdigTelemetry& t) {
     bool mir = dec.mirrored();
     if (ImGui::Checkbox("Upside down too", &mir)) dec.setMirrored(mir);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Also look for signals sent on the lower sideband (their tones run backwards). FT8, FT4, FT2 and WSPR only: the other modes expect upper sideband.");
+    flowNext(14 * gUi);
+    bool early = dec.earlyDecode();
+    if (ImGui::Checkbox("Early decode", &early)) dec.setEarlyDecode(early);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("FT8 and FT4: a first decode a few seconds before the slot ends, marked (early) and replaced by the full decode.");
     flowNext(14 * gUi);
     if (only < 0) {
         ImGui::AlignTextToFramePadding();
@@ -339,10 +412,17 @@ void hfdigFtxTab(App& a, const dect2::HfdigTelemetry& t) {
     flowNext(10 * gUi);
     if (ImGui::Button("Clear")) a.engine.hfdig().clearResults(8);   // the decodes the receiver keeps (also in the results file)
     flowEnd();
-    modeOptions(a, only);
+    modeOptions(a, only, f);
     flowEnd();
     hfdigMultiBandPanel(a, t);
+    if (kit::collapsingSection(tr("My location"), false)) {   // the one receiver position of the whole program (ADS-B, passes, maps), also set here (#453)
+        ImGui::AlignTextToFramePadding();
+        receiverPositionFields(a);
+        if (!receiverLocationSet()) { ImGui::SameLine(); ImGui::TextColored(pal::warnAmber(), "%s", tr("not set")); }
+        ImGui::TextDisabled("%s", tr("The same position as in every other mode (ADS-B antenna position, Passes, Map). It is marked on the map below."));
+    }
     bandButtons(a, only >= 0 ? only : 0);
+    d40FtxCard(a, f);   // 4.0: heard stations, band summary, clear TX frequency (app/d40)
     // the clock
     {
         char now[16];
@@ -358,6 +438,7 @@ void hfdigFtxTab(App& a, const dect2::HfdigTelemetry& t) {
             snprintf(b, sizeof b, "DT %+.2f s, spread %.2f s, %d decodes", f.clockErr, f.dtSpread, f.clockN);
             if (f.clockWarn) ImGui::TextColored(pal::warnAmber(), "clock off by %+.1f s: set the computer clock (decodes still work to 2.5 s)", f.clockErr);
             else ImGui::TextDisabled("%s", b);
+            if (f.clockTrim != 0.f) { ImGui::SameLine(0, 10 * gUi); ImGui::TextColored(pal::warnAmber(), tr("computer clock corrected by %+.1f s"), f.clockTrim); }
         } else ImGui::TextDisabled("no decodes yet");
         flowEnd();
         std::string last;

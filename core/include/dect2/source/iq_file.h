@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #pragma once
 // IQ recordings with a description: SigMF (.sigmf-meta + .sigmf-data) and two-channel WAV. probeIqFile() reads the rate, the centre
 // frequency, the sample format and where the samples start, so the file plays in any mode without typing them in.
@@ -25,6 +28,8 @@ struct IqFileInfo {
 
 // .sigmf-meta, .sigmf-data, X-Midas BLUE, (the meta beside it is found), .wav. Returns false with err set when the file cannot be read or is a
 // kind OnAir cannot play (real-valued samples, 64-bit floats ...). Other extensions return false with an empty err.
+// A folder only this user can enter (<temp>/onair-<uid>, mode 0700) for converted copies of recordings; empty when there is no safe one.
+std::string iqPrivateTempDir();
 bool probeIqFile(const std::string& path, IqFileInfo& out, std::string& err, bool allowConvert = true);
 // X-Midas BLUE (.tmp .prm .blue .bluefile, or any file that starts with the BLUE tag). Complex int8 / int16 / float32 play straight from the
 // file; real data and the other sample types are first copied to a cf32 file in the temp folder (allowConvert false: no copy, dataPath stays the original).

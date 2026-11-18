@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Workspaces: a named set of the current source, mode, frequency, sample rate, gains and open windows, saved in the settings
 // (prefs key "workspaces") and restored from the File menu. Also the last-session file (dataDir()/last-session.txt): written every
 // few seconds while OnAir runs and marked clean at a normal exit, so the next start can offer to restore a session that did not end.
 // No DSP here: a restore goes through the same selectMode / tuneFreq / applyBandwidth that the controls use.
 #pragma once
 #include "../app.h"
+#include "workspace_record.h"
 #include <string>
 #include <vector>
 
@@ -18,6 +22,7 @@ struct Workspace {
     bool ampOn = false;
     std::string panels;       // comma-separated names of the open windows
     std::string modes;        // the Modes shown rules (modevis text, or "default"); empty in a workspace saved before 3.5: left as they are
+    wsrec::WindowState win;   // the main window: size, position, maximized; win.have false in an older record: the window is left as it is
 };
 
 Workspace workspaceCapture(const App& a, const std::string& name);    // the live settings of this receiver

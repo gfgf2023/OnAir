@@ -1,6 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/codec/codec_paths.h"
+#include "dect2/net/ws_trace.h"
 // Saved settings: loadPrefs() and savePrefs(). The plain keys (a flag, a number with limits, a text) are one table, kKeys,
 // that both directions walk, so a key is spelled once; the keys that need real logic (the mode and its gains, the
 // spectrum range, the FM station lists, the wide-capture mask) are written out below the table.
+#include "dect2/limits.h"
+#include "dect2/engine/retired_modes.h"
 #include "../app.h"
 #include "state_internal.h"
 #include "../ais/ais_alerts_ui.h"
@@ -72,7 +79,7 @@ PrefKey rx1(PrefKey p) { p.rx1Load = true; return p; }
 
 int fixDtmbBw(int v) { return v == 6 ? 6 : 8; }
 int fixIsdbtBw(int v) { return v == 0 || v == 7 || v == 8 ? v : 6; }
-int fixRegion(int v) { return v == 1 || v == 2 ? v : 0; }
+int fixRegion(int v) { return v >= 1 && v <= 3 ? v : 0; }
 int fixDeemph(int v) { return v == 75 ? 75 : v == 0 ? 0 : 50; }   // 0: off
 int fixAudioBw(int v) { return v == 12000 || v == 8000 || v == 5000 ? v : 0; }
 int fixChanKhz(int v) { return v > 0 ? std::max(10, v) : 0; }   // (3.4: any manual width; the slider runs 100 - 300 kHz, a typed one goes beyond)
@@ -95,6 +102,7 @@ const std::vector<PrefKey>& keyTable() {
         flagB("agcOn", AT(a.agcOn), false),   // Auto gain: the Auto choice survives a restart (#342)
         shared(scaled("uiTextScale", AT(a.uiTextScale), 100, 100, 0.8, 2, true)),
         shared(flagI("touchUi", AT(a.touchUi), false)), shared(scaled("touchScale", AT(a.touchScale), 100, 135, 1.0, 2, true)),
+        shared(num("touchSize", AT(a.touchSize), 2, 0, 4, true)),
         num("tetraSlotMode", AT(a.tetraSlotMode), 0, 0, 3, true), num("tetraSlotNum", AT(a.tetraSlotNum), 1, 1, 4, true),
         num("tetraSlotId", AT(a.tetraSlotId), 0, 0, 16777215, true),
         num("tetraSingle", AT(a.tetraSingle), 0, 0, 1, true),
@@ -104,30 +112,34 @@ const std::vector<PrefKey>& keyTable() {
         flagB("specAutoDb", AT(a.specAutoDb), true), flagB("specPerHz", AT(a.specPerHz), true),
         flagB("wfAvg", AT(a.wf.rowAverage), false, false, true), flagB("wfClock", AT(a.wf.clockLabels), false, false, true),
         real("wfGamma", AT(a.wf.gamma), 0.4, 2.5),
+        real("wfSat", AT(a.wf.sat), 0.0, 2.0),
         real("wfBright", AT(a.wf.brightness), -0.5, 0.5), real("wfContrast", AT(a.wf.contrast), 0.25, 4),
         num("wfDetailAuto", AT(a.wf.detail), -1, -1, Waterfall::kMaxCols, true), flagB("wfPerMode", AT(a.wfPerMode), false, false, true),
         flagB("wf3d", AT(a.wf.s3d.on), false), num("wf3dRows", AT(a.wf.s3d.rows), 256, 64, 1024), real("wf3dHeight", AT(a.wf.s3d.heightScale), 0.05, 1.5),
         flagB("wf3dSmooth", AT(a.wf.s3d.smooth), false), flagB("wf3dPeak", AT(a.wf.s3d.peak), true), flagB("wf3dMarker", AT(a.wf.s3d.marker), true),
         flagB("wf3dShade", AT(a.wf.s3d.shade), true), num("wf3dPreset", AT(a.wf.s3d.preset), 0, 0, w3d::NumPresets - 1),
         real("wf3dYaw", AT(a.wf.s3d.cam.yaw), -3.2, 3.2), real("wf3dPitch", AT(a.wf.s3d.cam.pitch), 0.03, 1.553), real("wf3dDist", AT(a.wf.s3d.cam.dist), 0.35, 8),
-        text("wfCustom", AT(a.wfCustom)), text("specMarkers", AT(a.specMarkers)),
+        text("wfCustom", AT(a.wfCustom)), text("specMarkers", AT(a.specMarkers)), shared(text("notchList", AT(a.notchText))),
         num("traceColor", AT(a.traceColor), 0, 0, cmap::kNumTracePresets - 1, true), num("holdColor", AT(a.holdColor), -1, -1, cmap::kNumTracePresets - 1, true),
         flagB("minHold", AT(a.minHold), false, false, true), flagB("showLive", AT(a.showLive), false, false, true),
         flagB("nbOn", AT(a.nbOn), false, false, true), real("nbThr", AT(a.nbThr), 2, 40), real("nbWidthUs", AT(a.nbWidthUs), 2, 2000),
         real("specZoom", AT(a.specZoom), 0, 1, true),
         flagB("genAutoOn", AT(a.genAutoOn), true, false, true), flagB("genAutoDecode", AT(a.genAutoDecode), false, false, true), num("genAutoReleaseKhz", AT(a.genAutoReleaseKhz), 0, 0, 100000000, true),
+        flagB("specGhost", AT(a.specGhost), false, false, true), num("ghostWhich", AT(a.ghostWhich), 0, 0, 3, true, true), flagB("ghostNew", AT(a.ghostNew), true, false, true),
+        real("ghostThr", AT(a.ghostThr), 1, 40), num("ghostAutoH", AT(a.ghostAutoH), 6, 0, 720, true, true), num("ghostKeep", AT(a.ghostKeep), 28, 1, 500, true, true),
         flagB("specHold", AT(a.peakHold), false, false, true),
         real("holdDecay", AT(a.holdDecay), 0, 60),
-        real("specAvg", AT(a.specAvgSec), 0, 5), num("specFft", AT(a.specFft), 0, 0, 262144, true), real("specLine", AT(a.specLine), 0.6, 3),
+        real("specAvg", AT(a.specAvgSec), 0, 5), num("specFft", AT(a.specFft), 0, 0, 1048576, true), real("specLine", AT(a.specLine), 0.6, 3),
         flagB("specFill", AT(a.specFill), true, false, true), flagB("specGrid", AT(a.specGrid), false, false, true), flagB("specPeaks", AT(a.specPeaks), false, false, true), flagB("specLabels", AT(a.specLabels), true, false, true), num("specLabelMask", AT(a.specLabelMask), 63, 0, 63, true),
         flagB("specReadout", AT(a.specReadout), false, false, true), flagB("specDbm", AT(a.specDbm), false, false, true),
         num("specLook", AT(a.specLook), 1, 0, slook::NumLooks - 1, true), num("tunerLook", AT(a.tunerStyle), 1, 0, 1, true), num("specAxisLabels", AT(a.specAxisLabels), -1, -1, 1, true),
         real("specLabelSize", AT(a.specLabelSize), 0.7, 1.6), num("specSmoothTrace", AT(a.specSmoothTrace), -1, -1, 4, true),
-        num("videoFit", AT(a.video.fit), 0, 0, 3, true), flagB("specNfMarker", AT(a.specNfMarker), false, false, true), flagB("specSmoothZoom", AT(a.specSmoothZoom), true, false, true),
-        num("specSnapHz", AT(a.specSnapHz), 0, 0, 1000000, true), flagB("wfLowPass", AT(a.wfLowPass), false, false, true),
+        num("videoFit", AT(a.video.fit), 0, 0, 3, true), flagB("specNfMarker", AT(a.specNfMarker), false, false, true), flagB("specSmoothZoom", AT(a.specSmoothZoom), true, false, true), num("specWheelAction", AT(a.specWheelAction), 0, 0, 2, true),
+        num("specSnapHz", AT(a.specSnapHz), 0, 0, 1000000, true), flagB("wfLowPass", AT(a.wfLowPass), false, false, true), flagB("specZoomFft", AT(a.specZoomFft), true, false, true), num("specZoomMax", AT(a.specZoomMaxBins), 65536, 512, 1048576, true),
+        num("specWindow", AT(a.specWindow), 0, 0, 4, true), real("specOverlap", AT(a.specOverlap), -1, 0.95), flagB("specResReadout", AT(a.specResReadout), true, false, true), flagB("wfSoft", AT(a.wfSoft), false, false, true),
         real("wfFloorBelow", AT(a.wf.autoBelow), 0, 40), real("wfFloorSpan", AT(a.wf.autoSpan), 20, 120),
         num("tuningMode", AT(a.tuningMode), 0, 0, 1, true),
-        flagB("centreTuning", AT(a.centreTuning), false, false, true), flagB("dragMovesTuned", AT(a.dragMovesTuned), false, false, true),
+        flagB("centreTuning", AT(a.centreTuning), false, false, true), flagB("dragMovesTuned", AT(a.dragMovesTuned), false, false, true), num("specDrag", AT(a.specDrag), 0, 0, 1, true),
         flagI("fmMono", AT(a.fmMono), false),
         numFix("fmDeemph", AT(a.fmDeemph), 50, fixDeemph),
         numFix("fmBass", AT(a.fmBass), 0, fixTone), numFix("fmTreble", AT(a.fmTreble), 0, fixTone),
@@ -136,6 +148,7 @@ const std::vector<PrefKey>& keyTable() {
         numFix("fmRegion", AT(a.fmRegion), 0, fixRegion),
         numFix("fmChanKhz", AT(a.fmChanKhz), 0, fixChanKhz),
         flagI("pagerNarrow", AT(a.pagerNarrow), false), flagI("packetNarrow", AT(a.packetNarrow), false),
+        shared(flagB("gpuGlobal", AT(a.gpuGlobal), true)), shared(text("gpuModes", AT(a.gpuModes))),
         shared(num("compute", AT(a.computeMode), 0, 0, 2, true, true)),   // indexes the CPU / GPU / Auto names
         num("standard", AT(a.stdMode), 0, 0, 2, true, true),      // 0 auto, 1 DVB-T2, 2 DVB-T: engineStd() hands it on
         num("bw", AT(a.bwIdx), 0, 0, (int)(sizeof kBw / sizeof *kBw) - 1),
@@ -153,8 +166,11 @@ const std::vector<PrefKey>& keyTable() {
         shared(flagB("modeFavsOnly", AT(a.modeFavsOnly), false)),
         shared(num("uiVariant", AT(a.uiVariant), 0, 0, 7, true)),
         shared(numFix("dtmbBw", AT(a.dtmbBwMhz), 8, fixDtmbBw)),
-        shared(numFix("isdbtBw", AT(a.isdbtBwMhz), 6, fixIsdbtBw)),
+        shared(numFix("isdbtBw", AT(a.isdbtBwMhz), 0, fixIsdbtBw)),
         shared(flagI("atvFm", AT(a.atvFm), false)),
+        shared(num("synthMediaKind", AT(a.tune.synth.mediaKind), 0, 0, 2, true)),   // Synthetic content (synth_media.h): built-in, a picture or a video file
+        shared(text("synthMediaPath", AT(a.tune.synth.mediaPath))),
+        shared(text("synthMediaAudio", AT(a.tune.synth.mediaAudio))),
         shared(num("atvNbtv", AT(a.atvNbtv), 0, 0, 2, true)),
         shared(num("atvNbtvLines", AT(a.atvNbtvLines), 32, 24, 240, true)),
         shared(scaled("atvNbtvFps", AT(a.atvNbtvFps), 10, 125, 1, 60, true)),
@@ -175,6 +191,7 @@ const std::vector<PrefKey>& keyTable() {
         shared(num("uiTheme32", AT(a.uiTheme), 3, 0, 7, true)),   // 3.2: Dev A is the default look; an older "uiTheme" is carried over once in loadPrefs
         shared(flagB("layoutUnified", AT(a.layoutUnified), false, true)), shared(flagB("sideCollapsed", AT(a.sideCollapsed), false, true)),
         shared(num("uniSide", AT(a.uniSide), 0, 0, 2, true)), shared(text("uniSplit", AT(a.uniSplit))),
+        shared(flagB("fitPanels", AT(a.fitPanels), true, true)), shared(text("panelSizes", AT(a.panelSizes))),
         shared(num("audioIq", AT(a.audioIqMode), 0, 0, 3)),
         shared(num("audioChan", AT(a.audioChan), 0, 0, 2)), shared(dbl("audioIfHz", AT(a.audioIfHz), 0)), shared(flagI("audioInvert", AT(a.audioInvert), false)),
         shared(flagI("audioDc", AT(a.audioDc), true)), shared(flagI("audioAfView", AT(a.audioAfView), true)), shared(dbl("audioGainDb", AT(a.audioGainDb), 0)), shared(num("audioRate", AT(a.audioRate), 48000, 8000, 192000)),
@@ -184,9 +201,11 @@ const std::vector<PrefKey>& keyTable() {
         shared(flagFn("iqCorrect", [](const App& a) { return (bool)a.engine.iqFix().iq.load(); }, [](App& a, bool v) { a.engine.iqFix().iq = v; })),
         shared(text("filePath", AT(a.file.path), true)),
         shared(dbl("fileCentreHz", AT(a.file.centreHz), 0)),
+        shared(flagFn("spurNotch", [](const App& a) { return a.engine.spurNotch(); }, [](App& a, bool v) { a.engine.setSpurNotch(v); })),
         shared(flagFn("fileDcNotch", [](const App& a) { return a.engine.dcNotch(); }, [](App& a, bool v) { a.engine.setDcNotch(v); })),
         shared(chars("outPath", AT(a.filePath[0]), sizeof(App::filePath), true)),
         shared(chars("udpHost", AT(a.udpHost[0]), sizeof(App::udpHost), true)),
+        shared(chars("netAddr", AT(a.netAddr[0]), sizeof(App::netAddr), true)),
         shared(num("udpPort", AT(a.out.port), 0, 1, 0, true, true)),
         shared(flagB("udpRtp", AT(a.out.rtp), false)), shared(flagB("dropNull", AT(a.out.dropNull), false)),
         shared(flagB("popTop", AT(a.popTop), true)),
@@ -294,7 +313,7 @@ void saveFmStations(plat::Prefs& d, const App& a) {
 // the mode (family and protocol entry) and the gains and frequency each mode remembers
 void loadModeAndGains(plat::Prefs& d, App& a) {
     if (d.has("family")) {
-        const int f = std::max(0, std::min(kNumFamilies - 1, (int)d.getI("family", 0)));
+        const int f = std::max(0, std::min(kNumFamilies - 1, dect2::liveFamily((int)d.getI("family", 0))));   // a 4.0 type entry opens its receiver (retired_modes.h)
         // the protocol entry; settings from before the split (HF digital, Mesh, Pagers, Marine as one entry) open the family's first
         a.sub = subIndexOf(d.getS("subMode", "").c_str());
         a.family = f;
@@ -341,7 +360,7 @@ void loadSpectrumRanges(plat::Prefs& d, App& a) {
     if (d.has("wfMin") && d.has("wfMax")) { a.wf.minDb = (float)d.getD("wfMin", a.wf.minDb); a.wf.maxDb = (float)d.getD("wfMax", a.wf.maxDb); }
     a.wf.setRate((float)d.getD("wfRate", 0.0));
     if (d.has("specMin") && d.has("specMax")) { a.yMin = (float)d.getD("specMin", a.yMin); a.yMax = (float)d.getD("specMax", a.yMax); }
-    if (!(a.yMax - a.yMin >= 10)) { a.yMin = -110; a.yMax = -30; }
+    if (!(a.yMax - a.yMin >= 10)) { a.yMin = specDefaultLo(); a.yMax = specDefaultHi(); }
     if (!(a.wf.maxDb - a.wf.minDb >= 3)) { a.wf.minDb = -100; a.wf.maxDb = -32; }
 }
 
@@ -372,8 +391,29 @@ void syncNetRadios(App& a) {
     a.netRadiosSeen = a.netRadios;
 }
 
+void applyStaleFromPrefs() {
+    plat::Prefs& d = plat::prefs();
+    const double custom = d.getD("staleCustomMin", 120) * 60.0;
+    auto one = [&](const char* key, dect2::limits::Family f) {
+        const double m = d.getD(key, -1);   // minutes; -1 the mode's rule, 0 never, -2 custom
+        dect2::limits::setStale(f, m == -2 ? custom : m < 0 ? -1 : m * 60.0);
+    };
+    using F = dect2::limits::Family;
+    one("staleVdl2", F::Vdl2); one("staleAcars", F::Acars); one("staleHfdl", F::Hfdl); one("staleAdsb", F::Adsb);
+    one("staleAis", F::Ais); one("staleUat", F::Uat); one("staleInmsat", F::Inmsat);
+}
+
+// the external FFmpeg folder and the SDRconnect traffic log (Settings > Advanced) reach the core
+void applyFfmpegDirFromPrefs() {
+    plat::Prefs& d = plat::prefs();
+    dect2::codec::setExternalFfmpegDir(d.getB("ffmpegExternal", false) ? d.getS("ffmpegDir", "") : std::string());
+    dect2::wstrace::configure(d.getB("sdrconnectLog", false), plat::dataDir() + "/sdrconnect-ws.log");
+}
+
 void loadPrefs(App& a) {
     plat::Prefs& d = plat::prefs();
+    applyStaleFromPrefs();
+    applyFfmpegDirFromPrefs();
     a.netRadios = netRadiosFromString(d.getS("netRadios", ""));
     a.vfoRows = vfoRowsFromString(d.getS("vfoRows", ""));   // multi-VFO channels
     a.netRadiosSeen = a.netRadios;
@@ -389,6 +429,7 @@ void loadPrefs(App& a) {
     loadKeys(d, a, true);   // the Hamlib picker, the frequency and the gains
     a.recFormat = fixRecFormat((int)d.getI("recFormat", 0));
     a.recSigmf = d.getB("recSigmf", true);
+    a.dtmbAuto = d.getB("dtmbAuto", true);
     a.audioRecFmt = std::max(0, std::min(2, (int)d.getI("audioRecFmt", 0)));
     a.audioRecGate = d.getB("audioRecGate", false); a.audioRecSplit = d.getB("audioRecSplit", false); a.audioRecKeep = d.getB("audioRecKeep", false);
     a.monOn = d.getB("monOn", false); a.monDemod = std::max(0, std::min(4, (int)d.getI("monDemod", 4)));
@@ -429,6 +470,7 @@ void loadPrefs(App& a) {
         for (const auto& r : fmSavedDecode(d.getS("fmSaved", ""))) a.fmSaved.push_back(r);
     }
     aisAlertsLoadPrefs(a);   // the AIS alerts also run with the AIS tab closed
+    if (a.rxId == 1) loadWiresharkPrefs(a);
     if (a.rxId == 1) loadFeedPrefs(a);   // the feeds are shared by all receivers: RX 1 owns their settings
     a.channels = d.getChannels();
     tvHdLoad(a);
@@ -495,6 +537,7 @@ void savePrefs(const App& a) {
     d.setS("fmSaved", fmSavedEncode(a.fmSaved));   // the saved-stations library, not the scan results
     d.setChannels(a.channels);
     tvHdSave(a);
+    saveWiresharkPrefs(a);
     saveFeedPrefs(a);
     d.flush();
 }

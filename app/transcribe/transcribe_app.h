@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Live transcripts in the app (core/src/transcribe): the settings, the speech model (downloaded on request or put in the models folder), the taps on
 // the airband channels and on the sound of the other modes, the Transcripts window, the live captions of the airband screen, the "Voice" section of
 // an aircraft and the transcripts shared to the map. docs/TRANSCRIBE.md.
@@ -27,6 +30,11 @@ std::vector<dect2::AcarsLogEntry> voiceForTrack(const std::string& id, const std
 bool indicator(std::string& text);
 // What it is doing in plain words ("Listening for speech.", "Model missing: ...", "No speech heard in the last 10 s."). level: 0 information, 1 working, 2 a problem.
 std::string statusLine(int* level);
+// The language the speech model heard last near freqHz (within 5 kHz, in the last 2 minutes), "" when none (the model is user-installed)
+std::string latestLanguage(double freqHz, float* probability);
+// Airband transcripts newer than `since` (Unix seconds), oldest first: the time, frequency, channel label and the words (for the ATIS tracker)
+struct AirbandLine { int64_t wall = 0; double freqHz = 0; std::string channel, text; };
+std::vector<AirbandLine> airbandSince(int64_t since);
 void shotReport();   // dev (--shot): the status line, the counters and every transcript line on stderr, "tx: ..."
 
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // LTR receiver: FM front end at 9600 Hz, 150 Hz low pass, decimate to 2400 Hz (8 samples per bit), integrate-and-dump slicing at every
 // phase, and a search for the 9-bit sync in both polarities. Neighbouring phases that hit the same word are merged (the middle one is used).
 #include "dect2/ltr/ltr_rx.h"
@@ -16,7 +19,7 @@ ModeTuning ltrTuning() {
     ModeTuning t;
     t.stdMode = 131;
     t.id = "ltr";
-    t.name = "LTR trunking (WIP)";
+    t.name = "LTR trunking";
     t.minMhz = 29.7;
     t.maxMhz = 960.0;
     t.defMhz = 460.0;
@@ -86,12 +89,12 @@ struct LtrReceiver::Impl {
                 if (std::fabs(sum / kSps - thr) < 0.15 * half) return;
             }
         }
-        if (!ltr::plausible(word)) { tel.blocksBad++; return; }
+        if (!ltr::checkOk(word, h.inv) || !ltr::plausible(word)) { tel.blocksBad++; return; }
         LtrMessage m;
         m.wallTime = (int64_t)std::time(nullptr);
         m.timeSec = timeSec();
         m.area = word.area; m.gotoCh = word.gotoCh; m.home = word.home; m.id = word.id; m.freeCh = word.freeCh; m.chk = word.chk;
-        m.plausible = true;
+        m.plausible = true; m.chkOk = true;
         m.talkgroup = ltr::talkgroup(word);
         m.kind = ltr::kindOf(word.id);
         auto touch = [&](int ch, int which) {
@@ -153,8 +156,9 @@ LtrReceiver::~LtrReceiver() = default;
 void LtrReceiver::configure(double inputRateHz) {
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->fs = inputRateHz;
-    p_->rateSet = inputRateHz >= ltrTuning().minSampleRate - 1 && p_->fm.configure(inputRateHz, kWork, 4500.0);
+    p_->rateSet = inputRateHz >= ltrTuning().minSampleRate - 1 && p_->fm.configure(inputRateHz, kWork, 3500.0);   // 4.0: 3.5 kHz (was 4.5) with the carrier follow-up, see docs/SENSITIVITY-4.0-A3.md
     p_->fm.setOffset(p_->offHz);
+    p_->fm.setAfc(true, 4000.0, 9000.0);
     p_->lp[0].lowpass(150.0, kWork, 0.5412);
     p_->lp[1].lowpass(150.0, kWork, 1.3066);
     p_->clearState();

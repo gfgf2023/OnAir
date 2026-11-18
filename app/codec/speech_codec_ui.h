@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The app side of user-installed speech codecs: the codecs folder, the accepted-notice flag in prefs, and the notice dialog a voice
 // mode draws until its codec is ready. English only. See docs/CODECS.md.
 #pragma once
@@ -19,7 +22,13 @@ std::vector<dect2::codec::CodecDir> codecSearchFolders();
 std::vector<std::string> codecSearchPaths();
 // Saves the extra folder (empty clears it) and makes every loader look again.
 void setExtraFolder(const std::string& dir);
-// "Open codecs folder" (user folder) plus "Open folder next to OnAir" and "Open extra folder" when those exist, on the current line.
+// The Discord invite, held here once (the menu bar chip uses it too), and the button every codec install screen shows: "Join the Discord to get
+// access to built codecs", which opens the invite in the browser. The text goes through tr(). The app itself never downloads or bundles a codec:
+// this only opens a web page. `compact` draws a SmallButton (for notices); true when clicked (the link is already opened).
+const char* discordInviteUrl();
+const char* discordCodecLabel();
+bool discordCodecButton(bool compact = false);
+// "Open codecs folder" (user folder) plus "Open folder next to OnAir" and "Open extra folder" when those exist, then the Discord codecs button (same line when it fits).
 bool openCodecFolderButtons();
 // Lists the searched folders for plug-in `codec`, marks where the file is, and warns when it is in more than one.
 void codecFoldersList(const std::string& codec);
@@ -54,5 +63,12 @@ void voiceCodecLine(const char* id, const char* name, const std::string& libPath
 // The "Voice codecs" window (Help menu): every voice codec OnAir knows, the modes that use it, whether it is open, patented (plug-in only,
 // never shipped) or unsupported, and whether it is loaded or missing, with the install helper for each plug-in.
 void voiceCodecsWindow(App& a);
+
+// Every optional library OnAir loads at run time (codecs, radio drivers, plug-ins) with found / missing, the folder and the official source (docs/OPTIONAL-LIBRARIES.md).
+void optionalLibrariesSection();
+
+// The setup wizard's codec screen (wizard.cpp): one status line per voice codec plug-in, Open codecs folder, "Look again" (searches again, no restart),
+// Copy build command and the install steps for this computer. Texts go through tr(). OnAir never ships or downloads a patented codec.
+void wizardCodecPanel();
 
 } // namespace appcodec

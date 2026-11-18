@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Trunking controller: control channel messages in, calls and follow actions out. Also the DMR Tier III grant model.
 #include "dect2/p25/trunk.h"
+#include "dect2/dmr/dmr_vendor.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -11,7 +15,7 @@ void DmrModel::setChannel(int lcn, double hz) { if (hz > 0) lcn_[lcn] = hz; else
 double DmrModel::lcnFreq(int lcn) const { auto it = lcn_.find(lcn); return it == lcn_.end() ? 0 : it->second; }
 
 bool DmrModel::onCsbk(int opcode, int fid, const uint8_t d[8], double, Grant& g) {
-    if (fid != 0) return false;   // manufacturer CSBKs (Connect Plus, Capacity Plus and the like are not public): not interpreted
+    if (fid != 0) return false;   // vendor CSBKs go through onCsbkVendor
     if (opcode != ops_.tvGrant && opcode != ops_.pvGrant && opcode != ops_.btvGrant) return false;
     g = Grant();
     g.dmr = true; g.tdma = true;
@@ -25,6 +29,28 @@ bool DmrModel::onCsbk(int opcode, int fid, const uint8_t d[8], double, Grant& g)
     g.freqHz = lcnFreq(g.channel);
     n_++;
     return true;
+}
+
+// Capacity Plus (FID 0x10) and Connect Plus (FID 0x06). LSNs and LCNs are looked up in the user's channel table as for Tier III.
+bool DmrModel::onCsbkVendor(int opcode, int fid, const uint8_t d[8], std::vector<Grant>& out) {
+    out.clear();
+    if (fid == 0x10 && opcode == 0x3E) {
+        std::vector<dmr::CapPlusGrant> gs; int rest = 0;
+        if (!capPlus_.feed(d, gs, rest)) return false;
+        for (const auto& c : gs) {
+            Grant g; g.dmr = true; g.tdma = true; g.channel = c.lsn; g.slot = (c.lsn - 1) & 1; g.group = true; g.tg = c.tg; g.freqHz = lcnFreq(c.lsn); g.explicitUpdate = true;
+            n_++; out.push_back(g);
+        }
+        return !out.empty();
+    }
+    if (fid == 0x06 && opcode == 0x03) {
+        dmr::ConPlus c;
+        if (!dmr::conPlusParse(opcode, d, c)) return false;
+        Grant g; g.dmr = true; g.tdma = true; g.channel = c.lcn; g.slot = c.slot; g.group = true; g.tg = (int)c.dst; g.src = (int)c.src; g.freqHz = lcnFreq(c.lcn);
+        n_++; out.push_back(g);
+        return true;
+    }
+    return false;
 }
 
 Controller::Controller() {}
@@ -43,21 +69,28 @@ void Controller::dispatch(const std::vector<Grant>& gs, double now) {
         if (const TgEntry* e = g.group ? tgs.find(g.tg) : nullptr) if (e->encryptedMode()) gg.encrypted = true;
         // Phase 2 is scrambled with the site's WACN / system ID / NAC: without the system broadcast nothing would be heard, so it is not followed yet
         if (gg.tdma && !gg.dmr && d.follow && (sys.site().wacn < 0 || sys.site().sysId < 0)) { d.follow = false; d.retry = true; d.reason = "Phase 2 call: waiting for the system broadcast (WACN / system ID) to descramble it"; }
+        if (ccNow() > 0) health.onGrant(ccNow(), now);
+        if (grantTap) grantTap(gg, now);
         follower.onGrant(gg, d, now, log);
     }
 }
 
 void Controller::onTsbk(const p25::Tsbk& t, int nac, double now) {
     good_++;
+    if (ccNow() > 0) health.onGood(ccNow(), now);
     lastGood_ = now;
     follower.onControlSeen(now, nac);
     std::vector<Grant> gs;
     pushMsg(sys.onTsbk(t, nac, now, &gs));
     if (sys.site().valid && sys.site().ccHz > 0) follower.setControlChannel(sys.site().ccHz, sys.ownControlChannels());
+    if (sys.site().valid) {   // the site book: this site and the neighbours it announces, learned over a whole drive
+        health.learnSite(sys.site().sysId, sys.site().rfss, sys.site().site, ccNow() > 0 ? ccNow() : sys.site().ccHz, now);
+        for (const SiteInfo& a : sys.adjacent()) health.learnSite(a.sysId, a.rfss, a.site, a.ccHz, now);
+    }
     dispatch(gs, now);
 }
 
-void Controller::onTsbkBad(double) { bad_++; }
+void Controller::onTsbkBad(double now) { bad_++; if (ccNow() > 0) health.onBad(ccNow(), now); }
 
 void Controller::onDmrCsbk(int opcode, int fid, const uint8_t data[8], double now) {
     Grant g;
@@ -65,9 +98,21 @@ void Controller::onDmrCsbk(int opcode, int fid, const uint8_t data[8], double no
     lastGood_ = now;
     follower.onControlSeen(now);
     if (dmr.onCsbk(opcode, fid, data, now, g)) dispatch({g}, now);
+    else { std::vector<Grant> vg; if (dmr.onCsbkVendor(opcode, fid, data, vg)) dispatch(vg, now); }
 }
 
-void Controller::tick(double now) { follower.tick(now, log); }
+void Controller::tick(double now) {
+    follower.tick(now, log);
+    if (autoPark && follower.state() == FollowState::ControlHold && follower.activeSlices() == 0 && !follower.remoteActive() && ccNow() > 0) {
+        const double hz = health.advise(ccNow(), now);
+        if (hz > 0 && follower.parkAt(hz, now)) {
+            health.moved(now);
+            char b[120];
+            snprintf(b, sizeof b, "Control channel moved to %.4f MHz (better decode quality)", hz / 1e6);
+            pushMsg(b);
+        }
+    }
+}
 
 ControllerStatus Controller::status(double now) const {
     ControllerStatus s;

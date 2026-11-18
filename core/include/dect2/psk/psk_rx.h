@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // PSK31 / PSK63 receiver (BPSK and QPSK): decodes every PSK signal in the audio passband of an upper sideband receiver at once.
 //
 // The channel is mixed to 0 Hz and brought to 24 kHz complex (marine::Front). A 4096-point spectrum every 2048 samples (5.9 Hz bins),
@@ -41,6 +44,8 @@ public:
     bool loadResults(const std::string& blob);           // false: not this build's format, nothing changes
     void setLogCallback(std::function<void(const std::string&)> cb);
 
+    void setAuto(bool on);               // Auto: the modulation follows the signal (BPSK31 .. QPSK125, tried on the last seconds of the band). Off by default; setMode alone does not change it
+    bool autoOn() const;
     void setMode(int m);                 // kPskModes: BPSK31 (default), BPSK63, QPSK31, QPSK63; forgets the signals
     void setFocusHz(double offsetHz);    // the signal nearest this offset from the dial becomes the focus (a new one when none is near)
     void clearSignals();

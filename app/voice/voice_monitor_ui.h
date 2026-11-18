@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The voice monitor on screen (dect2/voice/voice_monitor.h), the same in every digital voice mode: a strip at the top of the mode's tab
 // with the state (locked, codec, encrypted, hold, recording), the big "now talking" card with its error meter and quick buttons, and
 // the Voice monitor window (Help menu or the strip's button) with the calls, the history search, the filters and the sound settings.
@@ -19,6 +22,9 @@ struct Link {
 
 // mode: the monitor's name ("dmr", "p25", "nxdn", "dpmr", "dstar", "ysf", "tetra", "m17"); title: what the user sees ("DMR")
 void strip(App& a, const char* mode, const char* title, const Link& l);
+// The "No audio: why" line (talkgroup hold, volume 0, output device error, codec plug-in problems ...); shown by strip(), and by the modes
+// whose strip is not on every view. Draws nothing while the mode is playing or not receiving.
+void silenceLine(App& a, const char* mode, bool live, bool codecReady);
 // The Voice monitor window; call every frame from the shell (draws nothing while closed)
 void window(App& a);
 void open(const char* mode = nullptr);   // opens the window (on a mode; null: the last one)

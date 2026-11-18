@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Icom IC-R8600 I/Q driver, the parts that need no radio: the marker decoder fed with synthetic USB chunks, CI-V frames and setting
 // payloads, the .spt (CSPT) to RAM-write conversion with a SYNTHETIC file (the real Icom firmware is never fetched or shipped), the
 // firmware import and its checks, and the detection with no hardware. NOT covered: a real IC-R8600 (needs a user test).
@@ -190,6 +193,11 @@ static void firmware() {
     {   auto t = good; t[1].wValue = 0x8000; CHECK(!recordsProblem(t).empty()); }                          // outside the RAM
     {   auto t = good; t[1].wValue = 0xE000; t[1].data.assign(16, 0x55); CHECK(recordsProblem(t).empty()); }   // the 512 bytes of scratch RAM at 0xE000 (#357)
     {   auto t = good; t[1].wValue = 0xE1F0; t[1].data.assign(32, 0x55); CHECK(!recordsProblem(t).empty()); }  // past its end
+    {   auto t = good; t[1].wValue = 0xE600; t[1].data = {0}; CHECK(recordsProblem(t).empty()); }                // the processor released in the middle (#357, #430)
+    {   auto t = good; t[1].wValue = 0xE600; t[1].data = {1}; CHECK(recordsProblem(t).empty()); }                // and held again
+    {   auto t = good; t[1].wValue = 0xE600; t[1].data = {2}; CHECK(!recordsProblem(t).empty()); }               // not a CPUCS value
+    {   auto t = good; t[1].wValue = 0xE600; t[1].data = {0, 0}; CHECK(!recordsProblem(t).empty()); }            // more than the one byte
+    {   auto t = good; t[1].wValue = 0xE601; t[1].data = {0}; CHECK(!recordsProblem(t).empty()); }               // another register
     {   auto t = good; t[1].data.clear(); CHECK(!recordsProblem(t).empty()); }
     CHECK(!recordsProblem({}).empty());
     CHECK(recordsProblem(good).empty());

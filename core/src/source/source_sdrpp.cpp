@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // SDR++ server client: a radio served by SDR++'s headless mode (`sdrpp --server`, TCP port 5259). Written from the SDR++ sources
 // (core/src/server_protocol.h, core/src/server.cpp, core/src/gui/smgui.cpp) and tried against a real server with an Airspy R2.
 //
@@ -15,6 +18,7 @@
 // setting under its own name. So any source module SDR++ has works, not only the ones OnAir knows. A change made this way is a change to
 // the server's own settings: SDR++ keeps it after OnAir disconnects.
 #include "../net/tcp_client.h"
+#include "dect2/common/diag.h"
 #include "native_common.h"
 #include "dect2/net/netradio.h"
 #include "dect2/net/net_proto.h"
@@ -429,6 +433,7 @@ private:
                 conv_.resize(bytes / 2);
                 for (size_t k = 0; k < conv_.size(); k++) conv_[k] = cf32((int8_t)d[2 * k] * m, (int8_t)d[2 * k + 1] * m);
             } else return;
+            scrubNonFinite(conv_.data(), conv_.size());   // a garbled float or scale must not put a NaN into the receiver
             if (onSamples && !conv_.empty()) onSamples(conv_.data(), conv_.size());
             return;
         }
@@ -504,7 +509,7 @@ std::string silentText(const std::string& addr) { return addr + " accepted the c
 bool hello(Link& l, const std::string& addr, int timeoutMs, std::string& err, bool& retry) {
     retry = false;
     std::string e;
-    if (!l.connect(timeoutMs, e)) { err = e; retry = true; return false; }
+    if (!l.connect(timeoutMs, e)) { DIAG_DEBUG(827261, "The connection to the SDR++ server %s failed (%s), so the radio was not opened.", addr.c_str(), e.c_str()); err = e; retry = true; return false; }
     if (!l.waitGreeting(timeoutMs) && l.busy()) { err = busyText(addr); retry = true; return false; }
     if (!l.fetchUi(timeoutMs)) {
         if (l.busy()) { err = busyText(addr); retry = true; }

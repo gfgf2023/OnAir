@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // RDS data layer (fm_rds.h): block sync, error correction (bursts and two weak symbols), the group types beyond PS/RT (AF, ECC, PIN, CT,
 // PTYN, ODA, RT+, eRT, EON, 2B with C'), no wrong text from corrected blocks; then the whole receiver: the weak-signal threshold, the
 // multipath equaliser switching itself in and out, and the stereo blend.
@@ -118,6 +121,13 @@ static void testGroups() {
     // 4A: 2026-10-23 12:34 UTC, +3:00
     const int mjd = 61336, h = 12, m = 34;
     send(B(4, 0, mjd >> 15), (uint16_t)((mjd & 0x7FFF) << 1 | h >> 4), (uint16_t)((h & 15) << 12 | m << 6 | 0 << 5 | 6), 1);
+    // 15A long PS "Radio Pe\xc5\xbd\xc4\x97 FM" (UTF-8, ends with CR), 4 bytes per group
+    send(B(15, 0, 0), (uint16_t)('R' << 8 | 'a'), (uint16_t)('d' << 8 | 'i'));
+    send(B(15, 0, 1), (uint16_t)('o' << 8 | ' '), (uint16_t)('F' << 8 | 'M'));
+    send(B(15, 0, 2), (uint16_t)('\r' << 8 | 0), (uint16_t)0);
+    // DI: stereo (segment 3) = 1, compressed (segment 1) = 0
+    send(B(0, 0, 8 | 4 | 3), (uint16_t)0, (uint16_t)(' ' << 8 | ' '));
+    send(B(0, 0, 8 | 0 | 1), (uint16_t)0, (uint16_t)('S' << 8 | 'T'));
     // 10A PTYN "ROCKPOP "
     send(B(10, 0, 0), (uint16_t)('R' << 8 | 'O'), (uint16_t)('C' << 8 | 'K'));
     send(B(10, 0, 1), (uint16_t)('P' << 8 | 'O'), (uint16_t)('P' << 8 | ' '));
@@ -139,6 +149,19 @@ static void testGroups() {
         const char* n = "LRT KL. ";
         for (int v = 0; v < 4; v++) send(B(14, 0, v), (uint16_t)(n[2 * v] << 8 | n[2 * v + 1]), 0x4B01);
     }
+    // EON 14A variant 13 (PTY 10, TA on, TP on), then 14B (TP on, TA off) (#436)
+    send(B(14, 0, 13 | 16), (uint16_t)(10 << 11 | 1), 0x4B01);
+    {
+        const RdsInfo& e = d.info;
+        CHECK(e.eon.size() == 1 && e.eon[0].pty == 10 && e.eon[0].ta == 1 && e.eon[0].tp == 1, "EON 13: size %zu pty %d ta %d tp %d", e.eon.size(),
+              e.eon.empty() ? -9 : e.eon[0].pty, e.eon.empty() ? -9 : e.eon[0].ta, e.eon.empty() ? -9 : e.eon[0].tp);
+    }
+    send(B(14, 1, 16 | 0), kPi, 0x4B01);
+    {
+        const RdsInfo& e = d.info;
+        CHECK(e.eon.size() == 1 && e.eon[0].ta == 0 && e.eon[0].tp == 1 && e.eon[0].ps == "LRT KL. ", "EON 14B: ta %d tp %d ps '%s'", e.eon.empty() ? -9 : e.eon[0].ta, e.eon.empty() ? -9 : e.eon[0].tp,
+              e.eon.empty() ? "" : e.eon[0].ps.c_str());
+    }
     const RdsInfo& i = d.info;
     CHECK(d.ps == "TESTFM  " && d.rt == "Hello world", "PS '%s' RT '%s'", d.ps.c_str(), d.rt.c_str());
     CHECK(i.afMhz.size() == 3 && std::fabs(i.afMhz[0] - 90.5) < 0.01 && std::fabs(i.afMhz[1] - 92.0) < 0.01 && std::fabs(i.afMhz[2] - 95.5) < 0.01,
@@ -147,6 +170,8 @@ static void testGroups() {
     CHECK(i.pinDay == 23 && i.pinHour == 14 && i.pinMinute == 5, "PIN %d %d:%d", i.pinDay, i.pinHour, i.pinMinute);
     CHECK(i.clockUtc == 1792758840 && i.clockOffsetMin == 180, "clock %lld offset %d", (long long)i.clockUtc, i.clockOffsetMin);
     CHECK(i.ptyn == "ROCKPOP ", "PTYN '%s'", i.ptyn.c_str());
+    CHECK(i.longPs == "Radio FM", "long PS '%s'", i.longPs.c_str());
+    CHECK((i.diKnown & 0x5) == 0x5 && (i.di & 1) && !(i.di & 4), "DI known %X value %X", i.diKnown, i.di);
     CHECK(i.oda.size() == 2, "ODA list %zu", i.oda.size());
     bool artist = false, title = false;
     for (const auto& t : i.rtPlus) { if (t.type == 4 && t.text == "Hello") artist = true; if (t.type == 1 && t.text == "world") title = true; }

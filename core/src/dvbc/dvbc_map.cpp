@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DVB-C constellations, byte to symbol mapping with the differential coding of the two MSBs, and the test transmitter (EN 300 429 sections 7 to 9).
 #include "dect2/dvbc/dvbc.h"
 #include "dect2/tv/demo_ts.h"
@@ -144,6 +147,7 @@ Signal::Signal(const SignalConfig& cfg) : cfg_(cfg), map_(cfg.qam), il_(new Il),
 Signal::~Signal() = default;
 
 void Signal::refill() {
+    if (config().symbols) { config().symbols(sym_); packets_ += 8; return; }
     uint8_t ts[8 * 188], sc[8 * 188], rs[8 * 204], il[8 * 204];
     for (int i = 0; i < 8; i++) { ts_(ts + i * 188); ts[i * 188] = 0x47; }
     dvbt::scramble(ts, 8, sc);

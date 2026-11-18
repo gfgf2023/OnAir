@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // OnAir: the program entry. main() sets up the window, the graphics back end and the App, then runs the frame loop;
 // the per-frame steps and the shutdown are small functions above it. The window and fonts are in main_window.cpp,
 // start-up and the developer flags in main_start.cpp, the main layout in ui/draw_ui.cpp and ui/main_tabs.cpp.
@@ -16,6 +19,7 @@
 #include "ui/touch.h"
 #include "dect2/source/iq_file.h"
 #include "panels/gallery.h"
+#include "panels/debug_report.h"
 #include "dect2/engine/crash_report.h"
 #include "platform/discord_rpc.h"
 #include <chrono>
@@ -32,6 +36,7 @@
 #include "ui/perf_overlay.h"
 #include "platform/power.h"
 #include "dect2/power/power.h"
+#include "ui/input_map.h"
 
 // code runs before the library's (the linker places the program's own objects first), so the check here comes in time.
 #if defined(DECT2_REQUIRES_AVX2) && (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
@@ -137,10 +142,13 @@ static void applyDisplayScale(GLFWwindow* window, App& app, const ImGuiStyle& ba
                     touch::setDisplayScale(s);   // 48 px targets are measured at the display scale, not the text scale
                     s *= app.uiTextScale;   // View > Text size
                     touch::setOn(app.touchUi);
+                    touch::setSizeFactor(touch::touchSizeFactor(app.touchSize));   // Settings > Touch control size (#139)
                     if (app.touchUi) s *= app.touchScale;   // the touch interface's larger text
                     static bool lastTouch = false;
-                    if (s != gUi || lastTouch != app.touchUi) {
+                    static int lastTouchSize = -1;
+                    if (s != gUi || lastTouch != app.touchUi || lastTouchSize != app.touchSize) {   // a smaller control size needs the style rebuilt (applyMetrics only raises)
                         lastTouch = app.touchUi;
+                        lastTouchSize = app.touchSize;
                         gStyleEpoch++;
                         gUi = s;
                         ImGuiStyle& st = ImGui::GetStyle();
@@ -157,12 +165,11 @@ static void applyDisplayScale(GLFWwindow* window, App& app, const ImGuiStyle& ba
 // text size: Ctrl +, Ctrl - and Ctrl 0 (Cmd on a Mac), in either interface
 static void textSizeKeys(App& app) {
     handleFullscreenHotkeys();   // F11 / Alt+Enter: the whole window, either interface (not while typing)
-    ImGuiIO& kio = ImGui::GetIO();
-    if ((kio.KeyCtrl || kio.KeySuper) && !kio.WantTextInput) {
+    {   // the keys are Settings > Keyboard and mouse (Ctrl and =, -, 0 and the keypad ones by default)
         float t = app.uiTextScale;
-        if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) t = std::min(2.f, std::round(t * 10 + 1) / 10.f);
-        if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract)) t = std::max(0.8f, std::round(t * 10 - 1) / 10.f);
-        if (ImGui::IsKeyPressed(ImGuiKey_0, false) || ImGui::IsKeyPressed(ImGuiKey_Keypad0, false)) t = 1.f;
+        if (inputmap::pressed(inputmap::Action::TextBigger)) t = std::min(2.f, std::round(t * 10 + 1) / 10.f);
+        if (inputmap::pressed(inputmap::Action::TextSmaller)) t = std::max(0.8f, std::round(t * 10 - 1) / 10.f);
+        if (inputmap::pressed(inputmap::Action::TextReset)) t = 1.f;
         if (t != app.uiTextScale) { app.uiTextScale = t; savePrefs(app); }
     }
 }
@@ -183,6 +190,7 @@ static void devAutomation(App& app, DevOpts& o) {
             }
         }
     }
+    if (o.dragSelfTest) { const int r = dragTuneSelfTest(app); if (r >= 0) { fflush(stdout); std::exit(r); } }   // drag to tune (tests/app/run_drag_tune_gui.cmake)
     if (o.memSelfTest && ++o.memFrame == 3) { fflush(stdout); std::exit(memorySelfTest(app)); }   // the Memory recall check (tests/app/run_memory_recall.cmake)
     if (o.autostart) {
         o.autostart = false;
@@ -202,7 +210,7 @@ static void devAutomation(App& app, DevOpts& o) {
         }
         if (found) {
             app.tune.centerHz = app.freqMhz * 1e6; fileStartPrep(app); applyBandwidth(app);
-            app.engine.setComputeMode(app.computeMode); app.engine.setStandard(engineStd(app));
+            applyGpuPolicy(app); app.engine.setComputeMode(app.computeMode); app.engine.setStandard(engineStd(app));
             app.engine.start(app.devices[app.devIdx], app.tune, app.file);
         }
     }
@@ -262,6 +270,7 @@ static void shotReport(App& app) {
 
 // orderly shutdown: transmitter quiet, receivers stopped, results saved, windows and back end closed
 static void shutdownApp(App& app, gfx::Backend* gfxBackend, GLFWwindow* window) {
+    debugReportShutdown();   // the hang watchdog first: shutting down may take longer than a frame
     webshare::stopAll();   // the OnAir Web easy setup's server and tunnel end with the app
     savePrefsFlush();
     plat::prefs().flush();   // anything set since the last write (a retry of a refused write, a key set without a save)
@@ -270,6 +279,7 @@ static void shutdownApp(App& app, gfx::Backend* gfxBackend, GLFWwindow* window) 
     delete gDiscord;   // clears the status and joins its thread
     iptvShutdown();    // an Internet TV stream stops reading before the player and the engine go away
     txShutdown();      // the transmitter goes quiet before anything else is closed
+    echolinkShutdown();   // the EchoLink connection says BYE and logs out
     pluginShutdown();  // plugin threads and helper processes end, the crash marker goes
     receiversShutdown(app);
     tvRecShutdown(app);   // the recordings that run are finished and closed before the receiver stops
@@ -297,9 +307,9 @@ int main(int argc, char** argv) {
 #ifdef __linux__
     if (geteuid() == 0) fprintf(stderr, "OnAir: running as root is not needed; see docs for udev rules\n");
 #endif
-#ifdef _WIN32
-    dect2::crash::startLog();   // the program has no console window: keep its messages in a log file next to the settings (the old one is kept as onair-prev.log)
-#endif
+    // a log file next to the settings (the old one is kept as onair-prev.log). Windows: standard error goes there (no console); everywhere the
+    // program log is copied there (debug_report.cpp), so the log of a run that crashed is still there at the next start
+    dect2::crash::startLog();
     {
         std::string report;
         if (dect2::crash::lastRunCrashed(report)) {
@@ -363,7 +373,6 @@ int main(int argc, char** argv) {
     static ImGuiStyle baseStyle = ImGui::GetStyle();   // the style at scale 1
 
     App app;
-    loadFonts(app, io);
     // A layout slip (an item missing after SetCursorPos, for example) is recovered by ImGui; the red 'MESSAGE FROM DEAR IMGUI' box and the assert
     // are for developers, so users do not get a popup over the window. The recovery message still goes to the debug log.
     io.ConfigErrorRecoveryEnableAssert = false;
@@ -383,12 +392,21 @@ int main(int argc, char** argv) {
     startApp(app, argc, argv);
     DevOpts o;
     parseDevFlags(app, argc, argv, o);
-    if (!o.shotPath && argc <= 1 && touch::autoTouch(gWorkAreaW, gWorkAreaH, plat::prefs().has("touchUi") || plat::prefs().has("touchAutoSeen"))) {   // #139: a small screen starts in the touch interface (View > Touch interface turns it off)
+    debugReportInit(app, argc > 1);   // the crash or hang of the last run; the hang watchdog (not for --shot and test runs)
+    loadFonts(app, io);   // preferences, the OS language and --lang have now selected the effective UI language
+    std::string fontLanguage = i18n::current();
+    if (!o.shotPath && argc <= 1 && touch::autoTouch(gWorkAreaW, gWorkAreaH, touch::touchChosen(app.touchUi, plat::prefs().has("touchAutoSeen")))) {   // #139: a small screen starts in the touch interface (View > Touch interface turns it off)
         app.touchUi = true; plat::prefs().setB("touchAutoSeen", true); savePrefs(app);
     }
     double last = glfwGetTime();
     double frameNext = 0, lastInputT = 0;
     while (!glfwWindowShouldClose(window)) {
+        if (fontLanguage != i18n::current()) {
+            // Language changes happen during a frame; rebuild before the next one so no draw data keeps old fonts.
+            io.Fonts->Clear();
+            loadFonts(app, io);
+            fontLanguage = i18n::current();
+        }
         appResultsSave(app);   // every 30 s: the lists the screens keep themselves (the engine saves its own on a thread)
         layoutTick(app, !app.touchUi && !o.shotPath);   // per-mode window positions (desktop; not in --shot runs)
         workspaceSessionTick(app);   // every few seconds: the last-session file (crash restore)
@@ -397,6 +415,7 @@ int main(int argc, char** argv) {
         {
             const PaceInfo pi = paceFrame(window, app, o, frameNext, lastInputT);
             glfwPollEvents();
+            debugReportBeat();   // the hang watchdog: the main loop runs (also while minimised)
             wbDropTick(app);
             updateTick(app);
             rcaps::frameGate(anyRunning());   // Linux / software OpenGL: input never draws faster than 60 fps; low-power drawing caps lower
@@ -411,11 +430,13 @@ int main(int argc, char** argv) {
             textSizeKeys(app);
             if (static bool up = false; !up && ImGui::GetFrameCount() > 120 && glfwGetTime() > 5) { up = true; dect2::crash::startupDone(); }   // started: see the startup guard
             devAutomation(app, o);
+            settingsFrame(app);   // ui/settings_apply.cpp: start-up mode / receiver, Confirm before quitting, the IQ split and free-space guard
             rcaps::hintWindow(app);   // software OpenGL found: offer low-power drawing once
             double now = glfwGetTime();
             last = now;
             const double tUi0 = glfwGetTime();
             receiversFrame(app, io.DisplaySize);
+            debugReportFrame(app);   // Ctrl+D, the watchdog's heartbeat, the debug report window
             perfOverlayDraw(app);
             popOutFrame(app);
             keepWindowsReachable();

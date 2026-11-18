@@ -1,11 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // D-STAR receiver (see dstar_rx.h).
 #include "dect2/dstar/dstar_rx.h"
 #include "dect2/dsp/up6.h"
 #include "dect2/dsp/cic3.h"
+#include "dect2/dsp/mean_afc.h"
 #include "dect2/results/results_io.h"
 #include "dect2/dstar/dstar_tel.h"
 #include "dect2/dstar/dstar_proto.h"
 #include "dect2/dstar/dstar_ambe.h"
+#include "dect2/dstar/dstar_repair.h"
 #include "dect2/audio/audioout.h"
 #include "dect2/voice/voice_monitor.h"
 #include <algorithm>
@@ -90,6 +95,13 @@ struct DstarReceiver::Impl {
         double fd = 0;
         std::complex<double> lo{1, 0}, loStep{1, 0};
         int loCount = 0;
+        MeanAfc afc;
+        double afcHz = 0, off = 0, rateF = 0;   // frequency capture: the oscillator's move so far, the nominal offset and the input rate
+        void moveLo(double hz) {
+            if (std::fabs(afcHz + hz) > MeanAfc::kMaxTotalHz || rateF <= 0) return;
+            afcHz += hz;
+            loStep = std::polar(1.0, -2 * kPi * (off + afcHz) / rateF);
+        }
         Cic3 cic;   // the decimator (dsp/cic3.h: exact for as long as it runs)
         int decCount = 0;
         std::vector<cf32> dbuf;
@@ -111,6 +123,7 @@ struct DstarReceiver::Impl {
             D = std::max(1, (int)std::floor(rate / 100000.0));
             fd = rate > 0 ? rate / D : 0;
             lo = 1; loCount = 0;
+            off = offset; rateF = rate; afc.reset(); afc.enableFine(true, 1200.0); afcHz = 0;
             loStep = rate > 0 ? std::polar(1.0, -2 * kPi * offset / rate) : std::complex<double>(1, 0);
             cic.reset();
             decCount = 0;
@@ -176,6 +189,7 @@ struct DstarReceiver::Impl {
             const cf32 d = z * std::conj(prevZ);
             prevZ = z;
             const float f = (float)(std::atan2(d.imag(), d.real()) * kFs / (2 * kPi));
+            if (m->mode == Search) { if (const double a = afc.push(f, kFs)) moveLo(a); }   // never mid-call: a move there upsets the level tracking
             boxSum += f - box[boxPos];
             box[boxPos] = f;
             boxPos = (boxPos + 1) % kSps;
@@ -216,6 +230,7 @@ struct DstarReceiver::Impl {
     std::unique_ptr<DstarAmbe> ambe;
     std::unique_ptr<AudioOut> audioOut;
     std::vector<float> aud8, pcmOut;
+    voice::HeardIds heard;   // callsigns heard on this channel, for repairing a damaged header
     std::vector<std::vector<uint8_t>> pend;   // the voice of weak frames, held back
     Up6 up;   // 8 -> 48 kHz (dsp/up6.h)
 
@@ -347,11 +362,16 @@ struct DstarReceiver::Impl {
         uint8_t h[dstar::kHeaderBytes];
         const int err = dstar::headerDecode(hsoft, h);
         dstar::Header hd;
-        const bool ok = dstar::headerUnpack(h, hd);
+        bool ok = dstar::headerUnpack(h, hd);
+        bool repaired = false;
+        if (!ok) {   // the CRC failed: a callsign heard on this channel that makes it pass is the repair (never invented)
+            dstar::Header r;
+            if (dstar::headerRepair(h, heard, r)) { hd = r; ok = repaired = true; tel.headersRepaired++; }
+        }
         if (txOn) endTx(false);
         beginTx(p / kFs - (double)(dstar::kHeaderBits + 15 + 64) * kSps / kFs);
         hdrErr = (uint64_t)err; hdrBits = dstar::kHeaderBits;
-        if (ok) { tel.headersOk++; applyHeader(hd, false); }
+        if (ok) { tel.headersOk++; applyHeader(hd, false); tel.now.headerRepaired = repaired; }
         else tel.headersBad++;
         fi = 0; nb = 0; syncMissRun = 0; weakRun = 0;
         mode = Frames;
@@ -371,7 +391,7 @@ struct DstarReceiver::Impl {
         const double snr = 10 * std::log10(m * m / std::max(v, 1e-9));
         snrAvg += 0.1 * (snr - snrAvg);
         tel.snrDb = (float)snrAvg;
-        tel.cfoHz = lp == 1 ? -dc : dc;
+        tel.cfoHz = lp == 1 ? -(dc + fr[1].afcHz) : dc + fr[0].afcHz;
         // a frame that does not look like bits: three in a row end the call, and the two before are taken back; the slow data of a weak
         // frame is not used
         // the carrier gone: the discriminator gives noise, or (in the narrow channel filter, where noise looks almost like bits) the
@@ -394,8 +414,11 @@ struct DstarReceiver::Impl {
         tel.voiceFrames++; tel.blocksOk++;
         tel.now.voiceFrames++;
         tel.now.durSec = tel.now.voiceFrames * 0.02;
-        if (weak) pend.emplace_back(fb, fb + dstar::kVoiceBits);   // held back until a good frame shows the call goes on
-        else { for (auto& q : pend) voice(q.data()); pend.clear(); voice(fb); }
+        // the reliability of each voice bit, from the soft symbol against the frame's mean (for the soft vocoder frame FEC)
+        uint8_t vrel[dstar::kVoiceBits];
+        for (int i = 0; i < dstar::kVoiceBits; i++) vrel[i] = (uint8_t)std::min(255.0, 160.0 * std::fabs(fz[i]) / std::max(m, 1e-6));
+        if (weak) { pend.emplace_back(fb, fb + dstar::kVoiceBits); pend.back().insert(pend.back().end(), vrel, vrel + dstar::kVoiceBits); }   // held back until a good frame shows the call goes on
+        else { for (auto& q : pend) voice(q.data(), q.data() + dstar::kVoiceBits); pend.clear(); voice(fb, vrel); }
         lastAny = sigSec();
         const int idx = fi % dstar::kSuperframe;
         fi++;
@@ -522,6 +545,7 @@ struct DstarReceiver::Impl {
 
     void applyHeader(const dstar::Header& h, bool fromSlow) {
         DstarCall& n = tel.now;
+        dstar::headerNoteHeard(h, heard);
         n.headerOk = true; n.headerFromSlow = fromSlow;
         memcpy(n.flag, h.flag, 3);
         n.flags = dstar::flagText(h.flag);
@@ -542,7 +566,7 @@ struct DstarReceiver::Impl {
         txOn = false;
         DstarCall& n = tel.now;
         n.active = false; n.endSeen = endSeen;
-        for (auto& q : pend) voice(q.data());
+        for (auto& q : pend) voice(q.data(), q.data() + dstar::kVoiceBits);
         pend.clear();
         flushAudio();
         if (!n.headerOk && n.syncOk == 0) return;   // nothing that checked: not a call
@@ -552,7 +576,7 @@ struct DstarReceiver::Impl {
 
     // ------------------------------------------------------------ voice
 
-    void voice(const uint8_t* bits) {
+    void voice(const uint8_t* bits, const uint8_t* rel = nullptr) {
         if (vtap) vtap(bits);
         voice::Monitor* mon = activeMonitor();
         if (mon) {   // the voice monitor (voice_monitor.h) lists the call and says whether it is played
@@ -569,7 +593,7 @@ struct DstarReceiver::Impl {
         if (!ambe) ambe = std::make_unique<DstarAmbe>();
         if (!ambe->ok()) return;
         int16_t pcm[160];
-        ambe->decode(bits, pcm);
+        if (rel) ambe->decodeSoft(bits, rel, pcm); else ambe->decode(bits, pcm);
         for (int16_t s : pcm) aud8.push_back(s / 32768.f);
         tel.voiceDecoded++;
         tel.now.voice = true;

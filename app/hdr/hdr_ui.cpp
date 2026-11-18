@@ -1,8 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HD Radio screens: the Radio tab (Station: call sign, names, slogan, location, message, the programs and what is playing with its album
 // art; Data: the large objects and the other data services; Signal: the receiver's figures), the program list on the right, the status
 // lamps, the analysis row (constellation, MER, P1 frames), the Receiver tab and the options of the test signal. HD Radio sound is HDC, a
 // patented codec that OnAir does not ship: with the user's own patched FAAD2 the program selected on the right is played (hdr_hdc.h).
+#include "dect2/hdr/hdr_maps.h"
+#include "dect2/common/png.h"
+#include <map>
 #include "app.h"
+#include "../d40/d40_ui.h"
+#include "codec/speech_codec_ui.h"
 #include "dect2/hdr/hdr_l2.h"
 #include "dect2/hdr/hdr_rx.h"
 #include "dect2/hdr/hdr_tel.h"
@@ -255,7 +263,7 @@ void hdcNote(const App& a) {
     ImGui::SameLine();
     if (!live(a)) ImGui::TextDisabled("%s", tr("HD Radio sound needs the HDC codec, which you install yourself (click ?)"));
     else if (!t.hdcProblem.empty()) ImGui::TextColored(kWarn, tr("HDC sound codec cannot be used: %s"), t.hdcProblem.c_str());
-    else if (!t.hdcFound) ImGui::TextColored(kWarn, "%s", tr("HDC sound codec not installed (no sound; click ? for the steps)"));
+    else if (!t.hdcFound) { ImGui::TextColored(kWarn, "%s", tr("HDC sound codec not installed (no sound; click ? for the steps)")); ImGui::SameLine(); appcodec::discordCodecButton(true); }
     else if (t.hdcPlaying) ImGui::TextColored(kGood, tr("sound: HD%d (HDC)"), t.soundProgram + 1);
     else ImGui::TextDisabled(tr("sound: HD%d, waiting for audio"), t.soundProgram + 1);
     ImGui::PopTextWrapPos();
@@ -531,7 +539,12 @@ void signalRows(App& a) {
     kf("receiver load", "%.1f %% of real time", t.loadPct);
     sectionHeader(Ic::Gauge, "Measurements");
     if (on && t.state >= 2) {
-        if (t.band == 1) kf("MER", "%.1f dB lower sideband, %.1f dB upper", t.merLower, t.merUpper);
+        if (t.band == 1) {
+            kf("MER", "%.1f dB lower sideband, %.1f dB upper", t.merLower, t.merUpper);
+            if (std::fabs(t.merLower - t.merUpper) >= 6.0f)
+                ImGui::TextDisabled("%s", t.merLower < t.merUpper ? tr("The lower sideband is much worse: probably a station on the channel below. The decoder relies on the cleaner side.")
+                                                                  : tr("The upper sideband is much worse: probably a station on the channel above. The decoder relies on the cleaner side."));
+        }
         else kf("MER", "%.1f dB (primary sidebands)", t.merLower);
         kf("channel bit errors", "%.2f %% (P1, before the Viterbi decoder)", t.ber * 100);
         kf("carrier offset", "%+.1f Hz", t.cfoHz);
@@ -555,6 +568,7 @@ void signalRows(App& a) {
 
 void signalTab(App& a) {
     ImGui::BeginChild("##hdr_sig", ImVec2(0, 0));
+    d40HdrLevelsCard(a);   // 4.0: sideband levels (app/d40)
     signalRows(a);
     ImGui::EndChild();
 }
@@ -587,7 +601,39 @@ void panels(App& a) {
     ImGui::EndGroup();
 }
 
+
+// Traffic and radar maps put together from the LOT files of the data services (TMT_ tiles, DWRO_ overlay, DWRI_ position)
+void mapsView(App& a) {
+    static dect2::hdr::TrafficMap traffic;
+    static std::map<std::string, uint64_t> seen;
+    static Pic trafficPic, radarPic;
+    static dect2::hdr::RadarInfo radar;
+    static std::string radarStamp;
+    const HdrTelemetry& t = a.rx.hdr;
+    for (const auto& l : t.lots) {
+        if (!l.complete) continue;
+        const std::string key = std::to_string(l.port) + ":" + l.name;
+        if (seen[key] == l.version + 1) continue;
+        int x, y; std::string st, id;
+        const bool isT = dect2::hdr::parseTrafficName(l.name, x, y, st), isR = dect2::hdr::parseRadarName(l.name, id, st), isI = l.name.rfind("DWRI_", 0) == 0;
+        if (!isT && !isR && !isI) continue;
+        std::vector<uint8_t> bytes;
+        if (!a.engine.hdr().lotBytes(l.port, l.lot, bytes) || bytes.empty()) continue;
+        seen[key] = l.version + 1;
+        if (isI) { double c[4]; if (dect2::hdr::parseRadarInfo(std::string(bytes.begin(), bytes.end()), id, c)) { radar.valid = true; radar.id = id; memcpy(radar.corners, c, sizeof c); } continue; }
+        int w = 0, h = 0; std::vector<uint8_t> rgba;
+        if (!dect2::decodePng(bytes.data(), bytes.size(), w, h, rgba)) continue;
+        auto upload = [](Pic& p, const dect2::hdr::MapImage& m) { if (!p.img || p.w != m.w || p.h != m.h) { delete p.img; p.img = gGfx->createImage(m.w, m.h, 0xFF000000u); } std::vector<uint32_t> px((size_t)m.w * m.h); memcpy(px.data(), m.rgba.data(), px.size() * 4); p.img->update(0, 0, m.w, m.h, px.data()); p.w = m.w; p.h = m.h; p.failed = false; };
+        if (isT && traffic.addTile(x, y, st, rgba.data(), w, h)) upload(trafficPic, traffic.image());
+        if (isR && st >= radarStamp) { radarStamp = st; dect2::hdr::MapImage im; dect2::hdr::radarComposite(rgba.data(), w, h, im); upload(radarPic, im); }
+    }
+    if (!trafficPic.img && !radarPic.img) return;
+    if (trafficPic.img) { ImGui::TextDisabled("%s %s", tr("Traffic map"), traffic.image().stamp.c_str()); drawPicture(&trafficPic, 300 * gUi, ""); ImGui::SameLine(); }
+    if (radarPic.img) { ImGui::BeginGroup(); ImGui::TextDisabled("%s %s", tr("Radar"), radarStamp.c_str()); if (radar.valid) ImGui::TextDisabled("%.2f, %.2f - %.2f, %.2f", radar.corners[0], radar.corners[1], radar.corners[2], radar.corners[3]); drawPicture(&radarPic, 300 * gUi, ""); ImGui::EndGroup(); }
+}
+
 void tab(App& a) {
+    mapsView(a);
     subNav("hdrv", S.view, {"Station", "Data", "Signal"});
     if (S.view == 2) { signalTab(a); return; }
     ImGui::BeginChild("##hdr_tab", ImVec2(0, 0));
@@ -602,6 +648,7 @@ void receiver(App& a) {
     ImGui::Spacing();
     signalRows(a);
     ImGui::EndChild();
+    smart5HdCard(a);   // round-5 smart checks (app/smart5, docs/SMART5-UI-3.9.md)
 }
 
 // ---------------------------------------------------------------- the list on the right

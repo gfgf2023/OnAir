@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Bank of LoRa channels (see lora_bank.h).
 #include "dect2/lorawan/lora_bank.h"
 #include <algorithm>
@@ -161,6 +164,7 @@ void Bank::configure(double inputRate, const std::vector<Channel>& chans) {
                 for (size_t si = 1; si < c.syncs.size(); si++) p.moreSync.push_back((uint8_t)c.syncs[si]);
                 p.ldro = lora::autoLdro(sf, c.bwHz);
                 p.cfoTrack = c.cfoTrack; p.carrierHz = c.carrierHz;
+                if (c.implicitLen > 0) { p.implicitHdr = true; p.implicitLen = c.implicitLen; p.cr = 5; p.crc = false; }
                 d.dm = std::make_unique<lora::Demod>(p, ch->outRate, 1, inv ? ch->csInv : ch->cs);
                 d.dm->reset(0);
                 ch->decs.push_back(std::move(d));
@@ -183,6 +187,13 @@ void Bank::feed(const cf32* x, size_t n, std::vector<Decoded>& out) {
     }
     for (; i + kBlock <= n; i += kBlock) m.block(x + i, kBlock, out);
     if (i < n) m.pend.insert(m.pend.end(), x + i, x + n);
+}
+
+void Bank::flushPending(std::vector<Decoded>& out) {
+    Impl& m = *p_;
+    if (m.pend.empty()) return;
+    m.block(m.pend.data(), m.pend.size(), out);
+    m.pend.clear();
 }
 
 double Bank::timeSec() const { return p_->rate > 0 ? (double)(p_->nProc + (int64_t)p_->pend.size()) / p_->rate : 0; }

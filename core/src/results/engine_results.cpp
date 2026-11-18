@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Decoded results that outlive mode switches, retunes, restarts and the program itself (engine.h: clearResults ... refreshIdle).
 // Every receiver keeps its lists through reset() and configure(); here they are cleared on the user's Clear, and saved to and loaded
 // from one file per receiver (results_io.h format: a file of another build fails its signature check and is discarded).
@@ -10,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -32,9 +36,9 @@ bool writeFile(const std::filesystem::path& p, const std::string& data) {
     tmp += ".tmp";
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) return false;
+        if (!f) { DIAG(716622, "The results file %s.tmp could not be created, so the results were not saved.", p.string().c_str()); return false; }
         f.write(data.data(), (std::streamsize)data.size());
-        if (!f) return false;
+        if (!f) { DIAG(926519, "Writing the results file %s.tmp failed (the disk may be full), so the results were not saved.", p.string().c_str()); return false; }
     }
     std::error_code ec;
     std::filesystem::rename(tmp, p, ec);
@@ -86,6 +90,7 @@ std::vector<Engine::ResultSlot> Engine::resultSlots() {
         DECT2_RESULT_SLOT("iono", 53, rxIono_),
         DECT2_RESULT_SLOT("wifi", 55, rxWifi_),
         DECT2_RESULT_SLOT("rid", 57, rxRid_),
+        DECT2_RESULT_SLOT("espnow", 899, rxEspnow_),
         DECT2_RESULT_SLOT("nr", 58, rxNr_),
         DECT2_RESULT_SLOT("time", 59, rxTime_),
         DECT2_RESULT_SLOT("meteor", 60, rxMeteor_),
@@ -95,7 +100,21 @@ std::vector<Engine::ResultSlot> Engine::resultSlots() {
         DECT2_RESULT_SLOT("vdes", 64, rxVdes_),
         DECT2_RESULT_SLOT("hrpt", 65, rxHrpt_),
         DECT2_RESULT_SLOT("zigbee", 66, rxZb_),
+        DECT2_RESULT_SLOT("thread", 245, rxTh_),
         DECT2_RESULT_SLOT("flarm", 67, rxFlarm_),
+        DECT2_RESULT_SLOT("adsl", 301, rxAdsl_),
+        ResultSlot{"fanet", 401, [this] { return rxAvRoad_.saveResults(0); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 0); }, [this] { rxAvRoad_.clearResults(0); }},
+        ResultSlot{"ogn", 402, [this] { return rxAvRoad_.saveResults(1); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 1); }, [this] { rxAvRoad_.clearResults(1); }},
+        ResultSlot{"gbas", 403, [this] { return rxAvRoad_.saveResults(2); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 2); }, [this] { rxAvRoad_.clearResults(2); }},
+        ResultSlot{"ldacs", 404, [this] { return rxAvRoad_.saveResults(3); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 3); }, [this] { rxAvRoad_.clearResults(3); }},
+        ResultSlot{"aeromacs", 405, [this] { return rxAvRoad_.saveResults(4); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 4); }, [this] { rxAvRoad_.clearResults(4); }},
+        ResultSlot{"eot", 406, [this] { return rxAvRoad_.saveResults(5); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 5); }, [this] { rxAvRoad_.clearResults(5); }},
+        ResultSlot{"dsrc", 407, [this] { return rxAvRoad_.saveResults(6); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 6); }, [this] { rxAvRoad_.clearResults(6); }},
+        ResultSlot{"its", 408, [this] { return rxAvRoad_.saveResults(7); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 7); }, [this] { rxAvRoad_.clearResults(7); }},
+        ResultSlot{"cv2x", 409, [this] { return rxAvRoad_.saveResults(8); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 8); }, [this] { rxAvRoad_.clearResults(8); }},
+        ResultSlot{"ermes", 410, [this] { return rxAvRoad_.saveResults(9); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 9); }, [this] { rxAvRoad_.clearResults(9); }},
+        ResultSlot{"mradar", 411, [this] { return rxAvRoad_.saveResults(10); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 10); }, [this] { rxAvRoad_.clearResults(10); }},
+        ResultSlot{"wradar", 412, [this] { return rxAvRoad_.saveResults(11); }, [this](const std::string& b) { return rxAvRoad_.loadResults(b, 11); }, [this] { rxAvRoad_.clearResults(11); }},
         DECT2_RESULT_SLOT("hfbeacon", 68, rxHfb_),
         DECT2_RESULT_SLOT("dji", 69, rxDji_),
         DECT2_RESULT_SLOT("nbiot", 70, rxNb_),
@@ -106,6 +125,8 @@ std::vector<Engine::ResultSlot> Engine::resultSlots() {
         DECT2_RESULT_SLOT("ant", 78, rxAnt_),
         DECT2_RESULT_SLOT("tetrapol", 80, rxTetrapol_),
         DECT2_RESULT_SLOT("elektro", 81, rxEl_),
+        DECT2_RESULT_SLOT("gk2alrit", 231, rxGkL_),
+        DECT2_RESULT_SLOT("gk2ahrit", 232, rxGkH_),
         DECT2_RESULT_SLOT("lbj", 82, rxLbj_),
         DECT2_RESULT_SLOT("klw", railway::kKlwActiveStandard, rxKlw_),
         DECT2_RESULT_SLOT("tdcs", railway::kTdcsActiveStandard, rxTdcs_),
@@ -115,6 +136,11 @@ std::vector<Engine::ResultSlot> Engine::resultSlots() {
         DECT2_RESULT_SLOT("lorawanwide", 201, rxLw_),
         DECT2_RESULT_SLOT("lorasat", 202, rxLs_),
         DECT2_RESULT_SLOT("wisun", 85, rxWs_),
+        // FengYun: one receiver for the three modes, each link keeps its own list (the link number is the argument); the LRIT mode has two (FY-4A, FY-4B)
+        ResultSlot{"fy4alrit", 233, [this] { return rxFy_.saveResults(0); }, [this](const std::string& b) { return rxFy_.loadResults(b, 0); }, [this] { rxFy_.clearResults(0); }},
+        ResultSlot{"fy4blrit", 233, [this] { return rxFy_.saveResults(1); }, [this](const std::string& b) { return rxFy_.loadResults(b, 1); }, [this] { rxFy_.clearResults(1); }},
+        ResultSlot{"fy4ahrit", 234, [this] { return rxFy_.saveResults(2); }, [this](const std::string& b) { return rxFy_.loadResults(b, 2); }, [this] { rxFy_.clearResults(2); }},
+        ResultSlot{"fy2svissr", 235, [this] { return rxFy_.saveResults(3); }, [this](const std::string& b) { return rxFy_.loadResults(b, 3); }, [this] { rxFy_.clearResults(3); }},
     };
 }
 

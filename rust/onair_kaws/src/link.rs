@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! Block level link: LDPC coding, the whole-block bit interleaver, chirp symbol mapping (Gray), modulation of a data section and the soft demodulator
 //! for the chirp profiles P0-P4. The OFDM profiles are in `ofdm`; the burst assembly with the lattice units is at the end of this file.
 use crate::chirp::{bin_llrs, gray, Modem, Weave};
@@ -23,7 +26,7 @@ pub fn permutation(n: usize) -> Vec<u32> {
 /// Encode k information bits (one per byte) with the profile's LDPC code and interleave: returns the n transmitted bits.
 pub fn encode_block(p: &Profile, info: &[u8]) -> Option<Vec<u8>> {
     let code = ldpc::profile_code(p.id)?;
-    if info.len() != p.k { return None; }
+    if info.len() != p.k { onair_common::diag_debug!(227956, "A KAWS block was given {} information bits but the profile needs {}, so it was not encoded.", info.len(), p.k); return None; }
     let mut cw = vec![0u8; p.n];
     if !code.encode(info, &mut cw) { return None; }
     let perm = permutation(p.n);

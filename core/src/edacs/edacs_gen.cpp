@@ -1,12 +1,22 @@
 // EDACS whole-system test signal (see edacs_gen.h).
 #include "dect2/edacs/edacs_gen.h"
 #include "dect2/edacs/edacs_proto.h"
+#include "dect2/edacs/provoice.h"
 #include <algorithm>
 #include <cmath>
 #include <complex>
 #include <random>
 
 namespace dect2 {
+
+void edacsPvInfo(uint32_t seed, int frame, uint8_t info[88]) {
+    std::mt19937 r(seed * 977u + (uint32_t)frame);
+    for (int i = 0; i < 88; i++) info[i] = (uint8_t)(r() & 1);
+    // a fundamental that gives a K well inside the table (the speech parameters of a real call do this)
+    for (int i = 1; i <= 6; i++) info[i] = (uint8_t)((60 >> (6 - i)) & 1);
+    info[86] = 1; info[87] = 0;
+    info[0] = 0;
+}
 
 std::vector<cf32> edacsSystemSignal(const EdacsGenConfig& c) {
     const double pi = 3.14159265358979323846;
@@ -17,32 +27,35 @@ std::vector<cf32> edacsSystemSignal(const EdacsGenConfig& c) {
     for (int i = 0; i < 400; i++) bits.push_back((uint8_t)(rng() & 1));
     const double leadSec = 400.0 / edacs::kBaud, frameSec = (double)edacs::kFrameBits / edacs::kBaud;
     const int nFrames = (int)((c.durSec - leadSec) / frameSec) - 1;
-    auto word = [&](edacs::Msg m) { return edacs::build(m, c.layout); };
     for (int k = 0; k < nFrames; k++) {
         const double t = leadSec + k * frameSec;
         uint32_t a, b;
         edacs::Msg s;
-        if (k % 10 == 0) { s.type = edacs::MsgType::SiteId; s.site = c.siteId; s.system = c.systemId; a = word(s); s = edacs::Msg(); s.type = edacs::MsgType::ControlChannel; s.lcn = c.controlLcn; s.nChannels = c.nChannels; b = word(s); }
-        else {
-            // an idle filler word pair that the layout does not interpret (type 0), different every frame
-            a = (uint32_t)(rng() & 0x0FFFFFF); b = (uint32_t)(rng() & 0x0FFFFFF);
+        if (k % 10 == 0) {
+            s.type = edacs::MsgType::SiteId; s.site = c.siteId; s.area = c.layout.extended ? c.systemId : -1; s.lcn = c.controlLcn; s.priority = 1;
+            edacs::build(s, c.layout, a, b);
+            if (!c.layout.extended) { b = (uint32_t)(rng() & 0x0FFFFFF); }
+        } else {
+            // idle filler words, different every frame (valid check bits; a reserved command, so they announce nothing)
+            const uint32_t top = c.layout.extended ? 0xF700000u : 0xFFE0000u;   // standard: MT-A 7, MT-B 7, MT-D 0x1F; EA: MT1 0x1F, MT2 0xE
+            a = top | (uint32_t)(rng() & (c.layout.extended ? 0x7FFFF : 0x1FFFF)); b = (uint32_t)(rng() & 0x0FFFFFF);
         }
         for (const auto& call : c.calls) {
             if (!call.announce) continue;
             const double t0 = call.startSec - call.announceLeadSec;
             if (t >= t0 && t < call.endSec && k % 3 == 1) {   // the assignment repeats every third frame while the call lasts
                 edacs::Msg m;
-                m.type = call.group ? edacs::MsgType::GroupAssign : edacs::MsgType::IndividualAssign; m.lcn = call.lcn; m.gid = call.gid; m.emergency = call.emergency;
-                a = word(m);
-                edacs::Msg l; l.type = edacs::MsgType::LidInfo; l.lid = call.lid;
-                b = word(l);
+                m.type = call.group ? edacs::MsgType::GroupAssign : edacs::MsgType::IndividualAssign; m.lcn = call.lcn; m.emergency = call.emergency;
+                m.digital = call.digital;
+                m.gid = call.group ? call.gid & 0x7FF : call.gid & 0x3FFF; m.lid = call.lid & 0x3FFF; m.source = call.lid & 0x3FFF; m.individual = !call.group;
+                edacs::build(m, c.layout, a, b);
             }
             if (call.sendEnd && t >= call.endSec && t < call.endSec + 3 * frameSec && k % 3 == 2) {
-                edacs::Msg m; m.type = edacs::MsgType::CallEnd; m.lcn = call.lcn;
-                a = word(m);
+                edacs::Msg m; m.type = edacs::MsgType::CallEnd; m.lcn = call.lcn; m.lid = 0;
+                edacs::build(m, c.layout, a, b);
             }
         }
-        const auto f = edacs::encodeFrame(a, b, (a * 2654435761u) >> 20, (b * 2246822519u) >> 20);
+        const auto f = edacs::encodeFrame(a, b);
         bits.insert(bits.end(), f.begin(), f.end());
     }
     for (int i = 0; i < 80; i++) bits.push_back((uint8_t)(rng() & 1));
@@ -54,6 +67,21 @@ std::vector<cf32> edacsSystemSignal(const EdacsGenConfig& c) {
         if (call.lcn < 1 || (size_t)call.lcn > c.lcnFreqHz.size()) continue;
         const double off = c.lcnFreqHz[(size_t)call.lcn - 1] - c.centreHz;
         const size_t i0 = (size_t)std::llround(call.startSec * c.rate), i1 = std::min(total, (size_t)std::llround(call.endSec * c.rate));
+        if (call.digital) {
+            // ProVoice: blocks of four generated IMBE frames; the bit stream runs for the whole call
+            std::vector<uint8_t> vb;
+            const int blocks = (int)((call.endSec - call.startSec) * edacs::kBaud / provoice::kBlockBits) + 2;
+            int frame = 0;
+            for (int b = 0; b < blocks; b++) {
+                provoice::Frame7100 f[4];
+                for (int k = 0; k < 4; k++) { uint8_t info[88]; edacsPvInfo(call.pvSeed, frame++, info); provoice::encode7100(info, f[k]); }
+                const auto block = provoice::makeBlock(f, provoice::kSyncStd, (uint16_t)(call.lid & 0x3FFF));
+                vb.insert(vb.end(), block.begin(), block.end());
+            }
+            std::vector<cf32> v = edacs::modulate(vb, c.rate, off, 2400.0, call.amp, true);   // payload bit 1 is the lower frequency
+            for (size_t i = i0; i < i1 && i - i0 < v.size(); i++) sig[i] += v[i - i0];
+            continue;
+        }
         double ph = 0;
         for (size_t i = i0; i < i1; i++) {
             const double t = (double)i / c.rate;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // KAVB (family 123, engine standard 125, telemetry slot 133) as a real mode in the group "Kris custom modes": the mode-table row (no longer work in
 // progress), the modeui case, the receive panel, the transmit options, the engine wiring and the transmit registration are in the sources. Text checks only, so it
 // builds without the app. The behaviour is tested in tests/kavb/test_kavb_engine.cpp.
@@ -46,7 +49,9 @@ int main() {
     const std::string txui = readSource("app/panels/tx_ui.cpp");
     need("app/panels/tx_ui.cpp", txui, "r.opt[\"kavb.profile\"] = s.kavbProfile;");
     need("app/panels/tx_ui.cpp", txui, "r.file = s.kavbFile;");
-    need("app/panels/tx_payload_ui.cpp", readSource("app/panels/tx_payload_ui.cpp"), "case TxPayloadKind::Kavb:");
+    need("core/src/tx/tx_params.cpp", readSource("core/src/tx/tx_params.cpp"), "case TxPayloadKind::Kavb:");   // 4.0: the KA* panels are custom rows of the parameter table
+    need("core/src/tx/tx_params.cpp", readSource("core/src/tx/tx_params.cpp"), "custom(\"kavb.panel\"");
+    need("app/panels/tx_payload_ui.cpp", readSource("app/panels/tx_payload_ui.cpp"), "k == \"kavb.panel\") kavbPanel(s, running);");
 
     const std::string app = readSource("app/app.h");
     { const size_t q = app.find("constexpr int kNumFamilies = "); if (q == std::string::npos || std::atoi(app.c_str() + q + 29) < 124) { std::printf("FAIL: kNumFamilies below 124\n"); fails++; } }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/iono/iono_dsp.h"
 #include "dect2/iono/iono_dechirp.h"
 #include "dect2/results/results_io.h"
@@ -395,7 +398,7 @@ struct Processor::Impl {
                     break;
                 }
             }
-            if (taken || f < 0 || f > kBandHz) continue;
+            if (taken || !(f >= 0 && f <= kBandHz)) continue;   // (written so a NaN frequency is skipped too: it reached the int64 cast below, UBSan)
             hits++;
             for (int i = 0; i < kNumRates; i++) {
                 const double tz = tmid - f / kRates[i];

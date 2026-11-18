@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The preview block of the transmit panel. A live spectrum and waterfall of the IQ (the planned signal while idle, the IQ really going to the radio
 // while it runs), an IQ scatter, peak / RMS meters in dBFS with a clipping lamp, the occupied bandwidth and the sample rate, the Start / Stop and Carrier-tune
 // buttons, the emergency "STOP ALL" and the log.
@@ -139,7 +142,7 @@ void stepSend(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxMo
     const float leftW = std::max(200.f * gUi, ImGui::GetContentRegionAvail().x - 130 * gUi - 8 * gUi);
     ImGui::BeginGroup();
     ImGui::PushItemWidth(leftW);
-    ImGui::BeginChild("##txmeters", ImVec2(leftW, 130 * gUi), false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("##txmeters", ImVec2(leftW, 152 * gUi), false, ImGuiWindowFlags_NoScrollbar);
     meter(tr("Peak"), s.meterPeak, hot);
     meter(tr("RMS"), s.meterRms, false);
     ImGui::AlignTextToFramePadding();
@@ -161,6 +164,13 @@ void stepSend(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxMo
     ImGui::TextDisabled("%s", tr("Occupied bandwidth"));
     ImGui::SameLine(140 * gUi);
     if (obw > 0) ImGui::Text("~%s", hzText(obw).c_str()); else ImGui::TextDisabled("-");
+    // the output power: the radio's measured table (a full-scale carrier at this level) moved by the signal's own RMS and peak
+    if (const double fs = radio && s.destKind == 0 ? txCalPowerDbm(calibrationFor(s.radioKey), s.gainDb, s.ampOn) : NAN; std::isfinite(fs) && s.meterRms > 1e-6f) {
+        ImGui::TextDisabled("%s", tr("Output power"));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Predicted from this radio's power table (Advanced > Calibration of this radio): average and peak envelope power of what is being sent. A prediction, not a measurement."));
+        ImGui::SameLine(140 * gUi);
+        ImGui::Text(tr("~%.1f dBm average, %.1f dBm peak"), fs + 20 * std::log10(s.meterRms), fs + 20 * std::log10(std::max(s.meterPeak, 1e-6f)));
+    }
     ImGui::EndChild();
     ImGui::PopItemWidth();
     ImGui::EndGroup();
@@ -175,9 +185,9 @@ void stepSend(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxMo
     ImGui::Spacing();
     // carrier tune (hold) and the emergency stop, next to the header's Start / Stop
     const bool can = canStart(a, s, radio, conflict, mode);
-    ImGui::BeginDisabled(!can && !running);
+    ImGui::BeginDisabled((!can || (txNeedsArm(s) && !s.armed)) && !running);
     ImGui::Button(tr("Carrier tune (hold)"));
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Unmodulated carrier at this frequency and level, for adjusting the transmission (drive, filter, SWR, dummy-load level), not a message. Hold the button. Stop still applies. Not saved as transmitting."));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tr("Unmodulated carrier at this frequency and level, for adjusting the transmission (drive, filter, SWR, dummy-load level), not a message. Hold the button. Stop still applies. On a radio, ARM first."));
     const bool hold = ImGui::IsItemActive();
     if (hold && !s.carrierHeld) {
         s.carrierHeld = true;
@@ -204,6 +214,22 @@ void stepSend(App& a, TxUi& s, const DeviceInfo* radio, int conflict, const TxMo
         if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.f);
     }
     ImGui::EndChild();
+    // what was sent since the program started: one line a transmission, newest first
+    typo::separatorText(tr("Sent"));
+    if (s.history.empty()) ImGui::TextDisabled("%s", tr("Nothing sent yet."));
+    else if (ImGui::BeginTable("##txhist", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0, 120 * gUi))) {
+        ImGui::TableSetupColumn(tr("UTC")); ImGui::TableSetupColumn(tr("Signal")); ImGui::TableSetupColumn("MHz"); ImGui::TableSetupColumn(tr("Length"));
+        ImGui::TableSetupColumn(tr("What"), ImGuiTableColumnFlags_WidthStretch);
+        for (const auto& h : s.history) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(h.utc.c_str());
+            ImGui::TableNextColumn(); ImGui::Text("%s%s", h.mode.c_str(), h.rf ? "" : tr(" (no RF)"));
+            ImGui::TableNextColumn(); ImGui::Text("%.6f", h.mhz);
+            ImGui::TableNextColumn(); ImGui::Text("%.1f s", h.seconds);
+            ImGui::TableNextColumn(); ImGui::Text("%s%s%s", h.what.c_str(), h.what.empty() ? "" : ", ", h.ended.c_str());
+        }
+        ImGui::EndTable();
+    }
 }
 
 } // namespace txui

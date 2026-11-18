@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // "Monitor audio": see dect2/audio/audio_monitor.h.
 #include "dect2/common/thread_name.h"
 #include "dect2/audio/audio_monitor.h"
@@ -14,6 +17,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include "dect2/common/diag.h"
 #ifndef _WIN32
 #include <fcntl.h>
 #endif
@@ -46,6 +50,7 @@ struct AudioMonitor::Impl {
     mutable std::mutex cfgMu;
     MonitorConfig cfg;
     std::atomic<bool> on{false};
+    std::atomic<bool> muted{false};   // the app's mute (setMuted): output 1 only
     // queue and thread
     std::mutex qMu;
     std::condition_variable qCv;
@@ -150,7 +155,7 @@ struct AudioMonitor::Impl {
         auto n = std::make_unique<AudioOut>();
         n->setMonitorRole(true);
         n->setDevice(dev);
-        if (!n->start(kOutRate)) { err = "audio output \"" + (dev.empty() ? std::string("default") : dev) + "\" could not be opened"; return; }
+        if (!n->start(kOutRate)) { DIAG(118492, "The audio monitor output %s could not be opened, so the monitor stays silent.", dev.empty() ? "default" : dev.c_str()); err = "audio output \"" + (dev.empty() ? std::string("default") : dev) + "\" could not be opened"; return; }
         n->setStartThreshold(kOutRate * c.latencyMs / 1000);
         o = std::move(n); cur = dev;
     }
@@ -165,22 +170,22 @@ struct AudioMonitor::Impl {
             return;
         }
         wasYield = false;
-        if (sink) {   // tests: the sink stands in for the sound devices; the network stream is real
-            sink(s, frames);
+        if (sink) {   // tests: the sink stands in for the speaker; the network stream is real
+            if (!muted.load()) sink(s, frames);
             if (c.net) { openNet(c); sendNet(s, frames); }
             return;
         }
         const int maxLag = kOutRate * std::max(c.latencyMs, 20) * 2 / 1000;
-        auto play = [&](std::unique_ptr<AudioOut>& o, std::string& cur, const std::string& dev, float vol) {
+        auto play = [&](std::unique_ptr<AudioOut>& o, std::string& cur, const std::string& dev, float vol, bool mute) {
             ensureOut(o, cur, dev, c, outError);
             if (!o) return;
-            o->setVolume(vol);
+            o->setVolume(vol); o->setMuted(mute);
             o->setStartThreshold(kOutRate * c.latencyMs / 1000);
             if (o->bufferedFrames() > maxLag) o->flush();   // the radio's clock runs ahead of the sound card: catch up
             o->write(s, frames);
         };
-        play(o1, dev1, c.device, c.volume);
-        if (c.out2) play(o2, dev2, c.device2, c.volume2); else { o2.reset(); dev2.clear(); }
+        play(o1, dev1, c.device, c.volume, muted.load());
+        if (c.out2) play(o2, dev2, c.device2, c.volume2, false); else { o2.reset(); dev2.clear(); }
         if (c.net) { openNet(c); sendNet(s, frames); } else if (ls != kBadSock) closeNet();
     }
 
@@ -248,6 +253,7 @@ void AudioMonitor::configure(const MonitorConfig& c) {
     }
 }
 
+void AudioMonitor::setMuted(bool m) { p_->muted = m; }
 bool AudioMonitor::enabled() const { return p_->on.load(std::memory_order_relaxed); }
 MonitorConfig AudioMonitor::config() const { std::lock_guard<std::mutex> lk(p_->cfgMu); return p_->cfg; }
 

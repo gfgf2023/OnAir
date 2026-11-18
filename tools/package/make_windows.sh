@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Build OnAir for Windows (x86-64) in an MSYS2 UCRT64 shell and produce a portable .zip (and a setup .exe if NSIS is installed).
 #   tools/package/make_windows.sh [version]
 # Needs (pacman -S): mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,ffmpeg,glfw,hackrf,soapysdr,libiconv} zip, and nsis for the installer.
@@ -12,12 +15,13 @@ BUILD=build-windows
 OUT=$BUILD/OnAir-$VERSION-windows-x64
 PREFIX=${MSYSTEM_PREFIX:-/ucrt64}
 cmake -S . -B $BUILD -G Ninja -DCMAKE_BUILD_TYPE=Release -DDECT2_BUILD_APP=ON -DDECT2_BUILD_TESTS=ON
-cmake --build $BUILD -j"$(nproc)" --target dect2 dect2cli dect2scan
+cmake --build $BUILD -j"$(nproc)" --target dect2 dect2cli dect2scan onair-extcap
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 strip -o "$OUT/OnAir.exe" $BUILD/dect2.exe
 strip -o "$OUT/onair-cli.exe" $BUILD/dect2cli.exe
 strip -o "$OUT/onair-scan.exe" $BUILD/dect2scan.exe
+strip -o "$OUT/onair-extcap.exe" $BUILD/onair-extcap.exe   # Wireshark capture interface (docs/WIRESHARK-3.8.md)
 # every DLL the programs need from the MSYS2 tree (FFmpeg, GLFW, libhackrf, libusb, the C++ runtime ...), found recursively
 collect() {
   ldd "$1" | awk -v p="$PREFIX/" 'index($3, p) == 1 {print $3}' | while read -r dll; do

@@ -1,9 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // QO-100 screens: the LNB oscillator (9750, 9739, 10000, 10600 MHz or custom) with the IF of the downlink worked out, tuning to the whole
 // downlink or the narrowband transponder, the beacon lock (LNB error in kHz and ppm, drift), the narrowband transponder as a zoomable
 // spectrum over a waterfall (a click puts the SSB dial there) with Listen, the wideband transponder with its DATV carriers and a
 // hand-over to DVB-S/S2, and the drift history. Every frequency shown is the corrected downlink frequency once the beacons are locked.
+#include "../panels/tv_dolby_text.h"
 #include "dect2/common/time_fmt.h"
 #include "app.h"
+#include "ease/ease_ui.h"
 #include "state/results_export.h"
 #include "panels/gallery.h"
 #include "dvbs/dvbs_autoservice.h"
@@ -456,7 +461,7 @@ void decodePanel(App& a, float h) {
     }
     if (pl.selected() >= 0) {
         if (ps.hasVideo) ImGui::TextDisabled("%s  %dx%d  %.1f fps", ps.videoCodec.c_str(), ps.width, ps.height, ps.fps);
-        if (ps.hasAudio) ImGui::TextDisabled("%s  %d ch", ps.audioCodec.c_str(), ps.audioChannels);
+        if (ps.hasAudio) { const std::string dl = dolbytext::line(ps); if (dl.empty()) ImGui::TextDisabled("%s  %d ch", ps.audioCodec.c_str(), ps.audioChannels); else ImGui::TextDisabled("%s", dl.c_str()); }
         ImGui::TextDisabled("%llu pictures shown, %llu errors", (unsigned long long)ps.shown, (unsigned long long)ps.errors);
         ImGui::SetNextItemWidth(130 * gUi);
         if (ImGui::SliderFloat("volume", &a.volume, 0, 1, "%.2f")) pl.setVolume(a.volume);
@@ -761,8 +766,9 @@ void tick(App& a) {
                 if (pick) { pl.select(pick->id); pl.setVolume(a.volume); S.autoPlay = false; }
             }
             if (dvbsAutoService()) {   // a signal with one service: play it, and follow it when the view is moved to another carrier (#322)
-                const int id = dect2::autoServicePick(S.autoSvc, a.ts.services, pl.selected(), S.rx2.dvbs.tsLock, glfwGetTime());
-                if (id >= 0) { pl.select(id); pl.setVolume(a.volume); S.autoPlay = false; }
+                bool restart = false;
+                const int id = dect2::autoServicePick(S.autoSvc, a.ts.services, pl.selected(), S.rx2.dvbs.tsLock, glfwGetTime(), &restart);
+                if (id >= 0) { if (restart) pl.select(-1); pl.select(id); pl.setVolume(a.volume); S.autoPlay = false; }   // restart: same id, new carrier (#410)
             }
         } else if (S.dvbsRefused.empty()) S.dvbsOn = false;   // another second mode took the place
     }
@@ -845,6 +851,11 @@ void list(App& a) {
 
 void receiver(App& a) {
     const auto& t = T(a);
+    {   // aim on the beacons
+        float best = 0; bool found = false;
+        for (const auto& b : t.beacons) if (b.found) { best = std::max(best, (float)b.snrDb); found = true; }
+        easeui::alignButton(a, "qo100", best, live(a) && found);
+    }
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     ImGui::TextWrapped("%s", dect2::qo100Summary(t).c_str());
     ImGui::TextWrapped("Radio %s at %.3f Msps = %s - %s (LO %s%s)", mhz(t.centreIfHz).c_str(), t.rate / 1e6, mhz(t.wbF0Hz).c_str(),

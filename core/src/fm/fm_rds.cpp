@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // RDS / RBDS data layer, see fm_rds.h.
 #include "dect2/fm/fm_rds.h"
 #include "dect2/common/text_charset.h"
@@ -166,6 +169,7 @@ void RdsDecoder::pushBit(int bit, float reliability) {
         if (syn == offsetOfPos(expect_) || (expect_ == 2 && syn == kOffsets[3])) e = 0;
         else if (correct(w, syn, expect_)) e = 1;
         else if (ecVote_ && voteBlock(w, expect_)) { e = 1; info.blocksVoted++; }
+        else if (ecVote_ && voteDepth_ >= 2 && keyedBlock(w, expect_)) { e = 1; info.blocksVoted++; }
         if (e == 0) info.blocksGood++; else if (e == 1) info.blocksCorrected++; else info.blocksBad++;
         okPct += ((e < 2 ? 100.f : 0.f) - okPct) * 0.05f;
         badRun_ = e == 0 ? 0 : e == 1 ? badRun_ : badRun_ + 1;
@@ -238,6 +242,30 @@ bool RdsDecoder::voteBlock(uint32_t& w, int pos) {
     return false;
 }
 
+bool RdsDecoder::keyedBlock(uint32_t& w, int pos) {
+    if (pos < 2 || err_[1] != 0) return false;
+    KeyedSum* tab = keyed_[pos - 2];
+    const uint16_t b = blk_[1];
+    KeyedSum* e = nullptr, *oldest = tab;
+    for (int i = 0; i < kKeyed; i++) {
+        if (tab[i].at && tab[i].b == b) { e = &tab[i]; break; }
+        if (tab[i].at < oldest->at) oldest = &tab[i];
+    }
+    if (!e) { e = oldest; *e = KeyedSum(); e->b = b; }
+    else if (bitNo_ - e->at > 26ull * 4 * 700 || e->n >= 8) { *e = KeyedSum(); e->b = b; }   // a minute old or many copies without a result: the content has changed
+    for (int i = 0; i < 26; i++) { const float r = std::max(0.01f, rel_[(bitNo_ - 26 + (uint64_t)i) & 31]); e->sum[i] += ((w >> (25 - i)) & 1) ? r : -r; }
+    e->n++; e->at = bitNo_;
+    if (e->n < 3) return false;
+    uint32_t v = 0;
+    double total = 0;
+    for (int i = 0; i < 26; i++) { v = (v << 1) | (e->sum[i] > 0 ? 1u : 0u); total += std::fabs(e->sum[i]); }
+    int weak = 0;   // bits that the copies did not settle: a sum with many of them would pass the checkword only by chance
+    for (int i = 0; i < 26; i++) if (std::fabs(e->sum[i]) < 0.25f * (float)(total / 26)) weak++;
+    const uint32_t syn = rdsRem(v, 26);
+    if (weak <= 1 && (syn == offsetOfPos(pos) || (pos == 2 && syn == kOffsets[3]))) { w = v; e->n = 0; return true; }   // the sum starts again: the "came before" test wants a second, independent result
+    return false;
+}
+
 void RdsDecoder::block(uint32_t w, uint8_t err, int pos, uint32_t raw) {
     if (pos == 0) { for (auto& e : err_) e = 2; rawHash_ = 0; }
     blk_[pos] = (uint16_t)(w >> 10);
@@ -294,6 +322,11 @@ void RdsDecoder::decodeGroup(const uint16_t b[4], const uint8_t err[4], double n
     if (type == 0) {
         ta = (low >> 4) & 1; ms = (low >> 3) & 1;
         const int seg = low & 3;
+        {   // decoder identification: bit 2 of block B, the segment address says which flag (0 dynamic PTY, 1 compressed, 2 artificial head, 3 stereo)
+            const int bit = 3 - seg, v = (low >> 2) & 1;
+            info.diKnown |= 1 << bit;
+            info.di = (info.di & ~(1 << bit)) | (v << bit);
+        }
         // each segment is kept as it comes (a group lost to noise no longer throws the others away, #46); a segment that comes again
         // with other characters means the name is changing (a scrolling name), and the collection starts over from it, so two
         // versions of the name are never mixed
@@ -386,19 +419,44 @@ void RdsDecoder::decodeGroup(const uint16_t b[4], const uint8_t err[4], double n
         ptynBuf_[seg * 4 + 2] = rdsChar(b[3] >> 8); ptynBuf_[seg * 4 + 3] = rdsChar(b[3] & 0xFF);
         ptynSeen_ |= (uint8_t)(1 << seg);
         if (ptynSeen_ == 3) info.ptyn = rdsText(ptynBuf_, 8, charset);
-    } else if (type == 14 && !verB && cOk) {
+    } else if (type == 15 && !verB && cOk) {
+        // long programme service name: 4 UTF-8 bytes per group, the segment address in the low bits of block B, a CR or NUL ends the text
+        const int seg = low & 15;
+        if (seg < 8) {
+            lpsBuf_[seg * 4] = (uint8_t)(b[2] >> 8); lpsBuf_[seg * 4 + 1] = (uint8_t)(b[2] & 0xFF);
+            lpsBuf_[seg * 4 + 2] = (uint8_t)(b[3] >> 8); lpsBuf_[seg * 4 + 3] = (uint8_t)(b[3] & 0xFF);
+            lpsSeen_ |= (uint8_t)(1 << seg);
+            int end = -1;   // the first terminator in the contiguous run of segments from 0
+            for (int s = 0; s < 8 && (lpsSeen_ >> s & 1) && end < 0; s++)
+                for (int k = 0; k < 4; k++) { const uint8_t ch = lpsBuf_[s * 4 + k]; if (ch == 0x0D || ch == 0x00) { end = s * 4 + k; break; } }
+            if (end < 0 && lpsSeen_ == 0xFF) end = 32;
+            if (end > 0) {
+                std::string t((const char*)lpsBuf_, (size_t)end);
+                while (!t.empty() && t.back() == ' ') t.pop_back();
+                info.longPs = t;
+            }
+        }
+    } else if (type == 14 && (verB || cOk)) {
+        // other networks: 14A carries the name (variants 0-3), the PTY and TA (variant 13) and the TP of the other network (bit 4 of block B);
+        // 14B carries its TP and TA announcements (bits 4 and 3 of block B)
         const int variant = low & 15, on = b[3];
-        if (variant <= 3 && on != 0 && on != pi) {
+        if (on != 0 && on != pi) {
             auto it = std::find_if(eonBuf_.begin(), eonBuf_.end(), [&](const EonBuf& e) { return e.pi == on; });
             if (it == eonBuf_.end()) {
                 if (eonBuf_.size() >= 16) return;
-                EonBuf e{}; e.pi = on; std::memset(e.ps, ' ', 8); e.ps[8] = 0;
+                EonBuf e{}; e.pi = on; std::memset(e.ps, ' ', 8); e.ps[8] = 0; e.tp = e.ta = e.pty = -1;
                 eonBuf_.push_back(e); it = eonBuf_.end() - 1;
             }
-            it->ps[variant * 2] = rdsChar(b[2] >> 8); it->ps[variant * 2 + 1] = rdsChar(b[2] & 0xFF);
-            it->seen |= (uint8_t)(1 << variant);
+            if (verB) { it->tp = (low >> 4) & 1; it->ta = (low >> 3) & 1; }
+            else {
+                it->tp = (low >> 4) & 1;
+                if (variant <= 3) {
+                    it->ps[variant * 2] = rdsChar(b[2] >> 8); it->ps[variant * 2 + 1] = rdsChar(b[2] & 0xFF);
+                    it->seen |= (uint8_t)(1 << variant);
+                } else if (variant == 13) { it->pty = (b[2] >> 11) & 31; it->ta = b[2] & 1; }
+            }
             info.eon.clear();
-            for (const auto& e : eonBuf_) info.eon.push_back({e.pi, e.seen == 15 ? rdsText(e.ps, 8, charset) : std::string()});
+            for (const auto& e : eonBuf_) { RdsEon x; x.pi = e.pi; x.ps = e.seen == 15 ? rdsText(e.ps, 8, charset) : std::string(); x.tp = e.tp; x.ta = e.ta; x.pty = e.pty; info.eon.push_back(x); }
         }
     }
 }

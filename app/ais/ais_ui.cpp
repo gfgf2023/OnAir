@@ -1,16 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // AIS screens: the map of vessels (the ADS-B map underneath), the vessel table, the detail panel, the message counters
 // with the rates of the channels (AIS 1, AIS 2, and the long-range channels 75 and 76 when the capture holds them), the raw NMEA log, and the
 // Satellite AIS panel (ais_sat_ui.cpp).
+#include "map/my_location.h"
+#include "../d40/d40_ui.h"
 #include "../panels/photo_links_ui.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/session_list.h"
 #include "ui/kit/mode_frame.h"
 #include "app.h"
+#include "ais/ais_seen_ui.h"
 #include "state/results_export.h"
 #include "../adsb/adsb_map.h"
 #include "map/rangeplot_ui.h"
 #include "dect2/ais/ais_tel.h"
+#include "dect2/ais/ais_apps.h"
 #include "ais_sat_ui.h"
 #include "ais_alerts_ui.h"
+#include "dect2/ais/ais_mid.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -25,6 +34,7 @@ struct State {
     int view = 1;                    // 1 table (Live), 0 map, 2 messages, 3 NMEA, 4 range, 5 satellite
     uint32_t sel = 0;                // the selected station (MMSI), 0 = none
     adsbmap::View map;
+    bool showReports = true;         // weather stations, area notices and the like on the map (Reports view)
     bool mapFollow = true;           // the map fits the stations until the user drags it
     int sortCol = 4, sortDir = 1;    // table: the column and the direction (1 ascending); starts on "heard"
     bool nmeaScroll = true;
@@ -46,6 +56,12 @@ void loadState() {
 
 std::string mmsiText(uint32_t m) { char b[16]; snprintf(b, sizeof b, "%09u", m); return b; }
 
+// the country of the MMSI's MID as the ISO code (the flag state), "-" when it has none; the long form for tooltips
+std::string flagText(uint32_t mmsi) { const dect2::AisMmsiInfo i = dect2::aisMmsiInfo(mmsi); return *i.iso ? i.iso : "-"; }
+std::string countryLong(uint32_t mmsi) {
+    const dect2::AisMmsiInfo i = dect2::aisMmsiInfo(mmsi);
+    return *i.country ? std::string(i.country) + " (" + i.iso + ")" : i.mid ? std::string(tr("unknown country")) + " (MID " + std::to_string(i.mid) + ")" : std::string("-");
+}
 std::string nameOf(const AisVessel& v) { return v.name.empty() ? mmsiText(v.mmsi) : v.name; }
 
 const char* chLabel(char c) { return dect2::aisChannelLabel(dect2::aisChannelIndex(c)); }
@@ -160,7 +176,7 @@ void detail(App& a) {
     const dect2::AisTelemetry& t = a.rx.ais;
     const AisVessel* v = live(a) ? findVessel(t, S.sel) : nullptr;
     if (!v) {
-        { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", !live(a) ? "start the receiver" : t.vessels.empty() ? "no stations heard yet" : "click a station"); ImGui::PopTextWrapPos(); }
+        { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", !live(a) ? tr("start the receiver") : t.vessels.empty() ? tr("no stations heard yet") : tr("click a station")); ImGui::PopTextWrapPos(); }
         return;
     }
     ImGui::TextColored(pal::heading(), "%s", nameOf(*v).c_str());
@@ -172,6 +188,8 @@ void detail(App& a) {
         ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(s); ImGui::PopTextWrapPos(); ImGui::PopFont();
     };
     kv("MMSI", mmsiText(v->mmsi).c_str());
+    kv(tr("MMSI type"), tr(dect2::aisMmsiKindText(dect2::aisMmsiInfo(v->mmsi).kind)));
+    kv(tr("country"), countryLong(v->mmsi).c_str());
     if (!v->callsign.empty()) kv("call sign", v->callsign.c_str());
     if (v->imo) { snprintf(b, sizeof b, "%u", v->imo); kv("IMO", b); }
     if (v->shipType >= 0) { snprintf(b, sizeof b, "%s (%d)", dect2::aisShipTypeText(v->shipType), v->shipType); kv("type", b); }
@@ -186,7 +204,7 @@ void detail(App& a) {
     }
     photolinks::shipButton(v->mmsi, v->imo, v->name);
     ImGui::Spacing();
-    if (v->hasPos) { snprintf(b, sizeof b, v->lrPosition ? "%.4f, %.4f (1/10 min)" : "%.5f, %.5f", v->lat, v->lon); kv("position", b); } else kv("position", "-");
+    if (v->hasPos) { snprintf(b, sizeof b, v->lrPosition ? "%.4f, %.4f (1/10 min)" : "%.5f, %.5f", v->lat, v->lon); kv("position", b); { std::string mine = mylocmap::distanceBearingText(v->lat, v->lon); if (!mine.empty()) kv("from me", mine.c_str()); } } else kv("position", "-");
     snprintf(b, sizeof b, "%.1f kn", v->sog); kv("speed", v->sog >= 0 ? b : "-");
     snprintf(b, sizeof b, "%.1f deg", v->cog); kv("course", v->cog >= 0 ? b : "-");
     snprintf(b, sizeof b, "%d deg", v->heading); kv("heading", v->heading >= 0 && v->heading < 360 ? b : "-");
@@ -222,6 +240,141 @@ void detail(App& a) {
     if (!shown) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("none in the last 50"); ImGui::PopTextWrapPos(); }
 }
 
+// ---------------------------------------------------------------- application and network messages (ais_apps.h)
+
+const char* reportTime(double utc, char* b, size_t n) {
+    const time_t t = (time_t)utc;
+    struct tm tmv;
+#ifdef _WIN32
+    gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
+    strftime(b, n, "%H:%M:%S", &tmv);
+    return b;
+}
+
+void drawAreaShape(ImDrawList* dl, const dect2::AisAreaShape& sh, ImU32 col) {
+    if (sh.kind == 0 || sh.kind == 2) {
+        const int n = 48;
+        const bool sector = sh.kind == 2;
+        double from = 0, to = 360;
+        if (sector) { from = sh.leftDeg; to = sh.rightDeg; if (to <= from) to += 360; }
+        const ImVec2 c = adsbmap::project(sh.lat, sh.lon);
+        if (sh.radiusM <= 0) { dl->AddCircleFilled(c, 4 * gUi, col); return; }
+        if (sector) dl->PathLineTo(c);
+        for (int i = 0; i <= n; i++) {
+            double la, lo;
+            dect2::ais::aisOffset(sh.lat, sh.lon, from + (to - from) * i / n, sh.radiusM, la, lo);
+            dl->PathLineTo(adsbmap::project(la, lo));
+        }
+        dl->PathStroke(col, sector ? ImDrawFlags_Closed : 0, 1.8f);
+    } else if (sh.kind == 1) {
+        double cla = sh.lat, clo = sh.lon, la, lo;
+        const double e = sh.eastM, no = sh.northM;
+        dect2::ais::aisOffset(sh.lat, sh.lon, sh.orientDeg + 90, e, la, lo); const ImVec2 b = adsbmap::project(la, lo);
+        double la2, lo2; dect2::ais::aisOffset(la, lo, sh.orientDeg, no, la2, lo2); const ImVec2 c = adsbmap::project(la2, lo2);
+        dect2::ais::aisOffset(cla, clo, sh.orientDeg, no, la, lo); const ImVec2 d = adsbmap::project(la, lo);
+        const ImVec2 q = adsbmap::project(cla, clo);
+        dl->AddQuad(q, b, c, d, col, 1.8f);
+    } else if (sh.pts.size() >= 2) {
+        for (size_t i = 0; i + 1 < sh.pts.size(); i++) dl->AddLine(adsbmap::project(sh.pts[i].lat, sh.pts[i].lon), adsbmap::project(sh.pts[i + 1].lat, sh.pts[i + 1].lon), col, 1.8f);
+        if (sh.kind == 4) dl->AddLine(adsbmap::project(sh.pts.back().lat, sh.pts.back().lon), adsbmap::project(sh.pts[0].lat, sh.pts[0].lon), col, 1.8f);
+    }
+}
+
+ImU32 reportColour(int category) {
+    switch (category) {
+    case dect2::AIS_APP_WEATHER: return IM_COL32(90, 190, 255, 235);
+    case dect2::AIS_APP_WATER: return IM_COL32(60, 220, 200, 235);
+    case dect2::AIS_APP_NOTICE: return IM_COL32(255, 120, 80, 235);
+    case dect2::AIS_APP_TRAFFIC: return IM_COL32(250, 210, 90, 235);
+    case dect2::AIS_APP_NETWORK: return IM_COL32(170, 170, 190, 180);
+    default: return IM_COL32(230, 230, 230, 220);
+    }
+}
+
+// the map: area notices, routes and the regions of channel management drawn, stations that report weather, water or signals marked
+void reportsOverlay(App& a, ImDrawList* dl, ImVec2 p0, ImVec2 size, ImVec2 mouse, bool mouseIn) {
+    for (const auto& r : a.rx.ais.apps) {
+        const ImU32 col = reportColour(r.category);
+        for (const auto& sh : r.shapes) drawAreaShape(dl, sh, col);
+        if (!r.hasPos || r.category == dect2::AIS_APP_NETWORK) continue;
+        const ImVec2 q = adsbmap::project(r.lat, r.lon);
+        if (q.x < p0.x - 20 || q.y < p0.y - 20 || q.x > p0.x + size.x + 20 || q.y > p0.y + size.y + 20) continue;
+        const float h = 6 * gUi;
+        dl->AddTriangleFilled(ImVec2(q.x, q.y - h), ImVec2(q.x - h, q.y + h * 0.7f), ImVec2(q.x + h, q.y + h * 0.7f), col);
+        if (mouseIn && std::hypot(q.x - mouse.x, q.y - mouse.y) < 10 * gUi) ImGui::SetTooltip("%s\n%s\n%s", tr(r.title.c_str()), r.summary.c_str(), mmsiText(r.mmsi).c_str());
+    }
+}
+
+void reportsView(App& a) {
+    const auto& apps = a.rx.ais.apps;
+    static std::string note;
+    static int filter = 0;
+    static uint64_t selN = 0;
+    resexp::Table x; x.cols = {"time_unix", "mmsi", "dest_mmsi", "message_type", "dac", "fi", "category", "title", "summary", "lat", "lon", "repeats", "fields"};
+    for (const auto& r : apps) {
+        std::string fs;
+        for (const auto& f : r.fields) { if (!fs.empty()) fs += "; "; fs += f.key + "=" + f.value; }
+        x.add({resexp::num(r.utc, 3), std::to_string(r.mmsi), r.destMmsi ? std::to_string(r.destMmsi) : "", std::to_string(r.type), r.dac >= 0 ? std::to_string(r.dac) : "", r.fi >= 0 ? std::to_string(r.fi) : "", dect2::aisAppCategoryText(r.category),
+               r.title, r.summary, r.hasPos ? resexp::num(r.lat, 6) : "", r.hasPos ? resexp::num(r.lon, 6) : "", std::to_string(r.count), fs}, r.utc);
+    }
+    resexp::saveButton(x, "ais_reports", note, "svaisr");
+    if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
+    ImGui::SameLine();
+    ImGui::Checkbox(tr("on the map"), &S.showReports);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130 * gUi);
+    static const char* const cats[9] = {"All", "Other", "Weather", "Water", "Area notice", "Text", "Ship", "Traffic", "Network"};
+    if (ImGui::BeginCombo("##aisrf", tr(cats[filter]))) {
+        for (int i = 0; i < 9; i++) if (ImGui::Selectable(tr(cats[i]), i == filter)) filter = i;
+        ImGui::EndCombo();
+    }
+    const float H = ImGui::GetContentRegionAvail().y, W = ImGui::GetContentRegionAvail().x, rw = std::min(340.f * gUi, W * 0.4f);
+    const dect2::AisAppRecord* sel = nullptr;
+    ImGui::BeginChild("##aisrl", ImVec2(W - rw - 8 * gUi, H));
+    if (ImGui::BeginTable("##aisrt", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Borders, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn(tr("Time"), ImGuiTableColumnFlags_WidthFixed, 66 * gUi);
+        ImGui::TableSetupColumn("MMSI", ImGuiTableColumnFlags_WidthFixed, 80 * gUi);
+        ImGui::TableSetupColumn(tr("Kind"), 0, 1.f);
+        ImGui::TableSetupColumn(tr("Content"), 0, 2.2f);
+        ImGui::TableHeadersRow();
+        for (auto it = apps.rbegin(); it != apps.rend(); ++it) {
+            const auto& r = *it;
+            if (filter && r.category != filter - 1) continue;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            char b[16]; ImGui::PushID((int)r.n);
+            if (ImGui::Selectable(reportTime(r.utc, b, sizeof b), selN == r.n, ImGuiSelectableFlags_SpanAllColumns)) selN = r.n;
+            ImGui::PopID();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(mmsiText(r.mmsi).c_str());
+            ImGui::TableNextColumn(); ImGui::TextColored(ImColor(reportColour(r.category)), "%s", tr(r.title.c_str()));
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(r.summary.c_str());
+            if (selN == r.n) sel = &r;
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("##aisrd", ImVec2(0, H), ImGuiChildFlags_Borders);
+    if (!sel) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", apps.empty() ? tr("nothing interpreted yet") : tr("click a row")); ImGui::PopTextWrapPos(); }
+    else {
+        ImGui::TextColored(pal::heading(), "%s", tr(sel->title.c_str()));
+        ImGui::TextDisabled("%s  x %u", mmsiText(sel->mmsi).c_str(), sel->count);
+        if (sel->dac >= 0) ImGui::TextDisabled("DAC %d, FI %d", sel->dac, sel->fi);
+        if (sel->destMmsi) ImGui::TextDisabled("%s %09u", tr("to"), sel->destMmsi);
+        if (sel->hasPos) ImGui::TextDisabled("%.5f, %.5f", sel->lat, sel->lon);
+        ImGui::Separator();
+        for (const auto& f : sel->fields) {
+            ImGui::TextDisabled("%s", tr(f.key.c_str())); kvColumn(120 * gUi);
+            ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(f.value.c_str()); ImGui::PopTextWrapPos(); ImGui::PopFont();
+        }
+    }
+    ImGui::EndChild();
+}
+
 // ---------------------------------------------------------------- the map
 
 void mapView(App& a, ImVec2 size) {
@@ -237,9 +390,9 @@ void mapView(App& a, ImVec2 size) {
             S.map.zoom = std::max(2, std::min(12, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     const ImVec2 mouse = ImGui::GetMousePos();
@@ -247,6 +400,7 @@ void mapView(App& a, ImVec2 size) {
     const AisVessel* hit = nullptr; float best = 16 * gUi;
     ImVec2 click; const bool clicked = adsbmap::clickedAt(click);
     if (on) {
+        if (S.showReports) reportsOverlay(a, dl, p0, size, mouse, mouseIn);
         for (const auto& v : t.vessels) {   // tracks first, so the marks sit on top
             if (!aisUiFilter().matches(v)) continue;
             if (!v.hasPos || v.track.size() < 2) continue;
@@ -268,8 +422,12 @@ void mapView(App& a, ImVec2 size) {
                 const float rr = 11.f * gUi;
                 for (int k = 0; k < 12; k += 2) { dl->PathArcTo(q, rr, k * (float)M_PI / 6, (k + 1) * (float)M_PI / 6, 4); dl->PathStroke(IM_COL32(245, 150, 60, 230), 0, 1.6f); }
             }
+            if (mouseIn && std::hypot(q.x - mouse.x, q.y - mouse.y) < 10 * gUi) {
+                const std::string c = countryLong(v.mmsi);
+                ImGui::SetTooltip("%s\n%s  %s\n%s", nameOf(v).c_str(), mmsiText(v.mmsi).c_str(), tr(dect2::aisMmsiKindText(dect2::aisMmsiInfo(v.mmsi).kind)), c.c_str());
+            }
             const bool hovered = S.labels == 1 && mouseIn && std::hypot(q.x - mouse.x, q.y - mouse.y) < 14 * gUi;   // labels off: the vessel under the pointer still names itself
-            if (sel || hovered || S.labels == 2 || (S.labels == 0 && S.map.zoom >= 10)) {
+            if (sel || hovered || S.labels == 2 || (S.labels == 0 && adsbmap::labelsAt(S.map.zoom, false))) {
                 const std::string s = nameOf(v);
                 const ImVec2 ts = ImGui::CalcTextSize(s.c_str());
                 const ImVec2 lp(q.x + 12 * gUi, q.y - ts.y * 0.5f - 2 * gUi);
@@ -317,15 +475,15 @@ void vesselTable(App& a, bool compact) {
     const dect2::AisTelemetry& t = a.rx.ais;
     aisFilterBar(a);
     if (aisUiFilter().active()) { ImGui::SameLine(); ImGui::TextDisabled("%s", tr("some stations are hidden")); }
-    const int cols = compact ? 3 : 7;
+    const int cols = compact ? 3 : 9;
     if (!compact) {
         static std::string note;
-        resexp::Table x; x.cols = {"time", "frequency_hz", "mode", "name", "mmsi", "type", "sog_kn", "lat", "lon", "heard_s_ago", "channel", "long_range", "received_unix"};
+        resexp::Table x; x.cols = {"time", "frequency_hz", "mode", "name", "mmsi", "type", "sog_kn", "lat", "lon", "heard_s_ago", "channel", "long_range", "received_unix", "country_iso", "mmsi_type"};
         const std::string now = resexp::stamp();
         for (const auto& v : t.vessels)
             x.add({now, resexp::num(dect2::aisChannelHz(dect2::aisChannelIndex(v.channel)), 0), "AIS", nameOf(v), std::to_string(v.mmsi), v.shipType >= 0 ? dect2::aisShipTypeText(v.shipType) : dect2::aisClassText(v.cls),
                    v.sog >= 0 ? resexp::num(v.sog, 1) : "", v.hasPos ? resexp::num(v.lat, 6) : "", v.hasPos ? resexp::num(v.lon, 6) : "", resexp::num(v.ageSec, 0), chLabel(v.channel),
-                   v.longRange ? "1" : "0", v.lastUtc > 0 ? resexp::num(v.lastUtc, 3) : ""}, v.lastUtc);
+                   v.longRange ? "1" : "0", v.lastUtc > 0 ? resexp::num(v.lastUtc, 3) : "", dect2::aisMmsiInfo(v.mmsi).iso, dect2::aisMmsiKindText(dect2::aisMmsiInfo(v.mmsi).kind)}, v.lastUtc);
         resexp::saveButton(x, "ais", note, "svais");
         if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
     }
@@ -333,7 +491,7 @@ void vesselTable(App& a, bool compact) {
     if (!ImGui::BeginTable(compact ? "##ais_s" : "##ais_f", cols, fl, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0, 0);
-    if (!compact) { ImGui::TableSetupColumn("MMSI", 0, 0, 1); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthStretch, 0, 2); }
+    if (!compact) { ImGui::TableSetupColumn("MMSI", 0, 0, 1); ImGui::TableSetupColumn(tr("Flag"), 0, 0, 7); ImGui::TableSetupColumn(tr("MMSI type"), 0, 0, 8); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthStretch, 0, 2); }
     ImGui::TableSetupColumn("SOG kn", 0, 0, 3);
     ImGui::TableSetupColumn("Heard", ImGuiTableColumnFlags_DefaultSort, 0, 4);
     if (!compact) { ImGui::TableSetupColumn("Pos", 0, 0, 5); ImGui::TableSetupColumn("Ch", 0, 0, 6); }
@@ -352,6 +510,8 @@ void vesselTable(App& a, bool compact) {
         case 3: return x->sog < y->sog ? -1 : x->sog > y->sog;
         case 4: return x->ageSec < y->ageSec ? -1 : x->ageSec > y->ageSec;
         case 5: return (int)x->hasPos - (int)y->hasPos;
+        case 7: return strcmp(flagText(x->mmsi).c_str(), flagText(y->mmsi).c_str());
+        case 8: return dect2::aisMmsiInfo(x->mmsi).kind - dect2::aisMmsiInfo(y->mmsi).kind;
         default: return x->channel < y->channel ? -1 : x->channel > y->channel;
         }
     };
@@ -370,6 +530,9 @@ void vesselTable(App& a, bool compact) {
         char b[32];
         if (!compact) {
             ImGui::TableNextColumn(); ImGui::TextUnformatted(mmsiText(v->mmsi).c_str());
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(flagText(v->mmsi).c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", countryLong(v->mmsi).c_str());
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(tr(dect2::aisMmsiKindText(dect2::aisMmsiInfo(v->mmsi).kind)));
             ImGui::TableNextColumn();
             if (v->shipType >= 0) ImGui::TextUnformatted(dect2::aisShipTypeText(v->shipType)); else ImGui::TextDisabled("%s", dect2::aisClassText(v->cls));
         }
@@ -462,7 +625,7 @@ void nmeaView(App& a) {
 void tab(App& a) {
     loadState();
     kit::modeHeader({14, "AIS", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("aisv", S.view, {{tr("Live"), 1}, {tr("Tracks"), 6}, {tr("Map"), 0}, {tr("Log"), 2, true}, {tr("NMEA"), 3, true}, {tr("Range"), 4, true}, {tr("Satellite"), 5, true}, {tr("Alerts"), 7, true}});
+    kit::modeNav("aisv", S.view, {{tr("Live"), 1}, {tr("Tracks"), 6}, {tr("Map"), 0}, {tr("Log"), 2, true}, {tr("NMEA"), 3, true}, {tr("Range"), 4, true}, {tr("Satellite"), 5, true}, {tr("Alerts"), 7, true}, {tr("Reports"), 8, true}, {tr("History"), 9, true}, {tr("Arrivals"), 10, true}});
     const bool on = live(a);
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     if (S.view == 2) {
@@ -471,10 +634,13 @@ void tab(App& a) {
         return;
     }
     if (S.view == 3) { nmeaView(a); return; }
-    if (S.view == 4) { rangeView(S.range, ImGui::GetContentRegionAvail(), 0.5399568, "nm", "ais", receiverLocationSet()); return; }
+    if (S.view == 4) { d40AisRangeCard(a.rx.ais); rangeView(S.range, ImGui::GetContentRegionAvail(), 0.5399568, "nm", "ais", receiverLocationSet()); return; }
     if (S.view == 5) { aisSatPanel(a); return; }
     if (S.view == 6) { kit::sessionItems(14, 3, "ais"); return; }
     if (S.view == 7) { aisAlertsPanel(a); return; }
+    if (S.view == 8) { reportsView(a); return; }
+    if (S.view == 9) { aisSeenView(a); return; }
+    if (S.view == 10) { aisArrivalsView(a); return; }
     const float cw = std::min(320.f * gUi, W * 0.34f);
     ImGui::BeginChild("##ais_l", ImVec2(W - cw - 8 * gUi, H));
     if (S.view == 0) {
@@ -492,24 +658,24 @@ void tab(App& a) {
 
 void list(App& a) {
     loadState();
-    if (!live(a)) { { ImGui::PushTextWrapPos(0); ImGui::TextDisabled(a.engine.running() ? "starting" : "start the receiver to see vessels"); ImGui::PopTextWrapPos(); } return; }
+    if (!live(a)) { { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", a.engine.running() ? tr("starting") : tr("start the receiver to see vessels")); ImGui::PopTextWrapPos(); } return; }
     if (resultsClearButton("ais")) a.engine.ais().clearResults();
-    ImGui::TextDisabled("%u stations", a.rx.ais.vesselCount);
+    ImGui::TextDisabled(tr("%u stations"), a.rx.ais.vesselCount);
     vesselTable(a, true);
 }
 
 void receiver(App& a) {
     const dect2::AisTelemetry& t = a.rx.ais;
-    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
-    auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", k); kvColumn(130 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::Text(fmt, v...); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
-    kv("state", "%s", t.state == 0 ? "searching" : t.state == 1 ? "signal, no good message" : "decoding");
-    kv("messages", "%llu good, %llu failed the CRC", (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad);
-    kv("bursts", "%llu detected", (unsigned long long)t.bursts);
-    kv("signal", "%.1f dB in 48 kHz, carrier error %+.0f Hz", t.snrDb, t.cfoHz);
-    if (t.satellite) kv("satellite mode", "Doppler %+.0f Hz (%+.1f Hz/s); %llu recovered, %llu after cancelling", t.dopplerHz[0], t.dopplerRateHzS[0],
+    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? tr("starting") : tr("stopped")); return; }
+    auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", tr(k)); kvColumn(130 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::Text(fmt, v...); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
+    kv("state", "%s", t.state == 0 ? tr("searching") : t.state == 1 ? tr("signal, no good message") : tr("decoding"));
+    kv("messages", tr("%llu good, %llu failed the CRC"), (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad);
+    kv("bursts", tr("%llu detected"), (unsigned long long)t.bursts);
+    kv("signal", tr("%.1f dB in 48 kHz, carrier error %+.0f Hz"), t.snrDb, t.cfoHz);
+    if (t.satellite) kv("satellite mode", tr("Doppler %+.0f Hz (%+.1f Hz/s); %llu recovered, %llu after cancelling"), t.dopplerHz[0], t.dopplerRateHzS[0],
                         (unsigned long long)t.recovered, (unsigned long long)t.cancelled);
-    if (t.longRangeVessels) kv("long range", "%u ships sent message 27", t.longRangeVessels);
-    kv("stations", "%u in the table", t.vesselCount);
+    if (t.longRangeVessels) kv("long range", tr("%u ships sent message 27"), t.longRangeVessels);
+    kv("stations", tr("%u in the table"), t.vesselCount);
     kv("signal time", "%.1f s", t.timeSec);
     ImGui::Spacing();
     channelStats(a);
@@ -519,18 +685,40 @@ void receiver(App& a) {
 }
 
 // every frame while AIS is selected: the positions heard, for the range plot (from the receiver position)
+// the station filter: only the stations of one kind are listed (AisReceiver::setStationView)
+struct StationKind { const char* name; uint32_t classMask; bool devicesOnly; };
+const StationKind kKinds[] = {{"every station", 0, false}, {"Class A vessels", 1u << dect2::AIS_CLASS_A, false}, {"Class B vessels", 1u << dect2::AIS_CLASS_B, false},
+                              {"base stations", 1u << dect2::AIS_CLASS_BASE, false}, {"aids to navigation (AtoN)", 1u << dect2::AIS_CLASS_ATON, false},
+                              {"search and rescue aircraft", 1u << dect2::AIS_CLASS_SAR, false}, {"AIS-SART, MOB and EPIRB-AIS", 0, true}};
+constexpr int kNumKinds = (int)(sizeof kKinds / sizeof *kKinds);
+int& kindFilter() { static int v = std::clamp((int)plat::prefs().getI("aisKindFilter", 0), 0, kNumKinds - 1); return v; }
+void pushKindFilter(App& a) { const StationKind& k = kKinds[kindFilter()]; a.engine.ais().setStationView(k.classMask, k.devicesOnly); }   // every frame (atomic stores): each receiver gets it
+
 void tick(App& a) {
+    pushKindFilter(a);
     aisSatTick(a);
     aisAlertsTick(a);
+    aisSeenTick(a);
     if (!live(a) || a.rx.seq == S.rangeSeq) return;
     S.rangeSeq = a.rx.seq;
     double lat, lon;
     receiverLocation(lat, lon);
     rangeSetStation(S.range, lat, lon);
     for (const auto& v : a.rx.ais.vessels) if (v.hasPos) rangeFeed(S.range, v.lat, v.lon);
+    d40AisFeed(a.rx.ais, lat, lon);   // 4.0: coverage by bearing (app/d40)
 }
 
 void tuner(App& a, bool& retune) { aisChannelControls(a, retune); }
+
+void decoder(App& a, bool&) {
+    ImGui::TextDisabled("SHOW"); ImGui::SameLine(0, 5 * gUi);
+    ImGui::SetNextItemWidth(std::min(200 * gUi, ImGui::GetContentRegionAvail().x));
+    if (ImGui::BeginCombo("##aiskind", kKinds[kindFilter()].name)) {
+        for (int i = 0; i < kNumKinds; i++) if (ImGui::Selectable(kKinds[i].name, i == kindFilter())) { kindFilter() = i; plat::prefs().setI("aisKindFilter", i); pushKindFilter(a); }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("List the stations of one kind only (their messages, alerts and sentences too). Every station is still decoded.");
+}
 
 void summary(const App& a, std::string& l1, std::string& l2) {
     l1 = "AIS";
@@ -538,6 +726,15 @@ void summary(const App& a, std::string& l1, std::string& l2) {
 }
 
 } // namespace
+
+// Simple view: the map with the filter bar and the vessel table side by side; the readout of a picked vessel as a third pane
+static void command(App& a) {
+    loadState();
+    kit::modeHeader({14, "AIS", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##aiscmdm", tr("Map"), [&a] { mapView(a, ImGui::GetContentRegionAvail()); }, 1.4f, 280.f},
+                      {"##aiscmdt", tr("Vessels"), [&a] { vesselTable(a, ImGui::GetContentRegionAvail().x < 560 * gUi); }, 1.f, 240.f},
+                      {"##aiscmdd", tr("Selected"), [&a] { detail(a); }, 0.8f, 200.f}}, 300.f);
+}
 
 extern const ModeUi kAisUi;
 const ModeUi kAisUi = {
@@ -549,5 +746,7 @@ const ModeUi kAisUi = {
     .list = list,
     .summary = summary,
     .tuner = tuner,
+    .decoder = decoder,
     .tick = tick,
+    .command = command,
 };

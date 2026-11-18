@@ -5,5 +5,10 @@ edition = "2021"
 rust-version = "1.70"
 description = "Shared OnAir building blocks: CRC, bit reader/writer, endian, hex, parity, gray, NRZI, Manchester, ring"
 publish = false
+license = "GPL-3.0-or-later"
+
+[features]
+# print diagnostic lines to standard error when no sink is set, and offer diag_text! (docs/DIAGNOSTICS.md)
+std = []
 
 [dependencies]

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/session/privacy.h"
 #include "dect2/mesh/mesh_crypto.h"
 #include <chrono>
@@ -7,6 +10,7 @@
 #include <fstream>
 #include <random>
 #include <sstream>
+#include "dect2/common/diag.h"
 #ifdef _WIN32
 #include <windows.h>
 #include <sddl.h>
@@ -145,6 +149,9 @@ void Privacy::applyDefaultClasses() {
         54,    // Wi-Fi networks
         70,    // Wi-Fi HaLow
         65,    // Zigbee / 802.15.4
+        600,   // Extra links (link identities)
+        360,   // RC and mesh links (positions of drones and aircraft, link identities)
+        244,   // Thread (device addresses of a home network)
         98,    // Z-Wave
         153,   // Sigfox
         77,    // ANT+ (ids and heart rate)
@@ -155,6 +162,10 @@ void Privacy::applyDefaultClasses() {
         56,    // Drone Remote ID (operator and pilot location)
         68,    // DJI drones
         66,    // FLARM
+        300,   // ADS-L
+        400, 401,   // FANET, OGN trackers
+        406, 407, 408,   // DSRC tolling, V2X
+        409,   // ERMES (pager addresses)
         23,    // POCSAG (capcodes)
         17, 18, 19, 62, 208,   // satellite terminals: Inmarsat-C, Inmarsat Aero, Iridium, Globalstar, Inmarsat (all carriers)
     };
@@ -344,9 +355,9 @@ bool writeOwnerOnlyFile(const std::string& path, const std::string& data) {
     const std::string tmp = path + ".tmp";
     {
         std::ofstream out(pathOf(tmp), std::ios::binary | std::ios::trunc);
-        if (!out) return false;
+        if (!out) { DIAG(182907, "The private file %s could not be created, so its contents were not saved.", tmp.c_str()); return false; }
         out.write(data.data(), (std::streamsize)data.size());
-        if (!out) return false;
+        if (!out) { DIAG(843346, "Writing the private file %s failed (the disk may be full), so its contents were not saved.", tmp.c_str()); return false; }
     }
     if (!restrictToOwner(tmp, false)) { std::error_code ec; fs::remove(pathOf(tmp), ec); return false; }
     std::error_code ec;

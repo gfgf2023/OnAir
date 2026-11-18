@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The pure parts of the touch interface (app/ui/touch_logic.h): keypad entry and frequency parsing, the gesture recogniser (pinch,
 // pan, long press, swipe, fling) and the kinetic scroll.
 #include "../../app/ui/touch_logic.h"
@@ -190,9 +193,74 @@ static void autoStart() {
     CHECK(!autoTouch(1920, 1080, false) && !autoTouch(1366, 768, false) && !autoTouch(1280, 680, false), "laptops do not");
     CHECK(!autoTouch(800, 480, true), "a saved choice is kept");
     CHECK(!autoTouch(0, 0, false), "unknown screen size");
+    // #139: an install from before 3.7 has "touchUi" = false saved by every save; that is not a choice, so the small screen still starts in touch once
+    CHECK(autoTouch(640, 480, touchChosen(false, false)), "an upgrade on a 640 x 480 screen starts in touch once");
+    CHECK(!autoTouch(640, 480, touchChosen(false, true)), "after the automatic start, turning it off is kept");
+    CHECK(touchChosen(true, false), "touch already on");
+}
+
+// #139: the control size and the shell's frame (touch_logic.h shellLayout)
+static void controlSize() {
+    CHECK(touchSizeFactor(kTouchSizeDefault) == 1.f, "Default is the size the touch interface always had");
+    for (int i = 1; i < kTouchSizes; i++) CHECK(touchSizeFactor(i) > touchSizeFactor(i - 1), "sizes grow from Small to Extra large (%d)", i);
+    CHECK(clampTouchSize(-3) == 0 && clampTouchSize(99) == kTouchSizes - 1 && touchSizeFactor(99) == touchSizeFactor(kTouchSizes - 1), "out of range is clamped");
+    CHECK(touchTarget(1, touchSizeFactor(0)) >= 32.f && nearBy(touchTarget(1, 1), 48) && nearBy(touchTarget(2, 1), 96), "targets: Small >= 32 px, Default 48 px per display scale");
+    for (int i = 0; i < kTouchSizes; i++) CHECK(touchSizeNames()[i] && *touchSizeNames()[i], "a name for size %d", i);
+
+    const float gaps = 7 * 10.f + 2 * 12.f;   // applyMetrics' item spacing and window padding at display scale 1
+    // a desktop-sized display at the default size: exactly the layout from before (top 1.1 targets, rows 1.15, one row when wide)
+    ShellLayout big = shellLayout(1920, 1080, 1, 1, gaps);
+    CHECK(nearBy(big.topH, 48 * 1.1f, 1e-3) && nearBy(big.rowH, 48 * 1.15f, 1e-3) && big.dockRows == 1 && !big.stepInMore && !big.shortScreen && !big.statusOnTop, "1920 x 1080 unchanged");
+    ShellLayout tab = shellLayout(800, 1280, 1, 1, gaps);
+    CHECK(tab.dockRows == 2 && tab.statusOnTop && !tab.shortScreen && nearBy(tab.rowH, 48 * 1.15f, 1e-3), "a portrait tablet: two rows, status on top");
+    ShellLayout tabHiDpi = shellLayout(1600, 2560, 2, 1, 2 * gaps);
+    CHECK(tabHiDpi.dockRows == 2 && nearBy(tabHiDpi.target, 96), "the same tablet at display scale 2");
+
+    // 640 x 480 (#139): before, two 55 px dock rows and a 53 px top bar; now one row without Step and tighter bars
+    const float sp = 8, pad = 10;
+    ShellLayout old; old.target = 48; old.topH = 48 * 1.1f; old.rowH = 48 * 1.15f; old.dockRows = 2;
+    const float before = shellBodyHeight(old, 480, sp, pad);
+    ShellLayout s640 = shellLayout(640, 480, 1, 1, gaps);
+    CHECK(s640.shortScreen && s640.dockRows == 1 && s640.stepInMore && !s640.statusOnTop, "640 x 480: a short screen, one dock row, Step in More");
+    const float now = shellBodyHeight(s640, 480, sp, pad);
+    CHECK(now >= before + 70, "640 x 480 default size: the panels get %.0f px instead of %.0f", now, before);
+    std::printf("640 x 480 body height: before %.0f px, Default %.0f px", before, now);
+    float prev = 1e9;
+    for (int i = 0; i < kTouchSizes; i++) {
+        ShellLayout L = shellLayout(640, 480, 1, touchSizeFactor(i), gaps);
+        const float h = shellBodyHeight(L, 480, sp, pad);
+        std::printf(", %s %.0f", touchSizeNames()[i], h);
+        CHECK(h <= prev + 1e-3, "a larger control size never gives the panels more room (%d)", i);
+        CHECK(h > 0, "the panels keep some room at %s", touchSizeNames()[i]);
+        prev = h;
+        // the smallest one-row buttons keep 0.8 of a target
+        if (L.dockRows == 1 && L.stepInMore) CHECK((640 - gaps) * 0.8f / kDockOneRowWeightNoStep >= 0.8f * L.target - 1e-3, "one-row buttons wide enough at %d", i);
+    }
+    std::printf("\n");
+    CHECK(shellLayout(640, 480, 1, touchSizeFactor(4), gaps).dockRows == 2, "Extra large on 640 x 480: the buttons no longer fit one row");
+    CHECK(shellLayout(800, 480, 1, 1, gaps).dockRows == 1 && shellLayout(320, 240, 1, 1, gaps).dockRows == 2, "800 x 480 one row; 320 x 240 two");
+    CHECK(shellLayout(640, 480, 0, 1, gaps).target == 48, "a zero display scale counts as 1");
+    CHECK(shellBodyHeight(shellLayout(200, 150, 1, 1.4f, gaps), 150, sp, pad) == 0, "a tiny display never gives a negative body");
+
+    // #139: under 800 px wide the secondary controls (Gain, Volume) fold into More and the main ones get wider
+    {
+        const ShellLayout n640 = shellLayout(640, 480, 1, 1, gaps), n480 = shellLayout(480, 800, 1, 1, gaps), w800 = shellLayout(800, 480, 1, 1, gaps), d1920 = shellLayout(1920, 1080, 1, 1, gaps);
+        CHECK(n640.narrow && n640.secondaryInMore && !n640.topStateText, "640 x 480 is narrow: Gain and Volume in More, no state word in the top bar");
+        CHECK(n640.dockRows == 1 && n640.stepInMore, "640 x 480: one row, Step in More (as before)");
+        CHECK(nearBy(n640.rowH, w800.rowH, 1e-3), "the dock height is unchanged (the buttons get wider: six share the room of eight)");
+        CHECK(!n640.statusFolded, "a short landscape screen has no status line on top to fold");
+        CHECK(n480.narrow && n480.statusOnTop && n480.statusFolded && n480.dockRows == 2, "480 x 800 portrait: status line folded behind a toggle, two dock rows");
+        CHECK(!w800.narrow && !w800.secondaryInMore && w800.topStateText && !w800.statusFolded, "800 wide is not narrow");
+        CHECK(!d1920.narrow && d1920.dockRows == 1 && !d1920.stepInMore && !d1920.statusFolded && d1920.topStateText, "the desktop-size layout is unchanged");
+        CHECK(shellLayout(799, 1280, 1, 1, gaps).narrow && !shellLayout(800, 1280, 1, 1, gaps).narrow, "the limit is 800");
+        CHECK(shellLayout(1599, 2560, 2, 1, 2 * gaps).narrow && !shellLayout(1600, 2560, 2, 1, 2 * gaps).narrow, "the limit scales with the display scale");
+        CHECK(shellBodyHeight(n640, 480, sp, pad) > 0, "the body is never negative on 640 x 480");
+        CHECK(shellLayout(320, 240, 1, 1.4f, gaps).dockRows == 2, "a tiny narrow display falls back to two rows");
+    }
 }
 
 int main() {
+    controlSize();
     autoStart();
     keypad();
     parse();

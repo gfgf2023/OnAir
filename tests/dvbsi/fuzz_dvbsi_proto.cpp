@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Seeded mutation run of the DVB service information layers, meant for DECT2_SANITIZE=ON: the character set converters, the
 // DVB text field, the teletext decoder and renderer, the subtitle segment parsers, the pixel decoder and both decoder classes must never crash or hang on any
 // bytes, at any length (the input is copied to an exactly sized heap block). Also a libFuzzer target with -DONAIR_LIBFUZZER.
@@ -16,7 +19,7 @@ static void one(const uint8_t* d, size_t n) {
     uint8_t* p = n ? (uint8_t*)malloc(n) : nullptr;
     if (n) memcpy(p, d, n);
     D::text::ebuLatin(p, n); D::text::ucs2be(p, n); D::text::iso6937(p, n); D::text::dabCharset(n ? p[0] % 17 : 0, p, n); D::text::clean(std::string((const char*)p, n));
-    D::dvbsi::dvbText(p, (int)n, n & 1);
+    D::dvbsi::dvbText(p, (int)n, {static_cast<D::dvbsi::TextEncoding>(n % 8)});
     // teletext
     if (n >= 44) { D::TtxUnit u = D::ttxDecodeUnit(p); (void)u; }
     uint32_t off[64]; D::ttxPesUnits(p, n, off, 64);

@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The P2 stage of the DVB-T2 receiver: L1 signalling, extended carriers, integer frequency shift.
 #include "t2rx_impl.h"
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -8,10 +12,14 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
     const int G = guard, N = fftN;
     const PilotMap* pmp = &cachedPilotMap(fftCode, ext, 0);
     if (!pmp->valid()) pmp = &cachedPilotMap(fftCode, ext, 1);
-    if (!pmp->valid()) return false;
+    if (!pmp->valid()) {
+        DIAG_DEBUG_EVERY(744105, 5, "The DVB-T2 pilot layout for FFT code %d (extended carriers %d) is not defined, so this P2 symbol is not decoded.", fftCode, (int)ext);
+        return false;
+    }
     const PilotMap& pm = *pmp;
     const int K = pm.carriers(), off = (kMax - K) / 2;
-    const int S = fftCode == 5 ? 6 : 3;
+    const bool miso = misoNow();
+    const int S = fftCode == 5 && !miso ? 6 : 3;
     const int M = (K - 1) / S + 1;
     std::vector<cf32> hg(M, cf32(0, 0));
     std::vector<int> cnt(M, 0);
@@ -40,9 +48,10 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
         else if (b < M) hg[n] = hg[b];
     }
     const int back = std::min(G / 4, 32);
-    std::vector<cf32> H;
-    interp.run(hg, S, K, N, (double)back + G / 2.0, H);
-    {
+    std::vector<cf32> H, H2m;
+    if (miso) misoChannels(hg, S, K, H, H2m);   // (the sum of the two paths and the difference are on alternate pilots: H is group 1, H2m group 2)
+    else interp.run(hg, S, K, N, (double)back + G / 2.0, H);
+    if (!miso) {
         // second pass: narrow the delay passband to where the channel actually has energy
         int tMin, tMax;
         int lim = std::min(N / 2 - 1, G * 3 / 2);
@@ -88,6 +97,13 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
         pm.symbolTypes(l, nP2 + 2, types);
         std::vector<cf32> rx;
         rx.reserve(cP2);
+        std::vector<cf32> misoG;
+        if (miso) {
+            std::vector<int> dk; for (int kk = 0; kk < K; kk++) if (types[kk] == kCellData) dk.push_back(kk);
+            rx.resize(dk.size()); misoG.resize(dk.size());
+            for (size_t p = 0; p + 1 < dk.size(); p += 2) alamouti(p2cells[l][off + dk[p]], p2cells[l][off + dk[p + 1]], H[dk[p]], H2m[dk[p]], rx[p], rx[p + 1], misoG[p]);
+            for (size_t p = 0; p + 1 < dk.size(); p += 2) misoG[p + 1] = misoG[p];
+        } else
         for (int kk = 0; kk < K; kk++)
             if (types[kk] == kCellData) rx.push_back(p2cells[l][off + kk] / H[kk]);
         std::vector<int> Hi;
@@ -97,7 +113,7 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
         {
             int jj = 0;
             for (int kk = 0; kk < K; kk++)
-                if (types[kk] == kCellData && jj < cP2) { gsym[l][Hi[jj]] = cf32(std::norm(H[kk]), 0); jj++; }
+                if (types[kk] == kCellData && jj < cP2) { gsym[l][Hi[jj]] = miso ? misoG[(size_t)jj] : cf32(std::norm(H[kk]), 0); jj++; }
         }
         for (int j = 0; j < cP2 && j < (int)rx.size(); j++) sym[l][Hi[j]] = rx[j];
         eqAll.insert(eqAll.end(), rx.begin(), rx.end());
@@ -125,7 +141,7 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
     // A wrong carrier-mode hypothesis can still pass the L1-pre CRC (the first 1840 cells of the single P2 symbol of a 16K signal fall in
     // the same places in both layouts), but then the cells after them, the L1-post and the start of the PLP, are read from the wrong
     // carriers. The signalled BWT_EXT settles it: a pre that contradicts the hypothesis counts as a miss, so the other mode is tried.
-    if (r.ok && fm->kExt != 0 && ((pre.bwtExt != 0) != ext)) { r.ok = false; if (getenv("DECT2_DEBUG")) fprintf(stderr, "  [dbg] P2 hyp ext=%d contradicts the signalled BWT_EXT\n", (int)ext); }
+    if (r.ok && fm->kExt != 0 && ((pre.bwtExt != 0) != ext)) { r.ok = false; DIAG_DEBUG_EVERY(890679, 5, "The DVB-T2 L1-pre signalling contradicts the tried carrier mode (extended carriers %d), so the other carrier mode is tried.", (int)ext); if (getenv("DECT2_DEBUG")) fprintf(stderr, "  [dbg] P2 hyp ext=%d contradicts the signalled BWT_EXT\n", (int)ext); }
     bool preOk = r.ok;
     l1Iters = r.ldpcIters;
     L1Post post;
@@ -158,6 +174,8 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
     // marginal signal. Losing the L1 loses the whole 240 ms frame, which is a visible freeze, although its data would decode fine.
     // So when a block fails its CRC, the last good one is reused for a few frames; the data blocks have their own CRCs, which would
     // flag a real change of the configuration.
+    if (!preOk) DIAG_DEBUG_EVERY(796824, 5, "The DVB-T2 L1-pre signalling block failed its CRC check after %d LDPC iterations, so the last good signalling is reused if there is one.", l1Iters);
+    else if (!postOk) DIAG_DEBUG_EVERY(900475, 5, "The DVB-T2 L1-post signalling block failed its CRC check, so the last good signalling is reused if there is one.");
     bool reusedPre = false, reusedPost = false;
     {
         const int64_t anchorNow = frames.empty() ? 0 : frames.front().anchor;
@@ -176,7 +194,7 @@ bool T2Receiver::Impl::p2Hypothesis(bool ext, bool final) {
             }
         }
         if (preOk && postOk && !reusedPre && !reusedPost) { goodPre = pre; goodPost = post; goodAnchor = anchorNow; haveGoodL1 = true; l1Reuse = 0; }
-        else if (reusedPre || reusedPost) { l1Reuse++; l1Reused++; }
+        else if (reusedPre || reusedPost) { l1Reuse++; l1Reused++; DIAG_DEBUG_EVERY(519153, 5, "The DVB-T2 L1 signalling of this frame was replaced by the last good copy (reuse number %d of 8 allowed).", l1Reuse); }
     }
 
     // accept this hypothesis: publish channel data

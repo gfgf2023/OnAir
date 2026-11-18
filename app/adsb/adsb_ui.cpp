@@ -1,9 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B mode entry: the screen state, the receiver position, the tick, and the entry points the shell calls (tab,
 // list, receiver, panels, status, summary, tuner, decoder, synth, meters). The table views are in adsb_table_ui.cpp, the
 // radar and map in adsb_map_ui.cpp.
+#include "../d40/d40_ui.h"
 #include "adsb_internal.h"
 #include "ui/kit/session_list.h"
 #include "ui/kit/mode_frame.h"
+#include "ui/kit/mode_panel.h"
 void vdl2NoteAdsb(const dect2::AdsbTelemetry& t);   // vdl2_ui.cpp: VDL2 links its aircraft to what ADS-B heard
 
 using namespace adsbui;
@@ -40,6 +45,13 @@ std::string typeOf(const AdsbAircraft& ac) {
 
 std::string sourceName(const dect2::AdsbTelemetry& t, int id) { return id >= 0 && id < (int)t.sources.size() ? (id == 0 ? "local" : t.sources[id].name) : "?"; }
 
+// Settings > Units changed the aircraft units: the screen follows at once
+void unitsFromPrefs() {
+    plat::Prefs& d = plat::prefs();
+    S.units.sys = d.getI("adsbUnits", 0) == 1 ? dect2::adsbu::System::Metric : dect2::adsbu::System::Aviation;
+    S.units.spd = d.getI("adsbSpeedUnit", 0) == 1 ? dect2::adsbu::Speed::MS : dect2::adsbu::Speed::KmH;
+}
+
 void loadState() {
     if (S.loaded) return;
     S.loaded = true;
@@ -54,6 +66,8 @@ void loadState() {
     S.units.spd = d.getI("adsbSpeedUnit", 0) == 1 ? dect2::adsbu::Speed::MS : dect2::adsbu::Speed::KmH;
     S.disp.altColour = d.getB(dect2::adsbd::kPrefAltColour, true);
     S.disp.labels = d.getB(dect2::adsbd::kPrefLabels, true);
+    S.disp.labelScale = dect2::adsbd::clampLabelScale((int)d.getI(dect2::adsbd::kPrefLabelScale, dect2::adsbd::kDefaultLabelScale));
+    S.disp.labelFields = (int)d.getI(dect2::adsbd::kPrefLabelFields, dect2::adsbd::kAllLabelFields) & dect2::adsbd::kAllLabelFields;
     S.disp.trackWidth = dect2::adsbd::clampTrackWidth((int)d.getI(dect2::adsbd::kPrefTrackWidth, dect2::adsbd::kDefaultTrackWidth));
     S.disp.dropSec = dect2::adsbd::clampDropSec((int)d.getI(dect2::adsbd::kPrefDropSec, dect2::adsbd::kDefaultDropSec));
     S.map.lat = S.refLat; S.map.lon = S.refLon;
@@ -84,6 +98,7 @@ void positionFields(App& a) {
     ch |= ImGui::InputDouble("##alon", &lo, 0, 0, "%.4f E");
     if (ch) setReference(a, la, lo);
     ImGui::SetNextItemWidth(std::min(110 * gUi, ImGui::GetContentRegionAvail().x));
+    S.refAltM = plat::prefs().getD("rxAltM", S.refAltM);   // Settings > Location can change it too
     double al = S.refAltM;
     if (ImGui::InputDouble("##aalt", &al, 0, 0, "%.0f m")) {
         S.refAltM = std::max(-500.0, std::min(9000.0, al));
@@ -108,6 +123,12 @@ void pollLocate(App& a) {
 void tick(App& a) {
     loadState();
     pollLocate(a);
+    if (live(a)) {   // the selected aircraft went (dropped by the tracker): its readout panel closes with it (#235)
+        static double missingSince = -1;
+        bool present = false;
+        for (const auto& x : a.rx.adsb.aircraft) if (x.icao == S.sel) { present = true; break; }
+        if (dect2::adsbd::selectionGone(S.sel != 0xFFFFFFFFu, present, ImGui::GetTime(), missingSince)) S.sel = 0xFFFFFFFFu;
+    }
     a.tune.synth.modeVal[2] = S.refLat; a.tune.synth.modeVal[3] = S.refLon;   // the simulated traffic flies around the reference point
     const bool run = a.engine.running();
     if (run) {
@@ -136,6 +157,9 @@ void tick(App& a) {
     }
     if (!run && S.wasRunning) { a.engine.adsb().setExternalSources({}, false); S.srcPushed = false; }   // the feeds in end with the receiver
     S.wasRunning = run;
+    overheadTick(a);
+    seenTick(a);
+    airportTick(a);
     if (live(a) && a.rx.seq != S.lastSeq) vdl2NoteAdsb(a.rx.adsb);
     if (live(a) && a.rx.seq != S.lastSeq) {
         S.lastSeq = a.rx.seq;
@@ -149,6 +173,8 @@ void tick(App& a) {
             dect2::GpsJamObs o; o.icao = ac.icao; o.lat = ac.lat; o.lon = ac.lon; o.timeSec = ImGui::GetTime(); o.nacp = ac.nacp; o.nic = ac.nic; o.sil = ac.sil;
             S.jam.observe(o);
         }
+        atmosFeed(t, ImGui::GetTime());
+        d40AdsbFeed(t);   // 4.0: track replay (app/d40)
     }
 }
 
@@ -156,7 +182,8 @@ void tick(App& a) {
 
 void tab(App& a) {
     kit::modeHeader({11, "ADS-B", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("adsbv", S.viewMode, {{tr("Live"), 1}, {tr("Tracks"), 5}, {tr("Map"), 0}, {tr("Radar"), 2, true}, {tr("Range"), 3, true}, {tr("Range stats"), 4, true}});
+    kit::modeNav("adsbv", S.viewMode, {{tr("Live"), 1}, {tr("Tracks"), 5}, {tr("Map"), 0}, {tr("Radar"), 2, true}, {tr("Range"), 3, true}, {tr("Range stats"), 4, true}, {tr("Atmosphere"), 6, true}, {tr("Overhead"), 7, true}, {tr("History"), 8, true}, {tr("Airport"), 9, true}, {tr("Replay"), 10, true}});
+    if (S.viewMode == 0 || S.viewMode == 1 || S.viewMode == 2) { filterBar(a); overheadBanner(a); }
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     const float dw = std::min(250.f * gUi, W * 0.26f);
     // the readout beside the map and radar; beside the table only once an aircraft is picked (its ACARS messages are in it)
@@ -170,6 +197,11 @@ void tab(App& a) {
     else if (S.viewMode == 2) radar(a, ImGui::GetContentRegionAvail());
     else if (S.viewMode == 3) rangeView(S.range, ImGui::GetContentRegionAvail(), au::distOut(S.units, 1.0 / 1.852), au::distUnit(S.units), "adsb", receiverLocationSet());
     else if (S.viewMode == 5) kit::sessionItems(11, 3, "adsb");
+    else if (S.viewMode == 6) atmosView(a);
+    else if (S.viewMode == 7) overheadView(a);
+    else if (S.viewMode == 8) seenView(a);
+    else if (S.viewMode == 9) airportView(a);
+    else if (S.viewMode == 10) d40AdsbReplayView(a, S.refLat, S.refLon, [&](uint32_t icao) { for (const auto& ac : a.rx.adsb.aircraft) if (ac.icao == icao) return ac.callsign; return std::string(); });
     else statsView(a);
     ImGui::EndChild();
     if (pane) {
@@ -178,6 +210,20 @@ void tab(App& a) {
         detail(a);
         ImGui::EndChild();
     }
+}
+
+// Simple view: the aircraft table and the map side by side; the readout of a picked aircraft as a third pane
+void command(App& a) {
+    kit::modeHeader({11, "ADS-B", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    filterBar(a);
+    const bool picked = S.sel != 0xFFFFFFFFu;
+    if (picked)
+        modepanel::panes({{"##adsbcmdt", tr("Aircraft"), [&a] { aircraftTable(a, false); }, 1.3f, 240.f},
+                          {"##adsbcmdm", tr("Map"), [&a] { mapView(a, ImGui::GetContentRegionAvail()); }, 1.2f, 260.f},
+                          {"##adsbcmdd", tr("Selected"), [&a] { detail(a); }, 0.9f, 220.f}}, 300.f);
+    else
+        modepanel::panes({{"##adsbcmdt", tr("Aircraft"), [&a] { aircraftTable(a, false); }, 1.3f, 240.f},
+                          {"##adsbcmdm", tr("Map"), [&a] { mapView(a, ImGui::GetContentRegionAvail()); }, 1.2f, 260.f}}, 330.f);
 }
 
 void list(App& a) {
@@ -320,11 +366,11 @@ void tuner(App& a, bool& retune) {
 }
 
 void decoder(App& a, bool&) {
-    static const char* names[] = {"off", "1 bit", "up to 3 bits"};
+    static const char* names[] = {"off", "1 bit", "up to 3 bits", "up to 5 bits"};
     ImGui::TextDisabled("FIX"); ImGui::SameLine(0, 5 * gUi);
     ImGui::SetNextItemWidth(std::min(90 * gUi, ImGui::GetContentRegionAvail().x));   // no wider than the side panel
     if (ImGui::BeginCombo("##fix", names[S.correction])) {
-        for (int i = 0; i < 3; i++) if (ImGui::Selectable(names[i], S.correction == i)) { S.correction = i; if (a.engine.running()) a.engine.adsb().setCorrection(i); }
+        for (int i = 0; i < 4; i++) if (ImGui::Selectable(names[i], S.correction == i)) { S.correction = i; if (a.engine.running()) a.engine.adsb().setCorrection(i); }
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Repair of bit errors in DF11, DF17 and DF18 messages. 2 bits finds more messages but lets more false ones through.");
@@ -380,6 +426,7 @@ const ModeUi kAdsbUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };
 
 // The receiver's position, shared by every screen that needs one (ADS-B ranges, the pass planner): the ADS-B antenna position
@@ -394,11 +441,20 @@ void syncAdsbReference(App& a) {
 
 void receiverLocation(double& lat, double& lon) { loadState(); lat = S.refLat; lon = S.refLon; }
 
-bool receiverLocationSet() { return plat::prefs().has("adsbLat") && plat::prefs().has("adsbLon"); }
+bool receiverLocationSet() { return plat::prefs().has("adsbLat") && plat::prefs().has("adsbLon") && !plat::prefs().getB("adsbLocCleared", false); }
 
-double receiverAltitudeM() { loadState(); return S.refAltM; }
+double receiverAltitudeM() { loadState(); S.refAltM = plat::prefs().getD("rxAltM", S.refAltM); return S.refAltM; }
+// The antenna height above sea level (the one value the ADS-B planner, the sonde screens and the uploads share), -500 .. 9000 m
+void setReceiverAltitudeM(App& a, double m) {
+    loadState();
+    if (!(m == m)) m = 0;
+    S.refAltM = std::max(-500.0, std::min(9000.0, m));
+    plat::prefs().setD("rxAltM", S.refAltM); savePrefs(a);
+}
 
-void setReceiverLocation(App& a, double lat, double lon) { loadState(); setReference(a, lat, lon); }
+void setReceiverLocation(App& a, double lat, double lon) { loadState(); plat::prefs().setB("adsbLocCleared", false); setReference(a, lat, lon); }
+// Undo of an automatic position (E12): back to the old placeholder and to "not set"
+void receiverLocationClear(App& a, double lat, double lon) { setReceiverLocation(a, lat, lon); plat::prefs().setB("adsbLocCleared", true); plat::prefs().flush(); }
 
 void receiverPositionFields(App& a) { loadState(); pollLocate(a); positionFields(a); }
 
@@ -406,6 +462,11 @@ std::string adsbTypeOfIcao(uint32_t icao) {
     adsbui::loadState();
     const dect2::AdsbRegEntry* e = icao >> 24 ? nullptr : adsbui::S.db.find(icao);
     return e ? e->type : "";
+}
+std::string adsbRegOfIcao(uint32_t icao) {
+    adsbui::loadState();
+    const dect2::AdsbRegEntry* e = icao >> 24 ? nullptr : adsbui::S.db.find(icao);
+    return e ? e->registration : "";
 }
 std::string adsbDistText(double nm) { adsbui::loadState(); return adsbui::au::fmt(adsbui::au::distOut(adsbui::S.units, nm), 0); }
 const char* adsbDistUnit() { adsbui::loadState(); return adsbui::au::distUnit(adsbui::S.units); }

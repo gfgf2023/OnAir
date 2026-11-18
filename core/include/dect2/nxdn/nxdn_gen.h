@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NXDN test signal. Nothing is transmitted: the samples only exist in memory or in a file.
 //
 // A schedule of transmissions at either rate: a trunked site's control channel (CAC with SITE_INFO / SRV_INFO), voice calls (FACCH1
@@ -22,6 +25,7 @@ struct NxdnGenTx {
     int baud = 2400;
     int src = 1001, dst = 200, callType = 1, ran = 1;
     int cipher = 0;
+    int sacchGlitchCipher = 0;   // test: one SACCH superframe (the 3rd) carries this cipher type with a valid CRC (a misparsed message)
     int status = 0;
     std::string text;            // short data
     double durSec = 2;           // voice / site

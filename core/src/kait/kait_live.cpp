@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // KAIT for the engine (see kait_live.h).
 #include "dect2/kait/kait_live.h"
 #include "dect2/kait/kait_rx.h"
@@ -58,7 +61,14 @@ struct KaitLiveReceiver::Impl {
         absHead = total = scanned = blockedUntil = startAbs = nextReport = 0;
         mode = 0;
         rs.reset();
-        if (ready) rs = std::make_unique<kapp::Resampler>(rate, kait::kInternalRate);
+        if (ready) {
+            rs = std::make_unique<kapp::Resampler>(rate, kait::kInternalRate);
+            // the stream starts with the lead's worth of silence: a burst that begins on the first sample (a recording started by the burst)
+            // has a start sweep whose correlation peak, moved earlier by a positive carrier offset, would otherwise fall before the buffer
+            // and the search would take a later peak inside the burst
+            buf.assign((size_t)kLead, kait::cf{0.f, 0.f});
+            total = kLead;
+        }
         sh->publish(g, [&](KaitTelemetry& t) {
             t = KaitTelemetry();
             t.inputRate = rate;

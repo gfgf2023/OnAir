@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // A bank of LoRa channels for a wide capture: for every wanted channel (an offset in the input and a bandwidth) one channel filter, and for
 // every spreading factor / sync word one demodulator of the mesh receiver's LoRa physical layer (mesh_lora.h). Optionally a second set per
 // channel for inverted IQ (LoRaWAN gateway downlinks send their chirps the other way round: the channel samples are conjugated for it).
@@ -23,6 +26,7 @@ struct Channel {
     double cfoTrack = 0;             // > 0: follow a drifting carrier through the frame (satellites), see lora::Params::cfoTrack
     int preamble = 8;                // symbols (only places the frame start)
     double marginHz = 25e3;          // room for the carrier offset the channel must still pass inside the captured band
+    int implicitLen = 0;             // > 0: implicit header frames of this length, CR 4/5, no payload CRC (Class B beacons)
 };
 
 struct Decoded {
@@ -52,6 +56,10 @@ public:
     void configure(double inputRate, const std::vector<Channel>& chans);
     // The samples (any amount); the finished frames are appended to out. Equal results whatever the chunking.
     void feed(const cf32* x, size_t n, std::vector<Decoded>& out);
+    // At end of input, process the Bank's last partial block and append any finished frames to out.
+    // Uses only samples already fed. Does not add silence or flush the channelizer's own filter/FFT lookahead.
+    // No effect if the Bank has no pending samples.
+    void flushPending(std::vector<Decoded>& out);
     double timeSec() const;          // samples fed / rate
     int64_t samples() const;
     const std::vector<DecoderStat>& stats() const;

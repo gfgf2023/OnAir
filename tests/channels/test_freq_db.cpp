@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The frequency database (core/src/channels/freq_db.cpp, data/frequencies/*.tsv): the data is valid (known mode ids, no duplicate per mode and
 // frequency, frequencies inside each mode's band, categories from the fixed list, a source on every entry, small), search and filters, the
 // conversion to a Memory, and the import / export round trip of the user's entries.
@@ -32,7 +35,7 @@ static void testData() {
         {"adsb", {1085, 1095}}, {"uplink", {1025, 1035}}, {"uat", {970, 985}}, {"acars", {118, 140}}, {"vdl2", {118, 140}}, {"vdl4", {118, 140}},
         {"airband", {118, 400}}, {"vor", {108, 118}}, {"ils", {108, 112}}, {"ndb", {0.19, 0.54}}, {"ais", {156, 163}}, {"vdes", {150, 165}},
         {"dsc", {0.5, 163}}, {"navtex", {0.4, 4.3}}, {"wefax", {2, 20}}, {"hfdl", {2, 22}}, {"dab", {174, 240}}, {"same", {162.4, 162.55}},
-        {"gnss", {1150, 2500}}, {"wifi", {2400, 7125}}, {"ble", {2400, 2484}}, {"zigbee", {2400, 2484}}, {"dect", {1880, 1900}}, {"ft8", {1.8, 500}},
+        {"gnss", {1150, 2500}}, {"wifi", {2400, 7125}}, {"ble", {2400, 2484}}, {"zigbee", {863, 2484}}, {"dect", {1880, 1900}}, {"ft8", {1.8, 500}},
         {"wspr", {0.4, 150}}, {"time", {0.03, 30}}, {"hfbeacon", {14, 29}}, {"codar", {3, 50}}, {"sonde", {380, 1700}}, {"iridium", {1610, 1630}},
         {"qo100", {10480, 10500}}, {"dpmr", {446, 447}}, {"dmr", {400, 470}}, {"meteor", {136, 139}}, {"orbcomm", {136, 139}}, {"hrpt", {1690, 1710}},
         {"goes", {1670, 1710}}, {"packet", {10, 440}}, {"loraaprs", {430, 440}}, {"pocsag", {130, 470}}, {"flex", {130, 940}}, {"fm", {64, 110}},
@@ -189,7 +192,33 @@ static void testIo() {
     CHECK(b.hz == a.hz && b.mode == a.mode && b.category == a.category, "freqFromMemory");
 }
 
+// Issue #411: the rows of a search can be exported as CSV and read back
+static void testExportResults() {
+    std::vector<FreqEntry> all = {mk("VDES ASM 1", 161950000, "vdes"), mk("VDES ASM 2", 162000000, "vdes"), mk("Tower, \"north\"", 118100000, "airband"), mk("Noor", 93900000, "fm")};
+    FreqQuery q; q.text = "asm";
+    std::vector<FreqEntry> rows;
+    for (size_t i : freqSearch(all, q)) rows.push_back(all[i]);
+    CHECK(rows.size() == 2, "search asm finds two rows");
+    const std::string csv = freqExportCsv(rows);
+    CHECK(csv.find("VDES ASM 1") != std::string::npos && csv.find("VDES ASM 2") != std::string::npos && csv.find("Noor") == std::string::npos && csv.find("Tower") == std::string::npos, "only the searched rows are in the CSV");
+    std::vector<FreqEntry> back;
+    freqImportText(csv, back);
+    CHECK(back.size() == 2 && back[0].hz + back[1].hz == 161950000ull + 162000000ull, "the exported results import again");
+}
+
+// Issue #411: ASM 1 and ASM 2 are channels 2027 and 2028 of Radio Regulations Appendix 18
+static void testVdesAsmChannels() {
+    int found = 0;
+    for (const FreqEntry& e : builtinFrequencies()) {
+        if (e.name == "VDES ASM 1") { CHECK(e.hz == 161950000ull, "ASM 1 is 161.950 MHz"); found++; }
+        if (e.name == "VDES ASM 2") { CHECK(e.hz == 162000000ull, "ASM 2 is 162.000 MHz"); found++; }
+    }
+    CHECK(found == 2, "both ASM channels are listed");
+}
+
 int main() {
+    testExportResults();
+    testVdesAsmChannels();
     testData();
     testSearch();
     testParser();

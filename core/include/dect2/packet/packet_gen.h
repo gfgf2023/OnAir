@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // APRS / Packet test signal. Nothing is transmitted: the samples only exist in memory or in a file.
 //
 // makePacketSynth(): a few made-up APRS stations near 25.2 N 55.3 E send AX.25 frames on one 25 kHz FM channel, in an endless cycle:
@@ -32,5 +35,7 @@ std::unique_ptr<ModeSynth> makePacketSynthFrame(const SynthConfig& cfg, double s
 
 // A short burst of frames with interFrameGapSec between them (0 = back-to-back on the air, no idle).
 std::unique_ptr<ModeSynth> makePacketSynthBurst(const SynthConfig& cfg, double sampleRate, const std::vector<PacketGenFrame>& frames, double interFrameGapSec);
+// Length of one pass of that burst in seconds (the 0.6 s of quiet in front included): a one-shot transmission sends this much and stops.
+double packetSynthBurstSec(const std::vector<PacketGenFrame>& frames, double interFrameGapSec);
 
 } // namespace dect2

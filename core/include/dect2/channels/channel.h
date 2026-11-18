@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Multipath / fading detector: looks at the channel estimate (power-delay profile, |H(f)|) and at how the decoder
 // quality moves from frame to frame, and says whether the signal is probably suffering from multipath or fading.
 #pragma once
@@ -31,6 +34,7 @@ struct MultipathReport {
 };
 
 const char* multipathName(MultipathLevel l);
+std::string echoAdvice(const EchoInfo& e, double guardUs);   // what this echo means, in km of path and in what to do about it
 
 class MultipathDetector {
 public:

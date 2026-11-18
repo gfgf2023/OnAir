@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! C ABI of `onair_usb` (core/include/dect2/rs/usb.h). Every export is `onair_usb_*`; pointers come as (pointer, length) pairs and the caller owns all buffers.
 //!
 //! The RTL-SDR object lives in caller supplied memory (`onair_usb_rtl_size()` bytes, aligned to `onair_usb_rtl_align()`): the crate does not allocate.
@@ -139,7 +142,7 @@ unsafe fn dev<'a>(h: *mut u8) -> Option<&'a mut Dev> {
 }
 
 /// Opens the RTL2832U behind `ops` (interface already claimed) into `mem`. 0 on success (call `onair_usb_rtl_close` later), otherwise a negative error and
-/// `mem` stays unused: -1 bad arguments, -95 an FC0012 / FC0013 / FC2580 tuner (recognised, not driven).
+/// `mem` stays unused: -1 bad arguments, -95 an FC0012 / FC2580 tuner (recognised, not driven).
 #[no_mangle]
 pub unsafe extern "C" fn onair_usb_rtl_open(mem: *mut u8, mem_len: usize, ops: *const Ops) -> i32 {
     if mem.is_null() || ops.is_null() || mem_len < size_of::<Dev>() || (mem as usize) % align_of::<Dev>() != 0 {

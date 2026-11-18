@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Orbcomm screens: the satellites on the map (position from their own ephemeris, with the recent track), the satellite list (ID,
 // last heard, Doppler, position), the packet log by type, and per downlink the differential constellation and the eye.
 #include "app.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "ui/ui_common.h"
@@ -79,10 +83,10 @@ void mapView(App& a, ImVec2 size) {
             S.map.zoom = std::max(1, std::min(6, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
     adsbmap::fullCorner(p0, size);   // the shared full-screen button (#195)
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     ImVec2 click; const bool clicked = adsbmap::clickedAt(click);
@@ -98,11 +102,13 @@ void mapView(App& a, ImVec2 size) {
             const ImVec2 d[4] = {{q.x, q.y - r}, {q.x + r, q.y}, {q.x, q.y + r}, {q.x - r, q.y}};
             dl->AddConvexPolyFilled(d, 4, satColour(s.id, s.chan >= 0 ? 1.f : 0.5f));
             dl->AddPolyline(d, 4, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 160), ImDrawFlags_Closed, sel ? 1.6f : 1.f);
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
             char b[24]; snprintf(b, sizeof b, "FM%d", s.id);
             const ImVec2 lp(q.x + 10 * gUi, q.y - ImGui::GetTextLineHeight() * 0.5f);
             const ImVec2 ts = ImGui::CalcTextSize(b);
             dl->AddRectFilled(ImVec2(lp.x - 3 * gUi, lp.y - 1), ImVec2(lp.x + ts.x + 3 * gUi, lp.y + ts.y + 1), IM_COL32(10, 12, 14, 200), 2.f);
             dl->AddText(lp, IM_COL32(235, 238, 240, 255), b);
+            }
             const float dd = std::hypot(q.x - click.x, q.y - click.y);
             if (clicked && dd < best) { best = dd; hit = s.id; }
         }
@@ -437,6 +443,15 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
+// Simple view: the map, the satellite table with the readout of the picked one, and the packet log side by side
+static void command(App& a) {
+    loadState();
+    kit::modeHeader({44, "Orbcomm", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##orcmap", tr("Map"), [&a] { mapView(a, ImGui::GetContentRegionAvail()); }, 1.3f, 260.f},
+                      {"##orcsat", tr("Satellites"), [&a] { satTable(a, ImGui::GetContentRegionAvail().x < 480 * gUi); ImGui::Spacing(); satDetail(a); }, 1.f, 240.f},
+                      {"##orclog", tr("Log"), [&a] { packetLog(a, ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y); }, 1.f, 220.f}}, 300.f);
+}
+
 extern const ModeUi kOrbcommUi;
 const ModeUi kOrbcommUi = {
     .sideTitle = "SATELLITES",
@@ -453,4 +468,5 @@ const ModeUi kOrbcommUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

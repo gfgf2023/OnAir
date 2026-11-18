@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GOES HRIT test signal. Nothing is transmitted: the samples only exist in memory or in a file.
 //
 // Test products (goesTestFiles): a full disk image in two segments, Rice compressed (one scan line a packet, 100 x 64 pixels so the
@@ -20,6 +23,7 @@ struct GoesTestFile {
     int vcid = 0, apid = 0;
     goes::Headers h;                               // dataBits filled in
     std::vector<std::vector<uint8_t>> dataChunks;  // the data field, as it is split over packets (Rice: one compressed line each)
+    int dialect = 0;                               // 1: GK-2A header records
     std::vector<uint8_t> file;                     // the whole LRIT file (headers and data field), what the receiver must rebuild
 };
 std::vector<GoesTestFile> goesTestFiles();
@@ -46,6 +50,10 @@ struct GoesGenConfig {
     bool nrzm = false;          // differential (NRZ-M) coding of the frame bits before the convolutional encoder, as the real GOES-19 HRIT signal sends them (the receiver finds out which)
     bool dualBasis = true;      // Reed-Solomon symbols in the CCSDS dual basis (the receiver finds out which)
     uint32_t seed = 1;
+    bool qpsk = false;          // QPSK (GK-2A HRIT): G1 on I and G2 on Q, symbolRate is the QPSK symbol rate
+    bool oqpsk = false;         // with qpsk: offset QPSK, the Q rail half a symbol later (Elektro-L HRIT 1.15 Msym/s)
+    std::vector<GoesTestFile> files;   // empty: goesTestFiles()
+    int vcduCounterStart = 0;
 };
 
 class GoesGenerator {

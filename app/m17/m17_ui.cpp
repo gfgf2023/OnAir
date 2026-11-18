@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // M17 screens: the current transmission (callsigns, CAN, stream type, encryption, duration, META text and position), the activity log,
 // the text messages, the positions on a map (the ADS-B map underneath, as for APRS), the European calling-frequency presets, and a "?"
 // about the Codec 2 library the voice needs.
 #include "dect2/common/time_fmt.h"
 #include "app.h"
+#include "ease/ease_ui.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "voice/voice_monitor_ui.h"
@@ -183,9 +188,9 @@ void mapView(App& a) {
         const double span = std::max(0.005, std::max(lo1 - lo0, (la1 - la0) * 1.4));
         S.map.zoom = std::max(2, std::min(14, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     if (on) {
@@ -198,11 +203,13 @@ void mapView(App& a) {
             const float r = 5.f * gUi;
             dl->AddCircleFilled(q, r, IM_COL32(90, 210, 140, 255));
             dl->AddCircle(q, r, IM_COL32(0, 0, 0, 160), 16, 1.f);
+            if (adsbmap::labelsAt(S.map.zoom, false)) {
             const std::string lb = v.src.empty() ? std::string("?") : v.src;
             const ImVec2 ts = ImGui::CalcTextSize(lb.c_str());
             const ImVec2 lp(q.x + 10 * gUi, q.y - ts.y * 0.5f - 2 * gUi);
             dl->AddRectFilled(lp, ImVec2(lp.x + ts.x + 8 * gUi, lp.y + ts.y + 4 * gUi), IM_COL32(10, 12, 14, 210), 2.f);
             dl->AddText(ImVec2(lp.x + 4 * gUi, lp.y + 2 * gUi), IM_COL32(235, 238, 240, 255), lb.c_str());
+            }
         }
     }
     dl->PopClipRect();
@@ -239,8 +246,7 @@ void tick(App& a) {
     S.wasRunning = true;
 }
 
-void tab(App& a) {
-    load();
+void voiceBar(App& a) {
     {   // the voice monitor's strip, the same in every voice mode
         const dect2::M17Telemetry& t = a.rx.m17;
         voiceui::Link l;
@@ -249,6 +255,11 @@ void tab(App& a) {
         l.errorRate = l.locked ? t.berPct / 100.f : -1.f;
         voiceui::strip(a, "m17", "M17", l);
     }
+}
+
+void tab(App& a) {
+    load();
+    voiceBar(a);
     kit::modeHeader({31, "M17", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
     kit::modeNav("m17v", S.view, {{tr("Live"), 0}, {tr("Calls"), 4}, {tr("Map"), 3}, {tr("Activity"), 1, true}, {tr("Messages"), 2, true}});
     if (S.view == 4) { kit::sessionItems(31, 1, "m17"); return; }
@@ -279,6 +290,7 @@ void list(App& a) {
 }
 
 void receiver(App& a) {
+    easeui::repeaterPicker(a, "M17");
     wideCarriersTable(a, 0);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     const dect2::M17Telemetry& t = a.rx.m17;
@@ -316,6 +328,16 @@ void summary(const App& a, std::string& l1, std::string& l2) {
 
 } // namespace
 
+// Simple view: the voice strip, then what is on air, the activity and the map side by side
+static void command(App& a) {
+    load();
+    voiceBar(a);
+    kit::modeHeader({31, "M17", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##m1cnow", tr("On air"), [&a] { nowView(a); }, 0.9f, 220.f},
+                      {"##m1cact", tr("Activity"), [&a] { activityView(a); }, 1.4f, 240.f},
+                      {"##m1cmap", tr("Map"), [&a] { mapView(a); }, 1.2f, 260.f}}, 300.f);
+}
+
 extern const ModeUi kM17Ui;
 const ModeUi kM17Ui = {
     .sideTitle = "STATIONS",
@@ -327,4 +349,5 @@ const ModeUi kM17Ui = {
     .status = status,
     .summary = summary,
     .tick = tick,
+    .command = command,
 };

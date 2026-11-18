@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Trunking follow logic: grant -> follow -> end -> back to the control channel. No DSP: the host executes the Actions and reports back what it hears.
 #include "dect2/p25/trunk.h"
+#include "dect2/trunkpool/coverage.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -164,6 +168,17 @@ void Follower::searchAt(double hz, double now) {
     dwellStart_ = now;
 }
 
+bool Follower::parkAt(double hz, double now) {
+    if (state_ != FollowState::ControlHold || !(hz > 0)) return false;
+    ccHz_ = hz;
+    Action a;
+    a.kind = Action::Retune; a.freqHz = hz;
+    out_.push_back(a);
+    radioHz_ = hz;
+    setState(FollowState::Returning, now);
+    return true;
+}
+
 void Follower::goHome(double now) {
     const double home = ccHz_ > 0 ? ccHz_ : homeHz_;
     if (home <= 0) { setState(FollowState::NoControl, now); return; }
@@ -326,7 +341,7 @@ void Follower::follow(const Grant& g, const TalkgroupList::Decision& d, double n
         if (busy) {
             if (effPrio(prio) >= effPrio(busy->prio)) {
                 skip("voice radio is on another call", true);
-                announce("Call on " + std::to_string(g.freqHz / 1e6).substr(0, 9) + " MHz is outside the capture while the voice radio has another call: needs a third radio or a wider capture");
+                announce("Call on " + std::to_string(g.freqHz / 1e6).substr(0, 9) + " MHz is " + tpool::outsideText(g.freqHz, ccHz_ > 0 ? ccHz_ : homeHz_, centerHz_, cfg_.edgeGuardHz) + " while the voice radio has another call: needs a third radio or a wider capture");
                 return;
             }
             close(*busy, log, now, "preempted by a higher priority call");
@@ -363,7 +378,7 @@ void Follower::follow(const Grant& g, const TalkgroupList::Decision& d, double n
     }
     if (!cfg_.allowRetune) {
         skip("needs a wider capture or a second radio", true);
-        announce("Call on " + std::to_string(g.freqHz / 1e6).substr(0, 9) + " MHz is outside the capture: needs a wider capture or a second radio");
+        announce("Call on " + std::to_string(g.freqHz / 1e6).substr(0, 9) + " MHz is " + tpool::outsideText(g.freqHz, ccHz_ > 0 ? ccHz_ : homeHz_, centerHz_, cfg_.edgeGuardHz) + ": needs a wider capture or a second radio");
         return;
     }
     if (state_ == FollowState::NoControl || state_ == FollowState::Searching) { skip("not on the control channel", true); return; }
@@ -372,7 +387,7 @@ void Follower::follow(const Grant& g, const TalkgroupList::Decision& d, double n
     for (const Slot& s : slots_) if (s.used && effPrio(s.prio) <= effPrio(prio)) block = true;   // a call of equal or higher priority is running
     if (block) {
         skip("needs a wider capture or a second radio (a call is running)", true);
-        announce("Call on " + std::to_string(g.freqHz / 1e6).substr(0, 9) + " MHz is outside the capture while another call is followed: needs a wider capture or a second radio");
+        announce("Call on " + std::to_string(g.freqHz / 1e6).substr(0, 9) + " MHz is " + tpool::outsideText(g.freqHz, ccHz_ > 0 ? ccHz_ : homeHz_, centerHz_, cfg_.edgeGuardHz) + " while another call is followed: needs a wider capture or a second radio");
         return;
     }
     for (Slot& s : slots_) if (s.used) close(s, log, now, "preempted by a higher priority call");

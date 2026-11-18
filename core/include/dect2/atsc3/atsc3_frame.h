@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ATSC 3.0 physical layer frame, after the bootstrap: the Preamble and one subframe. buildFrame() makes a frame from baseband packets (for
 // tests and simulations); decodeFrame() reads the Preamble, finds the PLPs described by L1-Detail, and returns the payload of their
 // baseband packets. Time interleaving, LDM, MIMO and further subframes are not part of this version.
@@ -44,6 +47,7 @@ struct PlpResult {
     // its state from one frame to the next) and cuts the FEC blocks, which may straddle frames.
     bool cti = false;
     std::vector<cf32> cells;
+    std::vector<float> cellW;                     // their channel state weights, |h|^2 / mean |h|^2 (empty: none; 4.1)
     float noise = 0.1f;
     int ctiRows = 0, ctiStartRow = 0, ctiFecBlockStart = 0;
     FramePlp cfg;
@@ -52,6 +56,7 @@ struct PlpResult {
     // the tail of one frame and the head of the next together.
     bool straddle = false;
     std::vector<cf32> head, tail;
+    std::vector<float> headW, tailW;              // their channel state weights (empty: none)
 };
 
 struct FrameResult {

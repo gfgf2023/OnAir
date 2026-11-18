@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Iridium as the interface runs it: the synthetic source with the settings applyBandwidth() gives the mode (10 Msps, 10.5 MHz,
 // 9 MHz baseband filter, 1622 MHz, the test signal's defaults), and the interface's tick pushing the tuned frequency and the
 // threshold to the receiver once it runs. A threshold pushed while samples flow used to restart the detector's sample count but
 // not the ring's, so every later burst was read from the wrong place and almost nothing decoded.
 #include "dect2/engine/engine.h"
+#include "dect2/engine/engine_testkit.h"
+#include "../common/ci_slack.h"
 #include "dect2/iridium/iridium_frame.h"
 #include "dect2/iridium/iridium_gen.h"
 #include "dect2/iridium/iridium_rx.h"
@@ -47,6 +52,7 @@ int main() {
     t.sampleRate = m.sampleRate;
     t.basebandFilterHz = m.basebandHz;
     t.synth.mode = 21;                 // everything else as the app starts it (SNR 30 dB, 3 satellites, seed 0, traffic on)
+    t.synth.pace = 1.0 / ciSlack();    // a shared CI runner (tests in parallel) gets the signal at half speed: the decoders keep their headroom there
     FileOptions fo;
     e.setStandard(21);
     CHECK(e.start(dev, t, fo), "engine start");
@@ -55,7 +61,7 @@ int main() {
     const auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        if (el >= signalSecs) break;
+        if (enginetest::signalSecs(e) >= signalSecs || el > 6 * signalSecs) break;   // signal time, counted by the engine; a wall-clock guard
         if (!pushed && el > 1.0) {     // the tick of app/iridium_ui.cpp, a frame or more after the start
             e.iridium().setCenterMhz(m.defMhz);
             e.iridium().setThresholdDb(13);

@@ -1,10 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DAB / DAB+ digital radio panels.
 #include "app.h"
+#include "d40/d40_ui.h"
+#include "dab/played_ui.h"
 #include "panels/journaline_view.h"
 #include "panels/enhance_ui.h"
 #include "state/results_export.h"
 #include "dect2/dab/dab_announce.h"
 #include "dect2/dab/dab_fig.h"
+#include "dect2/dab/dab_watch.h"
 #include <ctime>
 #include <filesystem>
 
@@ -272,6 +278,21 @@ void dabHistory(App& a) {
     if (a.rx.standard != 3 || a.rx.seq == lastSeq) return;
     lastSeq = a.rx.seq;
     dabAnnouncementStep(a);
+    if (a.rx.dab.state == 2 && a.rx.dab.audio.sub >= 0) {   // the played list and the broadcast.* events of the playing service (dab/played_ui.h)
+        static double lastPl = 0;
+        if (ImGui::GetTime() - lastPl > 2) {
+            lastPl = ImGui::GetTime();
+            const DabEnsemble ens = a.engine.dabEnsemble();
+            for (const auto& kv : ens.services) {
+                const DabComponent* c = kv.second.playable();
+                if (!c || c->subId != a.rx.dab.audio.sub) continue;
+                std::string ar, ti;
+                for (const DabDlpTag& t : kv.second.dlPlus) { if (t.type == 4 && ar.empty()) ar = t.text; if (t.type == 1 && ti.empty()) ti = t.text; }
+                playedNote("DAB", kv.second.label, a.freqMhz, ar, ti, kv.second.dls, kv.second.pty >= 0 ? dabPtyName(1, kv.second.pty) : "", false);
+                break;
+            }
+        }
+    }
     auto push = [](std::deque<float>& dq, float v) { dq.push_back(v); if (dq.size() > 600) dq.pop_front(); };
     if (a.rx.dab.state == 2) {
         push(a.dabSnrH, (float)a.rx.dab.snrDb); push(a.dabFicH, (float)a.rx.dab.ficRecentOk);
@@ -492,6 +513,7 @@ static void dabRecordUi(App& a, const DabEnsemble& ens) {
     const DabRecStats rs = a.engine.dabAudio().recording();
     const DabAudioStats au = a.rx.dab.audio;
     sectionHeader(Ic::Record, "Recording");
+    kit::recordingsButton("dab", "dab-recordings");
     if (!rs.active) {
         ImGui::BeginDisabled(au.sub < 0);
         if (ImGui::Button("Record")) {
@@ -502,7 +524,7 @@ static void dabRecordUi(App& a, const DabEnsemble& ens) {
             char ts[32];
             std::strftime(ts, sizeof ts, "%Y%m%d_%H%M%S", std::localtime(&now));
             std::error_code ec;
-            const std::string dir = plat::dataDir() + "/dab-recordings";
+            const std::string dir = recordingsSub("dab-recordings");
             std::filesystem::create_directories(dir, ec);
             std::string err;
             if (!a.engine.dabAudio().startRecording(dir + "/" + name + "_" + ts, a.dabRecFmt ? DabRecFormat::Encoded : DabRecFormat::Wav, a.dabRecLog, &err)) a.dabRecErr = err;
@@ -719,6 +741,7 @@ void dabStations(App& a) {
 void dabRadioTab(App& a) {
     const DabEnsemble ens = a.engine.dabEnsemble();
     const int cur = a.engine.dabSelected();
+    if (ImGui::CollapsingHeader(trw("Played (DL Plus songs)##dabpl"))) { ImGui::BeginChild("##dabplc", ImVec2(0, 240 * gUi)); playedPanel(a, "dabpl"); ImGui::EndChild(); }
     if (ens.services.empty()) { { ImGui::PushTextWrapPos(0); ImGui::TextDisabled(a.engine.running() ? "waiting for the ensemble information (a second or two)..." : "start the receiver on a DAB channel (5A to 13F)"); ImGui::PopTextWrapPos(); } return; }
     ImGui::AlignTextToFramePadding();
     ImGui::PushFont(a.ui, 20.f);
@@ -755,6 +778,8 @@ void dabRadioTab(App& a) {
         }
     }
     ImGui::Spacing();
+    d40DabCard(a);   // 4.0: service ranking, transmitter table (app/d40)
+    smart5DabCard(a);   // round-5 smart checks: ensemble change log, fault or reception (app/smart5)
     if (ImGui::BeginTable("dabtbl", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 34 * gUi);
         ImGui::TableSetupColumn("Station");
@@ -830,9 +855,67 @@ void dabEnsembleTab(App& a) {
     }
 }
 
+// ------------------------------------------------------------------ the census: every ensemble of a wide capture at once
+static dect2::dabwatch::Watch gDabWatch;   // multiplex changes: new / gone ensembles, added and removed services, bit rate changes
+
+static void dabCensusSection(App& a) {
+    bool on = a.engine.dabCensusOn();
+    if (ImGui::Checkbox(tr("Every ensemble in the capture"), &on)) a.engine.setDabCensus(on);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("With a capture of several MHz: reads every Band III ensemble in it at once, no scanning. Click a channel to listen."));
+    if (!on) return;
+    const auto rows = a.engine.dabCensusRows();
+    if (rows.empty()) { ImGui::TextDisabled("%s", tr("No ensemble in the capture yet (needs at least 3 MHz of Band III).")); return; }
+    if (ImGui::BeginTable("##dabcens", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(tr("Channel")); ImGui::TableSetupColumn(tr("Ensemble")); ImGui::TableSetupColumn(tr("Services")); ImGui::TableSetupColumn(tr("SNR")); ImGui::TableSetupColumn(tr("Level")); ImGui::TableSetupColumn(tr("TII")); ImGui::TableHeadersRow();
+        int id = 0;
+        for (const auto& r : rows) {
+            ImGui::PushID(id++); ImGui::TableNextRow(); ImGui::TableNextColumn();
+            if (ImGui::SmallButton(r.channel.c_str())) tuneFreq(a, r.mhz);
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(r.ensemble.empty() ? (r.locked ? tr("reading") : tr("searching")) : r.ensemble.c_str());
+            ImGui::TableNextColumn(); ImGui::Text("%zu", r.services.size());
+            ImGui::TableNextColumn(); if (r.locked) ImGui::Text("%.1f dB", r.snrDb); else ImGui::TextDisabled("-");
+            ImGui::TableNextColumn(); ImGui::Text("%.0f dBFS", r.levelDb);
+            ImGui::TableNextColumn(); if (!r.tii.empty()) ImGui::Text("%d/%d", r.tii[0].first, r.tii[0].second); else ImGui::TextDisabled("-");
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    {   // ensemble change watch: a ten-second-old FIC glitch is not a change, see dab_watch.h
+        std::vector<dect2::dabwatch::Obs> obs;
+        for (const auto& r : rows) {
+            dect2::dabwatch::Obs o; o.channel = r.channel; o.active = r.active && r.locked; o.eid = r.eid; o.ensemble = r.ensemble;
+            for (const auto& sv : r.services) o.services.push_back({sv.sid, sv.label, sv.dabPlus, sv.bitrate});
+            obs.push_back(std::move(o));
+        }
+        for (const auto& e : gDabWatch.update(ImGui::GetTime(), obs)) a.engine.log("DAB: " + e.text);
+        const auto& lg = gDabWatch.log();
+        if (!lg.empty() && ImGui::TreeNode(trw("Ensemble changes"))) {
+            for (auto it = lg.rbegin(); it != lg.rend(); ++it) { ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(it->text.c_str()); ImGui::PopTextWrapPos(); }
+            ImGui::TreePop();
+        }
+    }
+    const auto merged = dect2::dabCensusMerge(rows);
+    if (!merged.empty() && ImGui::TreeNode(trw("All services"))) {
+        int id = 0;
+        for (const auto& m : merged) {
+            ImGui::PushID(id++);
+            if (ImGui::SmallButton(m.channel.c_str())) tuneFreq(a, m.mhz);
+            ImGui::SameLine(); ImGui::Text("%s", m.label.empty() ? "?" : m.label.c_str());
+            if (!m.alsoOn.empty()) { std::string o; for (const auto& c : m.alsoOn) { o += o.empty() ? "" : ", "; o += c; } ImGui::SameLine(); ImGui::TextDisabled("%s %s", tr("also"), o.c_str()); }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+    ImGui::Separator();
+}
+
 // ------------------------------------------------------------------ scanner (Band III, one ensemble per channel)
+// First start: what the Scan button does (docs/EASE-3.8.md)
+void dabAutoScan(App& a) { App::DabScan& s = a.dabScan; s.running = true; s.idx = -1; s.t0 = 0; s.results.clear(); s.savedFreq = a.freqMhz; dabSelectStation(a, -1, false); }
+
 void dabScanTab(App& a) {
     App::DabScan& s = a.dabScan;
+    dabCensusSection(a);
     const bool run = a.engine.running();
     { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("Tunes through the 38 Band III channels (5A to 13F) and lists the ensembles with their stations. Channels without DAB are left after 0.7 s, so it takes 30 s to a minute."); ImGui::PopTextWrapPos(); }
     ImGui::Spacing();

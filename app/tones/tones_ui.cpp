@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Tone decoder screens: what is on the audio now (the sub-audible CTCSS tone or DCS code, the strongest voice-band tone, DTMF keys), the audio
 // spectrum, the 50 CTCSS tones as bars, a history of everything heard (CTCSS, DCS, DTMF, five-tone calls, SELCAL, two-tone pages) and the gate
 // that opens the sound only for a chosen tone or code. Input is an FM channel from a radio or, from a sound-card source, audio.
 #include "app.h"
+#include "../d40/d40_ui.h"
 #include "../ui/msglog_ui.h"
 #include "dect2/tones/tones_proto.h"
 #include "dect2/tones/tones_rx.h"
@@ -12,6 +16,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "../ui/font_size.h"
 
 namespace {
 
@@ -88,7 +93,7 @@ const char* kindText(int k) {
 }
 
 void subAudible(const App& a, const dect2::TonesTelemetry& t) {
-    ImGui::PushFont(a.mono, 30 * gUi);
+    ImGui::PushFont(a.mono, 30.f);
     if (t.ctcssIdx >= 0) ImGui::TextColored(pal::okGreen(), "%.1f Hz", t.ctcssHz);
     else if (t.dcsCode >= 0) ImGui::TextColored(pal::okGreen(), "D%03d%c", t.dcsCode, t.dcsInv ? 'I' : 'N');
     else ImGui::TextDisabled("--- Hz");
@@ -106,6 +111,7 @@ void liveView(App& a) {
     const dect2::TonesTelemetry& t = a.rx.tones;
     subAudible(a, t);
     ImGui::Spacing();
+    d40TonesCard(t);   // 4.0: tone system guess, dialled numbers (app/d40)
     if (t.toneHz > 0) kvRow(a, tr("voice-band tone"), "%.1f Hz, %.1f dB", t.toneHz, t.toneDb);
     else kvRow(a, tr("voice-band tone"), "%s", tr("none"));
     kvRow(a, tr("keys"), "%s", t.dtmfString.empty() ? "-" : t.dtmfString.c_str());

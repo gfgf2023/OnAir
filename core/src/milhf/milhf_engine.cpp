@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF waveform identifier in the engine: dial to 0 Hz, two-stage decimation to about 12 kHz, real audio (upper sideband) into the analyser.
 #include "dect2/milhf/milhf_engine.h"
 #include "dect2/wb/wb_export.h"
@@ -65,7 +68,7 @@ struct MilhfReceiver::Impl {
         snap.analysed = true;
         snap.dataValid = snap.res.f.signal;
         snap.snrDb = (float)snap.res.f.snrDb;
-        snap.blocksOk++;
+        if (snap.res.f.signal) snap.blocksOk++;   // an analysis of noise is not a block
         snap.state = 2;
         double e = 0;
         const size_t m = std::min<size_t>(aud.size(), 12000);

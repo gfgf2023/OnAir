@@ -1,5 +1,9 @@
-// PSK31 / PSK63 multi-signal receiver (see psk_rx.h).
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+// PSK31 / PSK63 multi-signal receiver (see psk_rx.h), and fldigi's 8PSK125 / 8PSK250 without FEC.
 #include "dect2/psk/psk_rx.h"
+#include "dect2/autoparam/autoparam.h"
 #include "dect2/results/results_io.h"
 #include "dect2/psk/psk_tel.h"
 #include "dect2/psk/psk_varicode.h"
@@ -11,6 +15,9 @@
 #include "dect2/dsp/fftutil.h"
 #include <algorithm>
 #include <atomic>
+#include <memory>
+#include <chrono>
+#include <future>
 #include <cmath>
 #include <cstdlib>
 #include <complex>
@@ -28,6 +35,8 @@ constexpr double kWideSpanMaxPsk = 100000;       // whole span: a receiver per 3
 static const bool kPskIsiBpsk = !std::getenv("PSK_NOISI");   // measuring only (the PSK_NO* switches)
 static const bool kPskReplay = !std::getenv("PSK_NOREPLAY");
 static const bool kPskSquelch = !std::getenv("PSK_NOSQL");
+static const bool kPskCoherent = !std::getenv("PSK_NOCOH");
+static const float kRefA = std::getenv("PSK_REFA") ? (float)std::atof(std::getenv("PSK_REFA")) : 0.25f;
 constexpr double kReplaySec = 1.5;
 static const float kSqlA = std::getenv("PSK_SQLA") ? (float)std::atof(std::getenv("PSK_SQLA")) : 0.4f;
 static const float kSqlT = std::getenv("PSK_SQLT") ? (float)std::atof(std::getenv("PSK_SQLT")) : 0.2f;
@@ -58,6 +67,8 @@ struct Chan {
     float pw = 0, gacc = 0;
     std::complex<float> prevY{0, 0};
     bool havePrev = false;
+    std::complex<float> ref{0, 0};   // BPSK: carrier phase reference from the last decisions (coherent decision, differential decoding)
+    int prevSign = 1;
     float q = 0.2f;              // phase decision quality: 1 clean, 0 noise
     float errVar = 1;            // mean square phase error: the SNR (Es/N0 = 1 / variance for differential detection)
     float errShown = 1;          // errVar of a second ago while text came out: what is shown (the noise after a signal ends would read ~1 dB)
@@ -67,6 +78,9 @@ struct Chan {
     float fastPw = 0, dcdPw = 0;  // symbol power: quick, and slow while decoding (a signal that stops drops the DCD at once)
     psk::Viterbi vit;
     psk::VaricodeRx vrx;
+    psk::MfskVaricodeRx mrx;     // 8PSK
+    int run4 = 0;                // 8PSK: steady symbols in a row (the postamble carrier, not text)
+    int lastE = -1, runE = 0;    // 8PSK: the last phase step (eighth turns) and how often it came in a row
     std::string text;
     std::vector<PskLine> lines;
     bool lineOpen = false;
@@ -87,6 +101,20 @@ struct PskReceiver::Impl {
     bool focusReq = false; double focusHz = 0;   // under mu
     std::atomic<float> thrDb{5.f};
     std::atomic<int> modeReq{0};
+    // Auto (setAuto): the last seconds of the 24 kHz band go through a trial decoder of each modulation on another thread, the one with the most good text is kept
+    std::atomic<bool> autoOn{false}, autoKick{false};
+    bool trial = false;                       // a trial decoder: nothing is reported to the outside world
+    uint64_t p8Odd = 0, p8All = 0;            // 8PSK decisions on an odd eighth turn, and all (Auto: BPSK and QPSK never use the odd ones)
+    std::vector<cf32> autoRing;
+    size_t autoPos = 0, autoFill = 0;
+    uint64_t autoSamples = 0, autoLastRun = 0, autoCharsSeen = 0, autoGoodAt = 0;
+    int autoFound = -1, autoCand = -1;
+    bool autoLocked = false;
+    std::future<std::pair<int, uint64_t>> autoJob;
+    bool autoDiscard = false;
+    static std::pair<int, uint64_t> trialAll(const std::vector<cf32>& band, float thr);
+    static uint64_t trialMode(const std::vector<cf32>& band, int mode, float thr);
+    void autoFeed(const cf32* x, size_t n);
     // receiver thread
     PskTelemetry tel;
     double curRate = 0;
@@ -128,7 +156,7 @@ struct PskReceiver::Impl {
         auto w = std::make_unique<Wide>();
         double off;
         { std::lock_guard<std::mutex> lk(mu); off = offsetHz; }
-        w->dec.configure(curRate, std::min(wideSpanReq.load(), kWideSpanMaxPsk));
+        w->dec.configure(curRate, std::min(wideSpanReq.load(), kWideSpanMaxPsk * wideSpanCapHz() / kWideMaxSpanHz));   // (the default 100 kHz scales with the span cap)
         w->dec.setOffsetHz(off);
         const double half = w->dec.spanHz() / 2;
         const int k0 = (int)std::floor((-half - kSliceLo) / kSliceStep), k1 = (int)std::ceil((half - kSliceLo) / kSliceStep);
@@ -341,10 +369,10 @@ struct PskReceiver::Impl {
             std::string flat = c.text;
             std::replace(flat.begin(), flat.end(), '\n', ' ');
             const std::vector<std::string> now = cw::callsigns(flat);
-            if (PskReporter::get().want())
+            if (!trial && PskReporter::get().want())
                 for (const std::string& k : now)
                     if (std::find(c.calls.begin(), c.calls.end(), k) == c.calls.end() && pskr::sendsInText(flat, k))
-                        PskReporter::get().spot(mode == 0 ? "PSK31" : mode == 1 ? "PSK63" : mode == 4 ? "PSK125" : mode == 5 ? "PSK250" : "PSK", c.f + spotShift.load(), (float)std::max(-5.0, std::min(40.0, 10 * std::log10(1.0 / std::max(1e-4f, c.errShown)))), k);
+                        PskReporter::get().spot(mode == 0 ? "PSK31" : mode == 1 ? "PSK63" : mode == 4 ? "PSK125" : mode == 5 ? "PSK250" : mode == 7 ? "8PSK125" : mode == 8 ? "8PSK250" : "PSK", c.f + spotShift.load(), (float)std::max(-5.0, std::min(40.0, 10 * std::log10(1.0 / std::max(1e-4f, c.errShown)))), k);
             c.calls = now;
         }
     }
@@ -356,10 +384,11 @@ struct PskReceiver::Impl {
         c.prevY = y;
         if (std::abs(d) < 1e-20f) return;
         const double a = std::arg(d);
-        const bool qp = pskQpsk(mode);
-        const double err = qp ? std::arg(std::pow(std::complex<double>(d), 4)) / 4 : std::arg(std::pow(std::complex<double>(d), 2)) / 2;
+        const bool qp = pskQpsk(mode), p8 = psk8psk(mode);
+        const int order = p8 ? 8 : qp ? 4 : 2;
+        const double err = std::arg(std::pow(std::complex<double>(d), order)) / order;
         // quality: 1 for clean decisions, 0 for noise (the phase error spread over its whole range)
-        const double en = err / (qp ? kPi / 4 : kPi / 2);
+        const double en = err / (kPi / order);
         c.q += 0.1f * ((float)(1 - 3 * en * en) - c.q);
         c.errVar += 0.05f * ((float)(err * err) - c.errVar);
         const float old = c.errHist[c.errPos];
@@ -377,6 +406,7 @@ struct PskReceiver::Impl {
             c.q = std::min(c.q, 0.2f);
             c.lineOpen = false;
             c.vrx.reset();
+            c.mrx.reset();
         }
         // AFC: the remaining phase step per symbol is the frequency error
         const double ferr = err * baud() / (2 * kPi);
@@ -386,7 +416,27 @@ struct PskReceiver::Impl {
             if (std::fabs(nf - c.f0) > 2 * baud()) nf = c.f0;   // pulled away: start over where it was found
             c.setFreq(nf);
         }
-        if (qp) {
+        if (p8) {
+            const int e8 = (((int)std::lround(a / (kPi / 4)) % 8) + 8) % 8;
+            // the eighth-power AFC locks just as well one eighth turn per symbol (baud / 8) off. The preamble (half turns) and the postamble
+            // (no turn) are long runs of one step: a long run of an odd step is that false lock, and the frequency moves by the eighth turn
+            c.runE = e8 == c.lastE ? c.runE + 1 : 0;
+            c.lastE = e8;
+            if (c.runE >= 16 && (e8 & 1)) {
+                const int diff = (e8 == 1 || e8 == 5) ? 1 : -1;   // 1 -> 0, 5 -> 4: one eighth too many; 3 -> 4, 7 -> 0: one too few
+                c.setFreq(c.f + diff * baud() / 8);
+                c.f0 = c.f;
+                c.runE = 0; c.lastE = -1;
+                c.mrx.reset();
+                return;
+            }
+            const int sym = psk::psk8Symbol(e8);
+            c.run4 = sym == 4 ? c.run4 + 1 : 0;
+            if (c.dcd) { p8All++; if (sym & 1) p8Odd++; }
+            if (c.run4 >= 4) c.mrx.reset();   // the steady carrier would read as spaces
+            else if (c.dcd)
+                for (int b = 0; b < 3; b++) { const int ch = c.mrx.bit((sym >> b) & 1); if (ch >= 0 && ch != 0) putChar(c, ch); else if (ch == -2) putChar(c, -2); }
+        } else if (qp) {
             float cq[4];
             for (int k = 0; k < 4; k++) cq[k] = (float)std::cos(a - k * kPi / 2);
             float b1[2] = {-2, -2}, b0[2] = {-2, -2};   // best correlation with bit 0 = 0/1, bit 1 = 0/1
@@ -398,7 +448,17 @@ struct PskReceiver::Impl {
             const int bit = c.vit.decode(b0[1] - b0[0], b1[1] - b1[0]);
             if (bit >= 0 && c.dcd) { const int ch = c.vrx.bit(bit); if (ch != -1) putChar(c, ch); }
         } else {
-            const int bit = d.real() > 0 ? 1 : 0;
+            int bit = d.real() > 0 ? 1 : 0;
+            if (kPskCoherent) {
+                // Decision against a phase reference averaged over the last symbols (each turned to phase 0 by its own decision) instead of
+                // against the previous symbol alone: the reference carries less noise, about 1 dB better than plain differential detection.
+                // A reversal is still the change of the decision, so a phase slip of the reference costs one bit.
+                if (std::norm(c.ref) <= 0) c.ref = y;
+                const int sg = std::real(y * std::conj(c.ref)) >= 0 ? 1 : -1;
+                bit = sg == c.prevSign ? 1 : 0;
+                c.prevSign = sg;
+                c.ref = (1.f - kRefA) * c.ref + kRefA * (y * (float)sg);
+            }
             if (c.dcd) { const int ch = c.vrx.bit(bit); if (ch != -1) putChar(c, ch); }
         }
         if (c.lineOpen && sigSec() - c.lastActive > 5) c.lineOpen = false;
@@ -425,7 +485,7 @@ struct PskReceiver::Impl {
             // Gardner: (previous - this) x the sample between them; > 0 when the samples come too early
             const float ge = std::real((c.lastSym - y) * std::conj(mid)) / std::max(1e-30f, c.pw);
             c.lastSym = y;
-            if (pskQpsk(mode) || kPskIsiBpsk) {
+            if (pskQpsk(mode) || psk8psk(mode) || kPskIsiBpsk) {
                 // the matched filter leaves 1/6 of each neighbour in a symbol (the PSK31 pulse is two symbols long): harmless for BPSK, where
                 // it only changes the amplitude, but it turns QPSK phases, so take it out (one symbol late)
                 c.sym2 = c.sym1; c.sym1 = y;
@@ -488,6 +548,7 @@ struct PskReceiver::Impl {
         power = 0; nPower = 0;
         tel.floorDb = (float)(10 * std::log10(floorLin + 1e-20));
         tel.mode = mode;
+        tel.autoOn = autoOn.load(); tel.autoLocked = autoLocked; tel.autoMode = autoFound;
         if (accN > 0) {
             tel.spectrum.resize(acc.size());
             for (size_t i = 0; i < acc.size(); i++) { tel.spectrum[i] = (float)(10 * std::log10(acc[i] / accN + 1e-20)); acc[i] = 0; }
@@ -592,6 +653,7 @@ void PskReceiver::feed(const cf32* x, size_t n) {
         for (cf32& v : m.base) if (!std::isfinite(v.real()) || !std::isfinite(v.imag())) v = cf32(0, 0);
         m.listen.playBase(m.base.data(), m.base.size());   // a copy to the sound card only while listening
         m.process(m.base.data(), m.base.size());
+        m.autoFeed(m.base.data(), m.base.size());
     }
     while ((double)m.nIn >= m.nextReport) {
         m.nextReport += 0.25 * m.curRate;
@@ -638,6 +700,91 @@ void PskReceiver::setMuted(bool m) { p_->listen.muted = m; }
 void PskReceiver::setSilent(bool s) { p_->listen.silent = s; }
 void PskReceiver::setListenTap(std::function<void(const float* x, size_t n)> cb) { p_->listen.setTap(std::move(cb)); }
 void PskReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->log = std::move(cb); }
+// One modulation over the band: the good characters less the bad codes, zero when it is not clearly better than nothing
+uint64_t PskReceiver::Impl::trialMode(const std::vector<cf32>& band, int mode, float thr) {
+    auto t = std::make_unique<Impl>();
+    t->trial = true;
+    t->thrDb = thr;
+    t->modeReq = mode;
+    { std::lock_guard<std::mutex> lk(t->mu); t->rate = pskTuning().minSampleRate; }
+    t->resetState();
+    t->resetReq = false;
+    for (size_t i = 0; i < band.size(); i += 2400) t->process(band.data() + i, std::min<size_t>(2400, band.size() - i));
+    uint64_t ok = 0, bad = 0;
+    t->report();
+    ok = t->tel.blocksOk; bad = t->tel.blocksBad;
+    if (!(ok >= 16 && ok >= 4 * bad)) return 0;
+    // a BPSK or QPSK signal read as 8PSK gives text too (its steps are 8PSK symbols), but never an odd eighth turn
+    if (psk8psk(mode) && (t->p8All < 64 || t->p8Odd * 5 < t->p8All)) return 0;
+    // a too-fast modulation still produces characters from a slower signal (the short codes of noise); only text that reads counts
+    std::string text;
+    for (const PskSignal& s : t->tel.signals) if (s.chars > 0) text += s.text;
+    const double r = autoparam::readableFraction(text.substr(text.size() / 3));
+    if (r < 0.85) return 0;
+    return (uint64_t)(1000.0 * (double)(ok - 3 * bad) * r * r / pskBaud(mode));   // per baud: a too-fast decoder runs off short codes, its text per symbol is what is low
+}
+std::pair<int, uint64_t> PskReceiver::Impl::trialAll(const std::vector<cf32>& band, float thr) {
+    int best = -1;
+    uint64_t bestS = 0;
+    for (int m = 0; m < kPskModes; m++) {
+        // 8PSK is chosen by hand (fldigi users pick it or send an RSID): a BPSK or QPSK signal read at 8PSK gives text as well, and 8PSK needs
+        // about 8 dB more than the others, so Auto keeps to BPSK and QPSK
+        if (psk8psk(m)) continue;
+        const uint64_t s = trialMode(band, m, thr);
+        if (s > bestS) { bestS = s; best = m; }
+    }
+    return {best, bestS};
+}
+// The Auto rule: no text for a while and something in the window: try every modulation. A band that keeps giving text is left alone.
+void PskReceiver::Impl::autoFeed(const cf32* x, size_t n) {
+    if (autoKick.exchange(false)) { autoLocked = false; autoLastRun = 0; autoFill = 0; autoPos = 0; autoCharsSeen = tel.blocksOk; autoGoodAt = autoSamples; }
+    if (!autoOn.load()) { if (autoJob.valid()) autoDiscard = true; else return; }
+    const size_t cap = (size_t)(10 * kBase);
+    if (autoRing.size() != cap) autoRing.assign(cap, cf32(0, 0));
+    for (size_t i = 0; i < n; i++) { autoRing[autoPos] = x[i]; if (++autoPos >= cap) autoPos = 0; }
+    autoFill = std::min(cap, autoFill + n);
+    autoSamples += n;
+    if (tel.blocksOk > autoCharsSeen) {
+        autoCharsSeen = tel.blocksOk;
+        std::string t;   // the newest text of the band: garbage keeps the counter running, so the count alone does not say the lock is good
+        for (const PskSignal& s : tel.signals) if (s.chars > 0) t += s.text.substr(s.text.size() > 80 ? s.text.size() - 80 : 0);
+        if (t.size() < 24 || autoparam::readableFraction(t) >= 0.8) autoGoodAt = autoSamples;
+    }
+    if (autoJob.valid()) {
+        if (autoJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        const auto r = autoJob.get();
+        const bool drop = autoDiscard || !autoOn.load();
+        autoDiscard = false;
+        if (drop) return;
+        if (r.first < 0) { if (!autoLocked) autoFound = -1; autoCand = -1; return; }
+        // while locked, a different answer must repeat before the decode is moved: a burst of noise must not throw away a working lock
+        if (autoLocked && r.first != autoFound) {
+            if (autoCand == r.first) { autoCand = -1; autoFound = r.first; autoGoodAt = autoSamples; modeReq = r.first; }
+            else autoCand = r.first;
+            return;
+        }
+        autoCand = -1;
+        autoLocked = true; autoFound = r.first;
+        autoGoodAt = autoSamples;
+        modeReq = r.first;
+        return;
+    }
+    if (autoLocked) {
+        if (autoSamples - autoGoodAt >= (uint64_t)(10 * kBase)) { autoLocked = false; autoLastRun = 0; }
+        else if (autoSamples - autoLastRun < (uint64_t)(10 * kBase)) return;   // a working decode is re-checked now and then: a slower modulation can still give letters
+    }
+    if (autoSamples < autoLastRun + (uint64_t)(4 * kBase) || autoFill < (size_t)(6 * kBase)) return;
+    if (chans.empty()) return;   // nothing in the window: the trial would have nothing to read
+    autoLastRun = autoSamples;
+    const size_t take = std::min(autoFill, (size_t)(8 * kBase));
+    std::vector<cf32> a(take);
+    const size_t start = (autoPos + cap - take) % cap;
+    for (size_t i = 0; i < take; i++) a[i] = autoRing[(start + i) % cap];
+    const float thr = thrDb.load();
+    autoJob = std::async(std::launch::async, [v = std::move(a), thr]() { return trialAll(v, thr); });
+}
+void PskReceiver::setAuto(bool on) { if (on && !p_->autoOn.load()) p_->autoKick = true; p_->autoOn = on; }
+bool PskReceiver::autoOn() const { return p_->autoOn.load(); }
 void PskReceiver::setMode(int m) { p_->modeReq = std::max(0, std::min(kPskModes - 1, m)); }
 void PskReceiver::setFocusHz(double hz) { std::lock_guard<std::mutex> lk(p_->mu); p_->focusReq = true; p_->focusHz = hz; }
 void PskReceiver::clearSignals() {
@@ -721,7 +868,7 @@ void PskReceiver::Impl::reportWide() {
 }
 
 void PskReceiver::setWide(bool on, double spanHz) {
-    p_->wideSpanReq = std::max(1000.0, std::min(kWideMaxSpanHz, spanHz));
+    p_->wideSpanReq = std::max(1000.0, std::min(wideSpanCapHz(), spanHz));
     if (p_->wideReq.exchange(on) != on) p_->wideChanged = true;
 }
 bool PskReceiver::wide() const { return p_->wideReq.load(); }

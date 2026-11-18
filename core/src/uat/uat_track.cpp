@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/limits.h"
 #include "dect2/uat/uat_track.h"
 #include "dect2/adsb/adsb_msg.h"
 #include "dect2/results/results_io.h"
@@ -7,7 +11,7 @@
 namespace dect2 {
 
 void UatTracker::reset() {
-    ac_.clear(); fisb_.clear(); log_.clear();
+    ac_.clear(); fisb_.clear(); log_.clear(); radar_.clear();
     good_ = bad_ = 0; goodWindow_ = 0; windowT0_ = 0;
 }
 
@@ -35,6 +39,7 @@ void UatTracker::apply(const UatDecoded& d, float levelDbfs, double timeSec) {
         UatFisbProduct p = d.fisb;
         p.timeSec = timeSec;
         fisb_.push_back(p);
+        for (const auto& b : d.nexrad) { auto& r = radar_[((uint64_t)b.productId << 32) | b.blockNum]; r.b = b; r.t = timeSec; }
         while (fisb_.size() > 64) fisb_.pop_front();
         log_.push_back(fi);
         while (log_.size() > 64) log_.pop_front();
@@ -79,7 +84,7 @@ void UatTracker::apply(const UatDecoded& d, float levelDbfs, double timeSec) {
 void UatTracker::tick(double now) {
     for (auto it = ac_.begin(); it != ac_.end();) {
         it->second.ac.ageSec = (float)(now - it->second.last);
-        if (now - it->second.last > expirySec_) it = ac_.erase(it);
+        if (now - it->second.last > limits::staleSec(limits::Family::Uat, expirySec_)) it = ac_.erase(it);
         else ++it;
     }
     if (now - windowT0_ > 1.0) { goodWindow_ = 0; windowT0_ = now; }
@@ -89,6 +94,18 @@ void UatTracker::snapshot(UatTelemetry& out, double now) {
     tick(now);
     out.aircraft.clear();
     out.fisb.assign(fisb_.begin(), fisb_.end());
+    out.nexrad.clear();
+    for (auto it = radar_.begin(); it != radar_.end();) {
+        if (now - it->second.t > 900.0) { it = radar_.erase(it); continue; }   // CONUS products are sent every 15 minutes
+        const UatNexradBlock& b = it->second.b;
+        for (int i = 0; i < 128 && out.nexrad.size() < kUatNexradMax; i++) {
+            if (b.bins[(size_t)i] < 2) continue;
+            const float dLon = (float)b.lonSize / 32, dLat = (float)b.latSize / 4;
+            UatNexradCell c; c.lat = (float)b.latNorth - dLat * (float)(i / 32); c.lon = (float)b.lonWest + dLon * (float)(i % 32); c.dLat = dLat; c.dLon = dLon; c.value = b.bins[(size_t)i];
+            out.nexrad.push_back(c);
+        }
+        ++it;
+    }
     out.framesLog.assign(log_.begin(), log_.end());
     out.aircraftCount = (uint32_t)ac_.size();
     out.withPosition = 0;
@@ -105,7 +122,7 @@ void UatTracker::snapshot(UatTelemetry& out, double now) {
     for (auto& r : rows) {
         if (r.second.hasPos) out.withPosition++;
         out.aircraft.push_back(r.second);
-        if (out.aircraft.size() >= 128) break;
+        if (out.aircraft.size() >= limits::kAircraft) break;
     }
     out.refValid = refValid_;
     out.refLat = refLat_;

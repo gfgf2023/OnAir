@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Position prediction on the aircraft maps (ADS-B, VDL2, HFDL, ACARS): one TrackHub per screen, the "Predict positions" and "uncertainty"
 // switches, the ghost marker with its dashed ring and the 95 % ellipse, and the tooltip text. The estimator is core/src/track; see
 // docs/position-estimation.md. Header only; every function is inline so a screen needs no other file.
@@ -22,12 +25,14 @@ struct Layer {
     dect2::track::TrackHub hub;
     bool predict = true, ellipses = false, loaded = false;
     std::string keyPredict, keyEllipse;
+    ~Layer() { dect2::track::unregisterHub(&hub); }
     std::unordered_map<uint32_t, std::pair<double, double>> lastFed_;
     double lastPurge_ = 0;
     // defaults: the satellite and VDL2 maps predict (their aircraft report every few minutes), ADS-B interpolates but draws no ellipses
     void load(const char* prefix, bool predictDefault, bool ellipseDefault) {
         if (loaded) return;
         loaded = true;
+        dect2::track::registerHub(&hub);   // Search everything asks the map screens for live positions
         keyPredict = std::string(prefix) + "Predict"; keyEllipse = std::string(prefix) + "PredictEllipse";
         predict = plat::prefs().getB(keyPredict.c_str(), predictDefault);
         ellipses = plat::prefs().getB(keyEllipse.c_str(), ellipseDefault);
@@ -48,6 +53,15 @@ struct Layer {
     bool get(dect2::track::Key k, double now, dect2::track::PosEstimate& pe, double posAgeSec) {
         if (!predict) return false;
         return hub.estimate(k, now, pe, !ellipses && posAgeSec < 10);
+    }
+    // forget every track (estimates, ground stations, route hints) so the map starts empty
+    void clear() { hub = dect2::track::TrackHub(hub.options()); lastFed_.clear(); }
+    // the map toolbar's "Clear": true when pressed (the caller empties the receiver's results too, then this clears the tracks)
+    bool clearButton() {
+        const bool hit = ImGui::Button((std::string(tr("Clear")) + "##mapclear").c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Remove the plotted aircraft, ground stations and lines from the map (the decoded lists are emptied too)."));
+        if (hit) clear();
+        return hit;
     }
     // the two switches, on the screen's own button line
     void controls() {

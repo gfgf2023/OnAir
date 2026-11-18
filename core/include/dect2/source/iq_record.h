@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Recording the radio's IQ samples to a file, for bug reports and for replaying a signal later.
 // The analysis thread only converts a block and puts it in a bounded queue; a separate writer thread does the disk writes, so a slow disk
 // never slows the receiver down: when the queue is full the block is dropped and counted.
@@ -6,6 +9,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <ctime>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -26,6 +30,14 @@ struct RecordingStats {
 
 // "onair_dvb_554.000MHz_10Msps_20261009-071530.cs8": guessSampleRate() and guessFormat() read the rate and the format back from it
 std::string recordingFileName(const std::string& modeId, double centerHz, double rateHz, FileFormat fmt);
+// 4.0, Settings > Recording and files > IQ file name: a pattern for recordingFileName(); empty (default) keeps the name above. Tokens:
+// {mode} {freq} (MHz, 3 decimals) {khz} {rate} (Msps) {date} {time} (local, YYYYMMDD and HHMMSS) {utcdate} {utctime}. The extension is added;
+// characters a file name cannot hold become _. Keep {freq}MHz and {rate}Msps in it so replay can read the frequency and rate back.
+void setRecordingNamePattern(const std::string& pattern);
+std::string recordingNamePattern();
+std::string expandRecordingPattern(const std::string& pattern, const std::string& modeId, double centerHz, double rateHz, const std::tm& local, const std::tm& utc);
+// The engine standard a recording's mode id names ("fm" 7, "ale" ...), -1 for "dvb" (T or T2), "iq" and unknown ids: replay restores the mode from it
+int recordingStdMode(const std::string& modeId);
 // The short name of an engine standard as used in recording names ("dvb", "fm", "dab", ...)
 std::string recordingModeId(int stdMode);
 // The same name with the BLUE extension ("...Msps_<stamp>.tmp"): the recorder writes an X-Midas BLUE file for it
@@ -43,6 +55,8 @@ struct SigmfInfo {
 };
 const char* sigmfDatatype(FileFormat fmt);   // "ci8_le", "cu8", "cf32_le"
 std::string sigmfMetaJson(const SigmfInfo& i);
+// Adds core:hw and core:geolocation to the global object of a SigMF meta text (a "" hw / hasGeo false leaves them out)
+std::string sigmfAddExtra(const std::string& json, const std::string& hw, bool hasGeo, double lat, double lon);
 std::string sigmfUtcNow();
 
 class IqRecorder {
@@ -51,7 +65,12 @@ public:
     // SigMF metadata (<name>.sigmf-meta next to the recording, and <name>.sigmf-data as a hard link to the same data so that IQEngine pairs them) for the next start()
     // description: the sidecar's description (the mode id the recording was made in, read back by the recording library)
     void setSigmf(bool on, double centerHz = 0, std::string description = "") { sigmf_ = on; centerHz_ = centerHz; sigmfDesc_ = std::move(description); }
-    // Opens the file (creating its folder) and starts the writer thread. Only CS8 and CF32 can be recorded.
+    // Optional extra SigMF fields for the next start(): core:hw (the radio) and core:geolocation (only when the user allows it; hasGeo)
+    void setSigmfExtra(std::string hw, bool hasGeo = false, double lat = 0, double lon = 0) { sigmfHw_ = std::move(hw); sigmfGeo_ = hasGeo; geoLat_ = lat; geoLon_ = lon; }
+    // A recording stops by itself at this size (default kMaxBytes); applies to the next start()
+    void setMaxBytes(uint64_t b) { maxBytes_ = b ? b : kMaxBytes; }
+    bool capReached() const { return capHit_.load(std::memory_order_relaxed); }
+    // Opens the file (creating its folder) and starts the writer thread. CS8, CI16 (16-bit) and CF32 can be recorded.
     // A path ending .tmp / .blue / .prm is written as an X-Midas BLUE file (bluefile.h: complex int8 / float32, rate and centre in the header
     // and keywords); no SigMF files are made for it.
     bool start(const std::string& path, FileFormat fmt, double rateHz, std::string& err);
@@ -82,7 +101,11 @@ private:
     void* blue_ = nullptr;   // blue::Writer* when the recording is a BLUE file
     bool sigmf_ = false;
     double centerHz_ = 0;
-    std::string sigmfPath_, sigmfWhen_, sigmfDesc_;
+    std::string sigmfPath_, sigmfWhen_, sigmfDesc_, sigmfHw_;
+    bool sigmfGeo_ = false;
+    double geoLat_ = 0, geoLon_ = 0;
+    uint64_t maxBytes_ = kMaxBytes;
+    std::atomic<bool> capHit_{false};
     void writeSigmf(bool final);
 };
 

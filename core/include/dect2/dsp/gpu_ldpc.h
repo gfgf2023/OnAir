@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GPU LDPC decoder (Metal on macOS, Direct3D 11 on Windows, Vulkan on Linux): layered normalised min-sum, one threadgroup (360 threads, one per
 // check of a layer) per FEC block.
 #pragma once
@@ -15,6 +18,7 @@ public:
     static GpuLdpc& instance();
     bool available() const;
     const char* deviceName() const;
+    const char* unavailableReason() const;   // when !available(): one sentence on why (shown in Settings); empty when it works
 #ifdef _WIN32
     size_t dedicatedMemoryMb() const;   // video memory of the chosen adapter that belongs to it (about 128 for integrated graphics)
 #endif

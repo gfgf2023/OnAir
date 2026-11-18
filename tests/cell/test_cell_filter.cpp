@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Cell list filters (#164): hidden / only bands, text search over every PLMN (AT&T 310-410 with FirstNet 313-100), minimum level, confirmed band,
 // identified, barred, one row per cell id, and the NR band / level / MIB rules.
 #include "dect2/cell/cell_filter.h"
@@ -18,6 +21,7 @@ int main() {
     {
         CHECK(parseBandList("14 28, 64") == std::vector<int>({14, 28, 64}) && parseBandList("").empty() && parseBandList("x") .empty(), "band list text");
         CHECK(std::string(lteOperatorName(313, 100)) == "FirstNet" && std::string(lteOperatorName(310, 410)) == "AT&T", "FirstNet and AT&T names");
+        CHECK(std::string(lteOperatorName(244, 45)) == "Erillisverkot" && std::string(lteOperatorName(244, 46)) == "Erillisverkot", "Finnish Erillisverkot 24445 and 24446");
     }
     std::vector<CellTower> v = {
         cell(66, true, -60, {"310-410", "313-100"}, 0x1234501, 10),   // shared network, strong

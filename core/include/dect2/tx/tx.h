@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Transmit: which modes OnAir can send, how it makes the signal, and the session that feeds a radio's TxSink (source.h).
 //
 // THE LIST (txModes() in tx.cpp is the single source of truth). Deny-list, not allow-list: every engine mode that has a generator is offered,
@@ -28,6 +31,7 @@
 //
 // No frequency and no power limit is applied here: see TxTune in source.h.
 #pragma once
+#include "dect2/mesh/mesh_tx.h"
 #include "dect2/engine/mode_synth.h"
 #include "dect2/source/source.h"
 #include "dect2/audio/audioin.h"
@@ -77,11 +81,12 @@ enum class TxPayloadKind {
     Ftx, Rtty, Keyboard, Cw, Psk, Js8, Hamdrm, Sstv, Freedv,
     Pager, Packet, Ais, AdsB, VoiceFm, VoiceAir, VoiceDigital, Qo100,
     Marine, AcarsFamily, Sonde, Same, Ale, VorIls, LoraRaw, Dect,
-    CubeSat, WeatherScene, SatScene, Flarm, Zigbee, Dji, HfBeacon, Vdes, Uplink, Mesh, Mac, Kaal, Kait, Kavb, Kapp, Kaft, Kaws
+    CubeSat, WeatherScene, SatScene, Flarm, Zigbee, Dji, HfBeacon, Vdes, Uplink, Mesh, Mac, Kaal, Kait, Kavb, Kapp, Kaft, Kaws, LoraAprs
 };
 TxPayloadKind txPayloadKind(const std::string& id);
 
 // Open a video / MPEG-TS path for a TV generator. On success `outTs` is a looping 188-byte packet source (raw .ts, or remuxed via libavformat).
+// "generator:N": the live stream of Digital video generator N (tv/videogen.h), null packets while it is not sending to the transmitter.
 // Empty path: false, note says demo. A file that is not TS and cannot be remuxed: false with an error in note (the caller keeps the demo).
 bool txOpenMpegTs(const std::string& path, std::function<void(uint8_t*)>& outTs, std::string& note);
 
@@ -118,6 +123,10 @@ double txModeTuneOffsetHz(const TxModeSpec& m);
 
 // The analog FM voice's CTCSS tone: fm.ctcssIdx 1 .. 50 is the standard tone of that number (67.0 .. 254.1 Hz), 0 or beyond is none.
 double txCtcssToneHz(int idx);
+// The analog FM voice's DCS code: fm.dcsIdx 1 .. txDcsCodes().size() is that code of the usual list (023 .. 754, written as decimal digits: 23),
+// 0 none; fm.dcsCode sets a code directly, fm.dcsInv sends it inverted, fm.dcsPct its level (12 % of the deviation). DCS replaces CTCSS.
+const std::vector<int>& txDcsCodes();
+int txDcsCode(int idx);
 
 class TxGenerator {
 public:
@@ -141,6 +150,7 @@ struct TxRequest {
     std::string callsign;          // FT8, APRS, D-STAR, M17, …
     std::string grid;              // Maidenhead (FT8 / WSPR)
     std::string text;              // RTTY / CW / PSK / pager / APRS comment / free-text
+    MeshTxIdentity mesh;           // Mesh (LoRa): the sender's own node identity, channel and hop limit (used when text is not empty)
     std::string payload;           // a message prepared as it goes on the air (the Flipper chat screen: the encrypted octets); empty: built from the fields
     std::string dest;              // APRS destination, D-STAR UR, M17 dst, FT8 report target
     std::string path;              // APRS digipeater path, e.g. WIDE1-1,WIDE2-1
@@ -177,13 +187,19 @@ struct TxRequest {
     std::function<int(float* stereo, int frames)> pullAudio;
     int videoSrc = 0;              // analog TV: 0 test card, 1 video file, 2 camera / capture card
     std::string videoDevice;       // camera unique id (listVideoInputs); empty = default
-    std::function<bool(int w, int h, float* y, float* u, float* v)> pullVideo;   // analog YUV; empty = test card
+    std::function<bool(double t, int w, int h, float* y, float* u, float* v)> pullVideo;   // analog YUV; empty = test card
+    std::function<double()> pullAspect;   // analog TV: the live picture's width / height (the picture format row "atv.aspect" fits it into the 4:3 or 16:9 frame); empty: 4:3
     std::vector<DemoTsService> mux; // DVB/ATSC/ISDB/DVB-S programmes (own video+audio each). Empty: services[] names.
     std::string fileNote;          // after start / makeTxGenerator: how the video/TS file was used (demo, remux, error)
     // The advanced parameters of the panel (app/panels/tx_params.cpp has the one table): numbers by key, e.g. "am.depth". A generator reads the keys it knows with
     // o(key, default); a key it does not know is ignored. Keys: out.* (every mode), audio.* / am.* / ssb.* / fm.* / vox.* (analog voice), bfm.* (FM broadcast).
     std::map<std::string, double> opt;
-    double o(const char* key, double def) const { const auto it = opt.find(key); return it == opt.end() ? def : it->second; }
+    double o(const char* key, double def) const {
+        if (txKeyTrace) txKeyTrace->push_back(key);   // tests/tx/test_tx_param_model.cpp: every key a generator reads must be a row of tx_params.h
+        const auto it = opt.find(key);
+        return it == opt.end() ? def : it->second;
+    }
+    static thread_local std::vector<std::string>* txKeyTrace;   // set by txTraceKeys (tx_params.h); nullptr otherwise
 };
 
 // Whether this mode's vocoder can encode live speech with a library OnAir already loads (Codec 2 for M17 / FreeDV).
@@ -196,6 +212,19 @@ bool txModeFinite(const TxModeSpec& m);
 
 // FT8 / FT4 / WSPR / JT* message built from callsign, grid, dest, text and kind. Empty when those fields are empty (the demo stations are used).
 std::string txFtxMessage(const TxRequest& r);
+
+// LoRa APRS (mode "loraaprs"): the radio settings and the packet. The settings come from r.opt: lora.preset 0 EU (433.775 MHz SF12 4/5),
+// 1 PL (434.855 MHz SF9 4/7), 2 UK (439.9125 MHz SF12 4/5), 3 915 MHz (SF12 4/5), all 125 kHz, preamble 8, sync word 0x12, CRC on, as the
+// lora-aprs / CA2RXU firmware sends; 4 own settings: lora.sf (7..12), lora.bwIdx (0 62.5, 1 125, 2 250, 3 500 kHz), lora.cr (5..8 for 4/5..4/8),
+// lora.preamble, lora.sync (0..255), lora.crc. mhz is the preset's frequency (0 for own settings: the panel's frequency is used as typed).
+struct TxLoraAprsRadio { const char* name = "EU"; double mhz = 433.775; int sf = 12; double bwHz = 125000; int cr = 5; int preamble = 8; int syncWord = 0x12; bool crc = true; };
+TxLoraAprsRadio txLoraAprsRadio(const TxRequest& r);
+// The TNC2 packet "CALL>DEST,PATH:info" (DEST default APRS, PATH default WIDE1-1; "-" or "none": no path) with the info field of APRS over AFSK:
+// a position with the comment when lat / lon are set, else a status ">text". Empty when the callsign is empty (the demo stations are sent then).
+// On the air it is preceded by the three bytes '<' 0xFF 0x01 (loraAprsFrame) and cut to fit the 255 bytes of a LoRa frame.
+std::string txLoraAprsTnc2(const TxRequest& r);
+// The frequency the panel starts from when the mode is chosen (0: the receiver's / the mode's tuning default)
+double txModeDefaultMhz(const TxModeSpec& m);
 
 // The output stage of every mode (keys out.trimDb, out.rampMs, out.swapIq of r.opt) on n samples that start at sample number firstSample of the transmission
 constexpr double kTxDefaultRampMs = 2;   // the key-up / key-down fade when out.rampMs is not set

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NDB (non-directional beacon) telemetry. RxTelemetry::ndb, engine standard 31, active standard 30.
 //
 // An aeronautical NDB is a steady carrier in the long-wave beacon band with a slow Morse ident. The ident is what this
@@ -10,6 +13,9 @@
 
 namespace dect2 {
 
+// One beacon of the census (all carriers inside the captured band)
+struct NdbCensusRow { double offsetHz = 0; float levelDb = -200, snrDb = 0, wpm = 0; int toneHz = 0; std::string ident; int64_t lastWall = 0; };
+
 struct NdbTelemetry {
     uint64_t seq = 0;
     int state = 0;                 // 0 no carrier, 1 carrier, 2 an ident has repeated
@@ -19,6 +25,11 @@ struct NdbTelemetry {
     bool dataValid = false;        // a repeated ident is on screen
     uint64_t blocksOk = 0;         // idents accepted
     uint64_t blocksBad = 0;        // Morse characters not in the table
+    // 4.0 ident folding (the average of the repeated idents): the last evaluation of the best path
+    float foldPeriodSec = 0;       // ident period from the autocorrelation (0: none found)
+    float foldZ = 0;               // how far that period stands out of the autocorrelation at other lags (robust z-score)
+    float foldQuality = 0;         // on / off contrast of the average in noise deviations of the average
+    std::string foldText;          // what the average reads as Morse
     int toneHz = 0;                // 400 or 1020; 0 when the path is not a tone yet; -1 keyed carrier (no modulating tone)
     float depth = 0;               // modulation depth of the path in use (0..1)
     float wpm = 0;                 // 0 until the CW timing decoder has a dot length
@@ -28,6 +39,7 @@ struct NdbTelemetry {
     std::string text;              // the newest decoded characters, spaces between idents
     std::string partial;           // the ident still being keyed
     std::vector<std::string> history;   // confirmed idents, oldest first
+    std::vector<NdbCensusRow> census;   // every beacon heard in the band, by frequency
 };
 
 inline std::string ndbToneName(const NdbTelemetry& t) {

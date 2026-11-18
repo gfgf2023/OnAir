@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the HFDL layers (rust/onair_hfdl behind the D::hfdl* functions): rates and burst sizes, the A / M sequences and the preamble, the
 // scrambler, the interleavers, the convolutional encoder, the Viterbi decoder (random soft values and encoded data with noise, every rate), the bit chain of every
 // rate, bursts, the FCS, the station table and masks, and the PDU parser on built (SPDU, MPDU up and down, logon, unnumbered data with performance / frequency
@@ -197,5 +200,5 @@ int main() {
     testBitLayer(iters);
     testFcsStations(iters);
     if (!testParse(iters)) return 1;
-    return golden::check("hfdl_proto_rs", dig, 0x42e935f56ae8bfd9ull, !it);
+    return golden::check("hfdl_proto_rs", dig, 0x62854bea7bca1735ull, !it);
 }

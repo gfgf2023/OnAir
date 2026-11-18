@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // FLARM receiver: the glider / light-aircraft collision-avoidance broadcast on 868.2 and 868.4 MHz (Europe), 2-FSK 100 kchip/s Manchester coded,
 // old protocol (V6) decoded with the public XXTEA key scheme, the newer protocol only counted. Receive only, as the Open Glider Network does:
 // positions are what the aircraft broadcast openly; the no-track and stealth flags are honoured (such aircraft are counted, never kept).
@@ -22,6 +25,8 @@ class FlarmReceiver {
 public:
     FlarmReceiver();
     ~FlarmReceiver();
+    static inline bool chaseOn = true;
+    static inline bool toneDetect = true;   // 3.9: chips by the energy at +-50 kHz instead of the FM discriminator (switch for comparisons)   // Chase decoding of CRC-failed packets (3.9; switch for comparisons)
     void configure(double inputRateHz);
     void setSignalOffset(double hz);
     void setReference(double latDeg, double lonDeg);       // the receiver's position: needed to complete the positions, and for distance / bearing

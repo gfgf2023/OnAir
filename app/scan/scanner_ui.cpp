@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The scanner (View > Scanner, HIGHLY EXPERIMENTAL): steps through a scan list of {frequency, mode, name} or a band (start, stop, step, mode),
 // tunes and switches mode the way the mode list does (setMode, then startReceiver), listens for the dwell time, stops on activity (channel
 // power over the noise in the mode's bandwidth, or the mode's own telemetry saying it decodes), holds while active plus a hang time, then
@@ -7,6 +10,7 @@
 #include "dect2/results/results_io.h"
 #include "dect2/common/timecompat.h"
 #include "scan_list.h"
+#include "dect2/engine/retired_modes.h"
 #include "dect2/common/u8file.h"
 #include <cstring>
 #include <ctime>
@@ -49,7 +53,8 @@ std::string modeKey(const ModeDef& m) {
     return std::to_string(m.family);
 }
 int modeIndex(const std::string& key) {
-    for (int i = 0; i < kNumModes; i++) if (modeKey(kModes[i]) == key) return i;
+    const std::string k = dect2::liveModeId(key);   // a 4.0 type entry: its receiver (retired_modes.h)
+    for (int i = 0; i < kNumModes; i++) if (modeKey(kModes[i]) == k) return i;
     return -1;
 }
 int currentModeIndex(const App& a) {
@@ -159,7 +164,7 @@ void tick(App& a) {
     const bool specFresh = a.spec.seq != S.specSeq0 && !a.spec.dbfs.empty();
     const bool rxFresh = a.rx.seq != S.rxSeq0;
     const bool ready = a.engine.running() && (specFresh || rxFresh);
-    S.level = specFresh ? (float)occupancyDb(a.spec.dbfs, a.tune.sampleRate / 1e6, a.tune.bandwidthMhz) : 0;
+    S.level = specFresh ? (float)occupancyDb(a.spec.dbfs, a.tune.sampleRate / 1e6, a.tune.signalBwMhz()) : 0;
     Decode d;
     if (rxFresh) {
         const int want = engineStd(a) - 1;

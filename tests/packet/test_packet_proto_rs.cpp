@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the Rust AX.25 / APRS layer (rust/onair_ax25, dect2::ax25 and dect2::aprs): FCS, frames built by the transmitter and damaged /
 // truncated / random, address and path text, frame type names, the HDLC receiver fed with transmissions with and without noise, APRS information fields of
 // every type with mutations, latitude / longitude text, ONAIR_DIFF_ITERS (default 200000) per family. Every result goes into a digest (tests/common/golden.h;
@@ -195,5 +198,6 @@ int main() {
     printf("test_packet_proto_rs: frames parsed %ld, hdlc frames good %ld bad %ld, aprs parsed %ld; types: pos %ld mic-e %ld obj %ld item %ld status %ld msg %ld wx %ld tel %ld other %ld\n",
            framesParsed, hdlcGood, hdlcBad, aprsTrue, typeCount[0], typeCount[1], typeCount[2], typeCount[3], typeCount[4], typeCount[5], typeCount[6], typeCount[7], typeCount[12]);
     // re-recorded 2026-10-22: a message number now ends at '}' (the APRS 1.1 reply-ack form "{MM}AA"); every other result is unchanged (was 0x4d96e4dafc8fa36d)
-    return golden::check("packet_proto_rs", dig, 0xbc227c25c7e45e24ull, !it);
+    // re-recorded 2026-11-10: APRS position comments read PHG and RNG into text and apply the DAO extra precision to the position (was 0xbc227c25c7e45e24)
+    return golden::check("packet_proto_rs", dig, 0xf181fa0713f6106full, !it);
 }

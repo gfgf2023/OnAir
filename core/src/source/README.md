@@ -1,6 +1,6 @@
 # core/src/source: Radios, drivers and capture files
 
-Sources for this topic. One source_<radio>.cpp per supported radio, the native USB drivers (hackrf_usb, rx888_usb), Hamlib rig control, the antenna rotator, IQ file playback and recording, gain control and the frequency converter.
+Sources for this topic. One source_<radio>.cpp per supported radio, the native USB drivers (hackrf_usb, rx888_usb, mirics_usb), Hamlib rig control, the antenna rotator, IQ file playback and recording, gain control and the frequency converter.
 
 Mode folders (core/src/<mode>/) hold one decoder each; this folder holds code shared by all of them. See ARCHITECTURE.md.
 
@@ -13,6 +13,15 @@ Tests: `tests/source/test_native.cpp` (fake libairspy: rate choice with and with
 
 
 `source_limesdr.cpp` drives LimeSDR boards through libLimeSuite (loaded at run time); `lime_board.h` holds the board facts it uses (name from the device string, Mini rate list, input by frequency, gain mapping, error hints) as plain functions that tests/source/test_limesdr_mini.cpp checks.
+
+## SDRplay RSP1 / Mirics MSi2500 + MSi001 (own driver, issue #503, untested on hardware)
+
+`mirics_usb.cpp` drives the MSi2500 bridge over libusb like `hackrf_usb.cpp` (board `mirics`, kind Native): from the app's descriptor on
+Android, by bus scan elsewhere. All register maths is in `mirics_regs.cpp` (`dect2/source/mirics.h`): the 24-bit register write (request
+0x41), the ADC clock (registers 3 and 4), the four sample formats (register 7) and their unpacking from 1024-byte blocks with the sample
+counter in the header (lost blocks are counted), the MSi001 synthesiser and band plan (register 9, band switch on register 8, RSP1 and
+generic words), the filter and the LNA / mixer / IF gain split. Facts from libmirisdr (GPL-2.0-or-later, credited); the kernel drivers
+(GPL-2.0-only) were not used. An RSP1 that the SDRplay API lists hides this driver's entry. Tests: `tests/source/test_mirics.cpp`.
 
 ## SoapySDR over the network (SoapyRemote, issue #84)
 
@@ -32,3 +41,8 @@ then sideband inversion (LSB or `audio_invert`). The dial is not touched: the us
 IC-7300 in USB with its 12 kHz IF on the USB audio, pick the sound card, mode Real (mono), IF centre 12000 Hz, dial 14.074 MHz, and FT8 decodes as
 from an SDR (the radio's own filters and AGC do the front end). A serial of `file:<wav>` plays a WAV as the sound card (tests). Level for a meter:
 `audioSourceLevel()`. Tests: `tests/audio/test_audio_if.cpp`, `tests/audio/test_audio_source.cpp`.
+
+VHF DSC (marine channel 70, 1200 baud, tones 1300 / 2100 Hz) from a sound card or a WAV: the Marine receiver's `setAudioInput(true)` (engine_start.cpp sets it for an
+Audio source, like Tones and SELCAL) takes the real audio as already FM-demodulated, resamples it to 24 kHz and slices the tones directly, with no second FM discriminator
+(the discriminator turned the audio tones into constant levels, which is why nothing decoded). Any card rate from 8 kHz, any level. Only VHF DSC runs from audio; NAVTEX,
+MF/HF DSC and fax still want the radio's IQ. Test: `tests/marine/test_marine_dsc_audio.cpp` (recordings in `tests/data/dsc_audio`, MIT, credited).

@@ -1,8 +1,13 @@
-// MPT1327 trunking screens (work in progress): lock, good and bad codewords, the system identity, the control message list
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+// MPT1327 trunking screens: lock, good and bad codewords, the system identity, the control message list
 // and the channel table.
 #include "app.h"
 #include "dect2/mpt1327/mpt1327_chan.h"
 #include "dect2/mpt1327/mpt1327_engine.h"
+#include "i18n/i18n.h"
+#include "trunkpool/trunk1.h"
 #include <cstdio>
 #include <string>
 
@@ -58,7 +63,7 @@ void channelTable(const dect2::MptTelemetry& t) {
         ImGui::TableNextColumn(); ImGui::Text("%d", c.channel);
         ImGui::TableNextColumn();
         {
-            const double f = dect2::mpt1327::channelFreqHz(c.channel, gCtrlCh, t.centerHz, (double)gSpacingKhz * 1000.0);
+            const double f = dect2::mpt1327::channelFreqHz(c.channel, gCtrlCh, t.controlHz > 0 ? t.controlHz : t.centerHz, (double)gSpacingKhz * 1000.0);
             if (f > 0) ImGui::Text("%.4f MHz", f / 1e6); else ImGui::TextDisabled("-");
         }
         ImGui::TableNextColumn(); ImGui::TextUnformatted(c.controlChannel ? "control channel" : "traffic (GTC)");
@@ -69,13 +74,40 @@ void channelTable(const dect2::MptTelemetry& t) {
     ImGui::EndTable();
 }
 
+// single-radio trunking: the GTCs' traffic channels inside the capture, followed at once (each in a voice slot)
+void callTable(const dect2::MptTelemetry& t) {
+    ImGui::SeparatorText(tr("Calls followed from this capture"));
+    ImGui::TextWrapped("%s", t.followStatus.c_str());
+    if (!t.followNote.empty()) ImGui::TextDisabled("%s", t.followNote.c_str());
+    if (t.calls.empty()) return;
+    if (!ImGui::BeginTable("mpt_calls", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY, ImVec2(0, 140 * gUi))) return;
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn(tr("Called"), ImGuiTableColumnFlags_WidthFixed, 80 * gUi);
+    ImGui::TableSetupColumn(tr("Caller"), ImGuiTableColumnFlags_WidthFixed, 60 * gUi);
+    ImGui::TableSetupColumn(tr("MHz"), ImGuiTableColumnFlags_WidthFixed, 90 * gUi);
+    ImGui::TableSetupColumn(tr("Slot"), ImGuiTableColumnFlags_WidthFixed, 40 * gUi);
+    ImGui::TableSetupColumn(tr("Time"), ImGuiTableColumnFlags_WidthFixed, 50 * gUi);
+    ImGui::TableSetupColumn(tr("State"));
+    ImGui::TableHeadersRow();
+    for (const dect2::MptCall& c : t.calls) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn(); ImGui::Text("%d/%d", c.called >> 13, c.called & 8191);
+        ImGui::TableNextColumn(); if (c.caller >= 0) ImGui::Text("%d", c.caller); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); if (c.freqHz > 0) ImGui::Text("%.4f", c.freqHz / 1e6); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); if (c.voiceSlot >= 0) ImGui::Text("%d", c.voiceSlot + 1); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); ImGui::Text("%.0f s", c.durationSec);
+        ImGui::TableNextColumn(); ImGui::TextUnformatted((c.note.empty() ? c.state : c.note).c_str());
+    }
+    ImGui::EndTable();
+}
+
 void tab(App& a) {
     if (!live(a)) {
         ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "tune to an MPT1327 control channel (VHF / UHF, 12.5 or 25 kHz FM) and start the receiver");
         return;
     }
     const dect2::MptTelemetry& t = a.rx.mpt1327;
-    ImGui::TextUnformatted("MPT1327 trunking (WIP): 1200 bit/s FFSK control channel, control messages only");
+    ImGui::TextUnformatted("MPT1327 trunking: 1200 bit/s FFSK control channel, control messages only");
     ImGui::Spacing();
     {
         const char* items[] = {"Standard sync word", "Ignore sync word (French networks)", "Automatic"};
@@ -96,7 +128,9 @@ void tab(App& a) {
     if (t.channels.empty()) ImGui::TextDisabled("no channel numbers seen yet");
     else channelTable(t);
     ImGui::Spacing();
-    ImGui::TextDisabled("Input %.0f Hz, centre %.4f MHz. No traffic channel audio is decoded and nothing encrypted is decoded.", t.inputRate, t.centerHz / 1e6);
+    callTable(t);
+    trunk1::section(a);
+    ImGui::TextDisabled(tr("Input %.0f Hz, centre %.4f MHz. Traffic channels inside the capture are followed as FM; nothing encrypted is decoded."), t.inputRate, t.centerHz / 1e6);
     wideCarriersTable(a, 0);   // whole span: every control channel in the span
 }
 
@@ -114,7 +148,15 @@ void list(App& a) {
     messageTable(t, ImGui::GetContentRegionAvail().y);
 }
 
-void tick(App&) {}
+void tick(App& a) {   // the channel plan of the table goes to the receiver, which places and follows the calls with it
+    static int pushedCh = -2;
+    static float pushedSp = -1;
+    if (!live(a)) { pushedCh = -2; return; }
+    if (gCtrlCh != pushedCh || gSpacingKhz != pushedSp) {
+        a.engine.mpt1327().setChannelPlan(gCtrlCh, (double)gSpacingKhz * 1000.0);
+        pushedCh = gCtrlCh; pushedSp = gSpacingKhz;
+    }
+}
 
 void status(App& a) {
     ImGui::AlignTextToFramePadding();
@@ -124,7 +166,7 @@ void status(App& a) {
 }
 
 void summary(const App& a, std::string& l1, std::string& l2) {
-    l1 = "MPT1327 trunking (WIP)";
+    l1 = "MPT1327 trunking";
     if (live(a)) l2 = dect2::mpt1327Summary(a.rx.mpt1327);
 }
 

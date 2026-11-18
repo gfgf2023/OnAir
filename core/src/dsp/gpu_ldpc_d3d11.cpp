@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Direct3D 11 compute LDPC decoder for Windows: the same layered normalised min-sum as the Metal version (one thread group of 360 threads
 // per FEC block), written in HLSL and compiled when the program starts. d3d11.dll and d3dcompiler_47.dll are loaded at run time, so a
 // computer without a usable GPU or driver simply reports the decoder as unavailable and the CPU decoder is used.
@@ -505,6 +508,7 @@ bool GpuLdpc::selfTest() {
 GpuLdpc::~GpuLdpc() = default;
 GpuLdpc& GpuLdpc::instance() { static GpuLdpc g; return g; }
 bool GpuLdpc::available() const { return p_->ready; }
+const char* GpuLdpc::unavailableReason() const { return p_->ready ? "" : "no Direct3D 11 hardware adapter with compute support, or its self-test failed (see the log)"; }
 const char* GpuLdpc::deviceName() const { return p_->name.c_str(); }
 size_t GpuLdpc::dedicatedMemoryMb() const { return p_->dedicatedMb; }
 

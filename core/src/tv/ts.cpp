@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/tv/ts.h"
 #include "dect2/tv/dvb_text.h"
 #include "dect2/tv/epg.h"
+#include "dect2/tv/psip.h"
 #include "dect2/tv/mux_change.h"
 #include "dect2/tv/ts_proto.h"
 #include <algorithm>
@@ -8,14 +12,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 namespace dect2 {
 
 uint32_t mpegCrc32(const uint8_t* p, int n) { return tsp::crc32(p, n); }   // the section CRC-32 lives in ts_proto (Rust)
-
-std::string dvbText(const uint8_t* p, int n, bool gbDefault) { return dvbsi::dvbText(p, n, gbDefault); }   // the text fields: dvb_text.cpp (Rust)
 
 const char* TsService::typeName() const {
     switch (type) {
@@ -29,13 +32,49 @@ const char* TsService::typeName() const {
 
 static void buildPatPacket(int tsid, int sid, int pmtPid, int& cc, uint8_t* out) { tsp::patPacket(tsid, sid, pmtPid, cc, out); cc++; }
 
+// A PMT whose PIDs the demuxer found on other PIDs (TsStream::declaredPid): written again with the PIDs the packets use, so a player that reads
+// the PMT itself (FFmpeg, a recording opened elsewhere) finds the streams. Only a section that fits in this packet is changed. The version number
+// moves on by 16 so that a demuxer that already read the declared table reads this one.
+static void patchPmtPids(uint8_t* p, const std::vector<std::pair<int, int>>& remap) {
+    if (remap.empty() || !(p[1] & 0x40) || !(p[3] & 0x10)) return;
+    int off = 4;
+    if (p[3] & 0x20) off += 1 + p[4];
+    if (off >= 188) return;
+    off += 1 + p[off];
+    if (off + 16 > 188) return;
+    uint8_t* s = p + off;
+    if (s[0] != 0x02) return;
+    const int sl = ((s[1] & 0x0F) << 8) | s[2];
+    if (sl < 13 || off + 3 + sl > 188) return;
+    const int end = 3 + sl - 4;
+    const uint32_t have = ((uint32_t)s[end] << 24) | ((uint32_t)s[end + 1] << 16) | ((uint32_t)s[end + 2] << 8) | s[end + 3];
+    if (mpegCrc32(s, end) != have) return;
+    auto map = [&](uint8_t* hi) {
+        const int pid = ((hi[0] & 0x1F) << 8) | hi[1];
+        for (auto& r : remap) if (r.first == pid) { hi[0] = (uint8_t)((hi[0] & 0xE0) | ((r.second >> 8) & 0x1F)); hi[1] = (uint8_t)(r.second & 0xFF); return true; }
+        return false;
+    };
+    bool changed = map(s + 8);   // PCR_PID
+    const int pil = ((s[10] & 0x0F) << 8) | s[11];
+    for (int i = 12 + pil; i + 5 <= end;) {
+        changed = map(s + i + 1) || changed;
+        i += 5 + (((s[i + 3] & 0x0F) << 8) | s[i + 4]);
+    }
+    if (!changed) return;
+    s[5] = (uint8_t)((s[5] & 0xC1) | (((((s[5] >> 1) & 31) + 16) & 31) << 1));
+    const uint32_t c = mpegCrc32(s, end);
+    s[end] = (uint8_t)(c >> 24); s[end + 1] = (uint8_t)(c >> 16); s[end + 2] = (uint8_t)(c >> 8); s[end + 3] = (uint8_t)c;
+}
+
 bool ServiceFilter::process(const uint8_t* in, const TsSnapshot* snap, uint8_t* out) {
     if (sid_ < 0) { memcpy(out, in, 188); return true; }
-    if (snap && (patSid_ != sid_ || pass_.empty())) {
+    if (snap) {   // every time: the PIDs of a service can change (a new PMT, or a PID the demuxer found on another PID than declared)
         for (auto& sv : snap->services) if (sv.id == sid_ && sv.havePmt) {
-            pass_ = {sv.pmtPid, sv.pcrPid};
+            pass_.clear(); remap_.clear();
+            pass_.push_back(sv.pmtPid); pass_.push_back(sv.pcrPid);
+            if (sv.declaredPcrPid >= 0) remap_.push_back({sv.declaredPcrPid, sv.pcrPid});
             if (!strict_) { pass_.push_back(0x11); pass_.push_back(0x12); pass_.push_back(0x14); }
-            for (auto& st : sv.streams) pass_.push_back(st.pid);
+            for (auto& st : sv.streams) { pass_.push_back(st.pid); if (st.declaredPid >= 0) remap_.push_back({st.declaredPid, st.pid}); }
             patSid_ = sv.id; patPmt_ = sv.pmtPid; patTsid_ = snap->tsid;
         }
     }
@@ -46,11 +85,15 @@ bool ServiceFilter::process(const uint8_t* in, const TsSnapshot* snap, uint8_t* 
         buildPatPacket(patTsid_, patSid_, patPmt_, patCc_, out);
         return true;
     }
-    for (int p : pass_) if (p == pid) { memcpy(out, in, 188); return true; }
+    for (int p : pass_) if (p == pid) {
+        memcpy(out, in, 188);
+        if (pid == patPmt_) patchPmtPids(out, remap_);
+        return true;
+    }
     return false;
 }
 
-void TsDemux::reset() { const bool gb = gbText_; *this = TsDemux(); gbText_ = gb; }
+void TsDemux::reset() { const auto encoding = textEncoding_; *this = TsDemux(); setTextEncoding(encoding); }
 
 // A new transport stream id (or network id) on the same input means another multiplex: the services of the old one are dropped.
 void TsDemux::noteIds(int tsid, int onid) {
@@ -58,7 +101,7 @@ void TsDemux::noteIds(int tsid, int onid) {
     prev.tsid = tsid_; prev.onid = onid_;
     cur.tsid = tsid; cur.onid = onid;
     if (isDifferentMux(prev, cur)) {   // only the service state: the section being parsed lives in sec_ and must stay
-        services_.clear(); pmtToService_.clear(); epg_.clear(); epgExt_.clear(); network_.clear();
+        psip_ = psip::State(); services_.clear(); pmtToService_.clear(); epg_.clear(); epgExt_.clear(); network_.clear(); si_.resetTextCountry();
     }
     tsid_ = tsid;
     if (onid > 0) onid_ = onid;
@@ -89,12 +132,12 @@ void TsDemux::feed(const uint8_t* p) {
         st.resync = false;
     } else if (afc == 2) st.resync = false;
     rcs_.packet(p, streamClock_);
-    if (afc & 1) { dsmcc_.packet(p); data_.packet(p); }   // carousels, AIT, SCTE-35, EBU data: clear payloads only (scrambled ones are skipped inside)
+    if (afc & 1) { dsmcc_.packet(p); data_.setTextContext(si_.textContext()); data_.packet(p); }   // clear payloads only
     if (!(afc & 1) || scr) return;
     const int off = hd.payloadOff;
     if (off < 0) return;
     // only PSI/SI PIDs and PMT PIDs carry sections we care about
-    const bool psi = pid == 0 || pid == 1 || pid == 0x10 || pid == 0x11 || pid == 0x12 || pid == 0x14 || pid == 0x1FFB || (pid >= 0x1FC8 && pid <= 0x1FCF) || pmtToService_.count(pid);
+    const bool psi = pid == 0 || pid == 1 || pid == 0x10 || pid == 0x11 || pid == 0x12 || pid == 0x14 || pid == 0x1FFB || (pid >= 0x1FC8 && pid <= 0x1FCF) || pmtToService_.count(pid) || psip_.eitPids.count(pid) || psip_.ettPids.count(pid);
     if (!psi) return;
     SectionBuf& sb = sec_[pid];
     const uint8_t* d = p + off;
@@ -145,7 +188,11 @@ void TsDemux::section(int pid, const uint8_t* s, int len) {
     else if (tid == 0x40) parseNit(s, len);
     else if (tid == 0x4E || (tid >= 0x50 && tid <= 0x5F)) parseEit(s, len);
     else if (tid == 0x70 || tid == 0x73) parseTdt(s, len);
-    else if (pid == 0x1FFB && (tid == 0xC8 || tid == 0xC9)) parseTvct(s, len);
+    else if (pid == 0x1FFB && (tid == 0xC8 || tid == 0xC9)) { parseTvct(s, len); psip::parseVctSources(s, len, psip_); }
+    else if (pid == 0x1FFB && tid == 0xC7) psip::parseMgt(s, len, psip_);
+    else if (pid == 0x1FFB && tid == 0xCD) psip::parseStt(s, len, psip_);
+    else if (psip_.eitPids.count(pid) && tid == 0xCB) psipEit(s, len);
+    else if (psip_.ettPids.count(pid) && tid == 0xCC) psipEtt(s, len);
 }
 
 // ATSC A/65 virtual channel table: names and channel numbers, shown like DVB services (name, number in the provider line).
@@ -155,6 +202,8 @@ void TsDemux::parseTvct(const uint8_t* s, int len) {
     if (!tsp::parseTvct(s, len, tsid, ch)) return;
     noteIds(tsid, 0);
     for (const tsp::Tvct& c : ch) {
+        // program 0 / 0xFFFF: an entry with no program in this stream (an analog or inactive channel some stations still list): not a service
+        if (c.prog == 0 || c.prog == 0xFFFF) continue;
         TsService& sv = services_[c.prog];
         sv.id = c.prog;
         sv.name = c.name;
@@ -165,6 +214,35 @@ void TsDemux::parseTvct(const uint8_t* s, int len) {
         snprintf(b, sizeof b, "channel %d.%d", c.major, c.minor);
         sv.provider = b;
     }
+}
+
+void TsDemux::psipEit(const uint8_t* s, int len) {
+    std::vector<psip::Event> ev;
+    if (!psip::parseEit(s, len, psip_, ev)) return;
+    for (const psip::Event& e : ev) {
+        auto it = psip_.sourceToProgram.find(e.sourceId);
+        if (it == psip_.sourceToProgram.end()) continue;
+        auto& evs = epg_[it->second];
+        EpgEvent n; n.eventId = e.eventId; n.start = e.start; n.duration = e.duration; n.running = 0; n.title = e.title;
+        auto was = evs.find(e.eventId);
+        if (was != evs.end()) n.extended = was->second.extended;
+        const uint32_t etm = (uint32_t)e.sourceId << 16 | (uint32_t)e.eventId << 2 | 2;
+        auto tx = psip_.ett.find(etm);
+        if (tx != psip_.ett.end()) n.extended = tx->second;
+        evs[e.eventId] = n;
+    }
+}
+
+void TsDemux::psipEtt(const uint8_t* s, int len) {
+    uint32_t id = 0; std::string t;
+    if (!psip::parseEtt(s, len, psip_, &id, &t)) return;
+    if ((id & 3) != 2) return;                                  // not an event ETM
+    const int src = (int)(id >> 16), evn = (int)((id >> 2) & 0x3FFF);
+    auto it = psip_.sourceToProgram.find(src);
+    if (it == psip_.sourceToProgram.end()) return;
+    auto& evs = epg_[it->second];
+    auto e = evs.find(evn);
+    if (e != evs.end()) e->second.extended = t;
 }
 
 void TsDemux::parsePat(const uint8_t* s, int len) {
@@ -218,14 +296,15 @@ void TsDemux::parseSdt(const uint8_t* s, int len) {
     std::vector<tsp::SdtService> v;
     if (!tsp::parseSdt(s, len, tsid, onid, v)) return;
     noteIds(tsid, onid);
+    const auto context = si_.textContext();
     for (const tsp::SdtService& e : v) {
         TsService& sv = services_[e.sid];
         sv.id = e.sid;
         sv.haveSdt = true;
         sv.caFlag = sv.caFlag || e.freeCa;
         if (e.hasType) sv.type = e.type;
-        if (e.hasProvider) sv.provider = dvbText(s + e.provider.off, (int)e.provider.len, gbText_);
-        if (e.hasName) sv.name = dvbText(s + e.name.off, (int)e.name.len, gbText_);
+        if (e.hasProvider) sv.provider = dvbText(s + e.provider.off, (int)e.provider.len, context);
+        if (e.hasName) sv.name = dvbText(s + e.name.off, (int)e.name.len, context);
     }
     // linkage descriptors (0x4A) of the service loop; type 0x05 names the service that replaces this one (the HD simulcast), read here from the raw section
     const int end = len - 4;
@@ -250,7 +329,7 @@ void TsDemux::parseSdt(const uint8_t* s, int len) {
 void TsDemux::parseNit(const uint8_t* s, int len) {
     tsp::Nit nit;
     if (!tsp::parseNit(s, len, nit)) return;
-    if (nit.hasName) network_ = dvbText(s + nit.name.off, (int)nit.name.len, gbText_);
+    if (nit.hasName) network_ = dvbText(s + nit.name.off, (int)nit.name.len, si_.textContext());
     for (const tsp::NitLcn& e : nit.lcn) {   // logical channel numbers (descriptor 0x83 in private data, e.g. EACEM / UK)
         services_[e.sid].id = e.sid;
         services_[e.sid].lcn = e.lcn;
@@ -261,6 +340,7 @@ void TsDemux::parseEit(const uint8_t* s, int len) {
     tsp::Eit eit;
     if (!tsp::parseEit(s, len, eit)) return;
     const int sid = eit.sid;
+    const auto context = si_.textContext();
     // the guide language the user prefers (#268): where the texts of that language sit, per event
     std::map<int, EpgLangPick> picks;
     { const std::string want = epgPreferredLanguage(); if (!want.empty()) epgPickLanguage(s, len, want, picks); }
@@ -268,10 +348,11 @@ void TsDemux::parseEit(const uint8_t* s, int len) {
     if (eit.legacy) {
         TsService& sv = services_[sid];
         sv.id = sid;
-        std::string nm = eit.hasName ? dvbText(s + eit.nowNextName.off, (int)eit.nowNextName.len, gbText_) : std::string();
+        const auto eventContext = eit.events.empty() ? context : context.withLanguage(eit.events[0].lang);
+        std::string nm = eit.hasName ? dvbText(s + eit.nowNextName.off, (int)eit.nowNextName.len, eventContext) : std::string();
         if (!eit.events.empty()) {
             auto pk = picks.find(eit.events[0].eventId);
-            if (pk != picks.end() && pk->second.hasShort) nm = dvbText(s + pk->second.titleOff, pk->second.titleLen, gbText_);
+            if (pk != picks.end() && pk->second.hasShort) nm = dvbText(s + pk->second.titleOff, pk->second.titleLen, context.withLanguage(pk->second.lang));
         }
         (eit.secNum == 0 ? sv.now : sv.next) = nm;
     }
@@ -280,16 +361,18 @@ void TsDemux::parseEit(const uint8_t* s, int len) {
     for (const tsp::EitEvent& pe : eit.events) {
         EpgEvent ev;
         ev.eventId = pe.eventId; ev.start = pe.start; ev.duration = pe.duration; ev.running = pe.running; ev.genre = pe.genre; ev.lang = pe.lang;
-        if (pe.hasTitle) ev.title = dvbText(s + pe.title.off, (int)pe.title.len, gbText_);
-        if (pe.hasText) ev.text = dvbText(s + pe.text.off, (int)pe.text.len, gbText_);
-        for (int n = 0; n < 16; n++) if (pe.extMask & (1u << n)) ev.extended += dvbText(s + pe.ext[n].off, (int)pe.ext[n].len, gbText_);   // pieces in descriptor_number order
+        const auto eventContext = context.withLanguage(pe.lang);
+        if (pe.hasTitle) ev.title = dvbText(s + pe.title.off, (int)pe.title.len, eventContext);
+        if (pe.hasText) ev.text = dvbText(s + pe.text.off, (int)pe.text.len, eventContext);
+        for (int n = 0; n < 16; n++) if (pe.extMask & (1u << n)) ev.extended += dvbText(s + pe.ext[n].off, (int)pe.ext[n].len, eventContext);
         {
             auto pk = picks.find(ev.eventId);
             if (pk != picks.end()) {
                 const EpgLangPick& k = pk->second;
                 if (!k.lang.empty()) ev.lang = k.lang;
-                if (k.hasShort) { ev.title = dvbText(s + k.titleOff, k.titleLen, gbText_); ev.text = dvbText(s + k.textOff, k.textLen, gbText_); }
-                if (!k.ext.empty()) { ev.extended.clear(); for (auto& e : k.ext) ev.extended += dvbText(s + e.first, e.second, gbText_); }
+                const auto selectedContext = context.withLanguage(ev.lang);
+                if (k.hasShort) { ev.title = dvbText(s + k.titleOff, k.titleLen, selectedContext); ev.text = dvbText(s + k.textOff, k.textLen, selectedContext); }
+                if (!k.ext.empty()) { ev.extended.clear(); for (auto& e : k.ext) ev.extended += dvbText(s + e.first, e.second, selectedContext); }
             }
         }
         auto it = evs.find(ev.eventId);
@@ -338,6 +421,7 @@ void TsDemux::advance(double dt) {
 
 TsSnapshot TsDemux::snapshot() const {
     TsSnapshot sn;
+    sn.textEncoding = textEncoding_;
     sn.networkName = network_; sn.utc = utc_; sn.onid = onid_; sn.tsid = tsid_;
     sn.totalPackets = total_; sn.nullPackets = nulls_; sn.teiPackets = tei_; sn.ccErrors = ccErr_;
     sn.muxKbps = muxKbps_; sn.nullKbps = nullKbps_;
@@ -346,8 +430,21 @@ TsSnapshot TsDemux::snapshot() const {
     if (rcs_.active()) sn.rcs = std::make_shared<const RcsView>(rcs_.view());
     { SiSnapshot si = si_.snapshot(); if (!si.empty()) sn.si = std::make_shared<const SiSnapshot>(std::move(si)); }
     std::map<int, std::string> label;
+    // DPRK DVB-T2 (issue 498): the PMTs give every elementary stream PID inverted (XOR 0x1FFF): video 0x1F37 for packets on 0x00C8. A declared
+    // PID that carries next to nothing while its inverse carries a stream (and is not declared itself) is read as the inverse.
+    std::set<int> declared;
+    for (auto& kv : services_) for (auto& st : kv.second.streams) declared.insert(st.pid);   // (not the PCR PIDs: on those muxes the PCR PID is the real video PID)
+    auto packetsOn = [&](int pid) -> uint64_t { auto it = pids_.find(pid); return it == pids_.end() ? 0 : it->second.packets; };
+    auto inverse = [&](int pid) -> int {
+        const int inv = pid ^ 0x1FFF;
+        if (pid < 0x20 || pid >= 0x1FFF || inv < 0x20 || inv >= 0x1FFF || declared.count(inv)) return -1;
+        const uint64_t have = packetsOn(pid), there = packetsOn(inv);
+        return there >= 16 && have * 20 < there ? inv : -1;
+    };
     for (auto& kv : services_) {
         TsService sv = kv.second;
+        for (auto& st : sv.streams) { const int inv = inverse(st.pid); if (inv >= 0) { st.declaredPid = st.pid; st.pid = inv; } }
+        { const int inv = inverse(sv.pcrPid); if (inv >= 0) { sv.declaredPcrPid = sv.pcrPid; sv.pcrPid = inv; } }
         // scrambled: what the streams' packets say, not the CA signalling (a free channel can carry CA descriptors or free_CA_mode)
         sv.scrambled = false;
         CaEvidence ev; ev.flagged = sv.caFlag;
@@ -356,6 +453,7 @@ TsSnapshot TsDemux::snapshot() const {
             if (it != pids_.end()) { st.kbps = it->second.kbps; st.scrambled = it->second.scrambled; st.scrPackets = it->second.scrWin; st.clrPackets = it->second.clrWin; }
             if (st.kind == "video" || st.kind == "audio") { CaStreamEvidence se; se.video = st.kind == "video"; se.scrambledPackets = st.scrPackets; se.clearPackets = st.clrPackets; ev.streams.push_back(se); }
             label[st.pid] = (sv.name.empty() ? "service " + std::to_string(sv.id) : sv.name) + " " + st.kind + " (" + st.codec + ")";
+            if (st.declaredPid >= 0) { char b[40]; snprintf(b, sizeof b, " [PMT says 0x%04X]", st.declaredPid); label[st.pid] += b; }
         }
         sv.caState = classifyCa(ev);
         sv.scrambled = sv.caState == CaState::Scrambled;
@@ -377,6 +475,54 @@ TsSnapshot TsDemux::snapshot() const {
         sn.pids.push_back(p);
     }
     return sn;
+}
+
+std::string isoLanguageName(const std::string& code) {
+    std::string c;
+    for (char ch : code) { if (ch == '\0' || ch == ' ') break; c += (char)((ch >= 'A' && ch <= 'Z') ? ch + 32 : ch); }
+    if (c.empty()) return "";
+    static const struct { const char* code; const char* name; } kNames[] = {
+        {"chs", "Chinese (simplified)"}, {"cht", "Chinese (traditional)"}, {"chi", "Chinese"}, {"zho", "Chinese"}, {"cmn", "Chinese (Mandarin)"}, {"yue", "Chinese (Cantonese)"},
+        {"eng", "English"}, {"jpn", "Japanese"}, {"kor", "Korean"}, {"fra", "French"}, {"fre", "French"}, {"deu", "German"}, {"ger", "German"},
+        {"rus", "Russian"}, {"spa", "Spanish"}, {"por", "Portuguese"}, {"ita", "Italian"}, {"nld", "Dutch"}, {"dut", "Dutch"}, {"pol", "Polish"},
+        {"tur", "Turkish"}, {"ara", "Arabic"}, {"heb", "Hebrew"}, {"hin", "Hindi"}, {"tha", "Thai"}, {"vie", "Vietnamese"}, {"ind", "Indonesian"},
+        {"msa", "Malay"}, {"may", "Malay"}, {"swe", "Swedish"}, {"nor", "Norwegian"}, {"nob", "Norwegian"}, {"dan", "Danish"}, {"fin", "Finnish"},
+        {"ces", "Czech"}, {"cze", "Czech"}, {"slk", "Slovak"}, {"slo", "Slovak"}, {"hun", "Hungarian"}, {"ron", "Romanian"}, {"rum", "Romanian"},
+        {"ell", "Greek"}, {"gre", "Greek"}, {"bul", "Bulgarian"}, {"ukr", "Ukrainian"}, {"hrv", "Croatian"}, {"srp", "Serbian"}, {"slv", "Slovenian"},
+        {"lit", "Lithuanian"}, {"lav", "Latvian"}, {"est", "Estonian"}, {"cat", "Catalan"}, {"fas", "Persian"}, {"per", "Persian"}, {"urd", "Urdu"},
+        {"ben", "Bengali"}, {"tam", "Tamil"}, {"tel", "Telugu"}, {"fil", "Filipino"}, {"tgl", "Tagalog"}, {"und", "Undetermined"}, {"qaa", "Original audio"},
+    };
+    for (const auto& k : kNames) if (c == k.code) return k.name;
+    std::string up = c;
+    for (char& ch : up) if (ch >= 'a' && ch <= 'z') ch -= 32;
+    return up;
+}
+
+bool subtitleEntryIsSubtitle(const TsSubEntry& e) { return !e.teletext || e.type == 2 || e.type == 5; }
+
+std::string subtitleTypeName(const TsSubEntry& e, bool* hearingImpaired) {
+    bool hi = false;
+    std::string s;
+    if (e.teletext) {
+        hi = e.type == 5;
+        s = e.type == 2 || e.type == 5 ? "Teletext subtitles" : e.type == 1 ? "Teletext initial page" : e.type == 3 ? "Teletext information" : e.type == 4 ? "Teletext schedule" : "Teletext";
+    } else {
+        // EN 300 468 table 26: 0x10..0x13 normal (ratio), 0x14 for a display of 4:3 .. 0x20..0x24 hard of hearing
+        hi = e.type >= 0x20 && e.type <= 0x24;
+        s = "DVB subtitles";
+        static const char* const kRatio[] = {"", ", 4:3", ", 16:9", ", 2.21:1", ", HD"};
+        const int r = e.type >= 0x20 ? e.type - 0x20 : e.type >= 0x10 ? e.type - 0x10 : 0;
+        if (r >= 1 && r <= 4 && e.type != 0x10 && e.type != 0x20) s += kRatio[r];
+    }
+    if (hearingImpaired) *hearingImpaired = hi;
+    return s;
+}
+
+std::string subtitleTrackLabel(const TsSubEntry& e) {
+    bool hi = false;
+    const std::string t = subtitleTypeName(e, &hi);
+    const std::string l = isoLanguageName(e.lang);
+    return (l.empty() ? std::string("Unknown language") : l) + " - " + t + (e.teletext && e.page > 0 ? " " + std::to_string(e.page) : std::string()) + (hi ? " (hearing impaired)" : "");
 }
 
 } // namespace dect2

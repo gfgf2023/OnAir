@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The spectrum-to-picture pipeline's pure steps, shared by the app and the offscreen render harness (tools/spec_render.cpp):
 //  - the noise floor of a spectrum (the median of its lowest fifth of bins) and a tracker that follows it with a time constant,
 //  - the waterfall's auto range anchored on that floor (the floor sits at a fixed place of the colour map, the range a fixed width),
@@ -68,6 +71,58 @@ inline void levelsRow(const float* d, size_t n, int C, float minDb, float maxDb,
         for (size_t k = a + 1; k < b && k < n; k++) m = std::max(m, d[k]);
         const float v = (m - minDb) * inv;
         l[x] = (uint8_t)(v <= 0.f ? 0 : v >= 255.f ? 255 : (int)(v + 0.5f));
+    }
+}
+
+// The pixel-exact mapping of one row of levels (4.0, docs/WATERFALL-4.0.md): cols columns side by side over [rowLo, rowHi) onto px pixel
+// columns showing [visLo, visHi). Where columns are narrower than pixels, each pixel is the highest of the columns whose centre falls in it
+// (every column lands in exactly one pixel: a one-bin signal is never lost and never doubled); where they are wider, each pixel takes the
+// column under its centre (sharp steps: no level is made up between two columns). Pixels outside the row get fill. Returns the pixels set.
+inline int pixelLevels(const uint8_t* row, int cols, double rowLo, double rowHi, double visLo, double visHi, int px, uint8_t* out, uint8_t fill) {
+    if (px < 1) return 0;
+    if (!row || cols < 1 || !(rowHi > rowLo) || !(visHi > visLo)) { std::memset(out, fill, (size_t)px); return 0; }
+    const double cw = (rowHi - rowLo) / cols, pw = (visHi - visLo) / px;
+    int set = 0;
+    if (cw >= pw) {
+        for (int x = 0; x < px; x++) {
+            const double c = std::floor((visLo + (x + 0.5) * pw - rowLo) / cw);
+            if (c < 0 || c >= cols) { out[x] = fill; continue; }
+            out[x] = row[(int)c]; set++;
+        }
+        return set;
+    }
+    for (int x = 0; x < px; x++) {   // the columns c with (c + 0.5) cw in [a, b)
+        const double a = (visLo + x * pw - rowLo) / cw - 0.5, b = (visLo + (x + 1) * pw - rowLo) / cw - 0.5;
+        long c0 = (long)std::ceil(a - 1e-9), c1 = (long)std::ceil(b - 1e-9) - 1;
+        c0 = std::max(0L, c0); c1 = std::min((long)cols - 1, c1);
+        if (c1 < c0) { out[x] = fill; continue; }
+        uint8_t m = row[c0];
+        for (long c = c0 + 1; c <= c1; c++) m = std::max(m, row[c]);
+        out[x] = m; set++;
+    }
+    return set;
+}
+
+// The same for dB values (the trace's peak-keeping reduction on real bins): bins centred at x0 + i * dx. NAN where no bin.
+inline void pixelPeaks(const float* y, size_t n, double x0, double dx, double visLo, double visHi, int px, float* out) {
+    if (px < 1) return;
+    const double pw = (visHi - visLo) / px;
+    for (int x = 0; x < px; x++) {
+        if (!y || n == 0 || !(dx > 0) || !(pw > 0)) { out[x] = NAN; continue; }
+        long c0, c1;
+        if (dx >= pw) {
+            const double c = std::floor((visLo + (x + 0.5) * pw - (x0 - dx * 0.5)) / dx);
+            out[x] = c < 0 || c >= (double)n ? NAN : y[(size_t)c];
+            continue;
+        } else {
+            c0 = (long)std::ceil((visLo + x * pw - x0) / dx - 1e-9);
+            c1 = (long)std::ceil((visLo + (x + 1) * pw - x0) / dx - 1e-9) - 1;
+        }
+        c0 = std::max(0L, c0); c1 = std::min((long)n - 1, c1);
+        if (c1 < c0) { out[x] = NAN; continue; }
+        float m = y[c0];
+        for (long c = c0 + 1; c <= c1; c++) m = std::max(m, y[c]);
+        out[x] = m;
     }
 }
 

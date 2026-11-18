@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // SDRplay nRSP-ST (network) through SDRconnect's WebSocket API (spec 1.0.3, docs/nrsp-st.md): the nRSP-ST's own transport to the computer is
 // SDRconnect's, which is not public; SDRconnect (the GUI, or its headless build with --websocket_port) is the program that talks to the radio
 // and offers the radio's IQ to other programs on port 5454. So this source connects to SDRconnect, not to the radio. JSON text messages
@@ -7,10 +10,13 @@
 // the IQ rate being device_sample_rate, lna_state 0 = most gain, the rate range. Not in the API at all (so not offered): AGC, IF gain, bias-T,
 // notch filters, and any user name or password.
 #include "../net/tcp_client.h"
+#include "dect2/common/diag.h"
 #include "../net/ws_client.h"
 #include "native_common.h"
 #include "dect2/net/netradio.h"
+#include "dect2/dsp/sample_convert.h"
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <mutex>
 
@@ -20,7 +26,10 @@ namespace native {
 namespace {
 
 constexpr int kConnectMs = 3000, kStallMs = 5000, kAnswerMs = 3000;
-constexpr size_t kMaxMessage = 1u << 20;   // SDRconnect sends IQ in chunks of a few thousand samples; a message of 1 MiB is not one of its
+// One message at most (4.0: was 1 MiB). The spec gives no size; a server whose IQ messages grow with the rate (a fixed number a second) passes
+// 1 MiB at about 5-10 Msps, and every such message was refused as bad data, the connection dropped and opened again: the stream stalled above a
+// few Msps. 16 MiB is 0.4 s of 10 Msps; the buffer is reused from message to message.
+constexpr size_t kMaxMessage = 16u << 20;
 constexpr const char* kPath = "/";            // ASSUMED: the spec names no path
 constexpr double kMinRate = 62500, kMaxRate = 10e6;   // ASSUMED: the RSP family's range; the nRSP-ST datasheet says "up to 10 MHz of spectrum"
 
@@ -173,11 +182,13 @@ bool askProps(WsClient& ws, std::initializer_list<const char*> props) {
 bool connectAndAsk(WsClient& ws, const std::string& host, int port, int timeoutMs, NrspInfo& info, std::string& err) {
     const std::string addr = (host.find(':') != std::string::npos ? "[" + host + "]" : host) + ":" + std::to_string(port);
     const sock_t s = tcpConnect(host, port, timeoutMs, err);
-    if (s == kBadSock) { err = "cannot connect to SDRconnect at " + addr + ": " + err + " (is SDRconnect running with its WebSocket server on?)"; return false; }
+    if (s == kBadSock) { DIAG_ERROR(840721, "Connecting to SDRconnect at %s failed (%s), so the source stays closed.", addr.c_str(), err.c_str()); err = "cannot connect to SDRconnect at " + addr + ": " + err + " (is SDRconnect running with its WebSocket server on?)"; return false; }
     ws.attach(s);
+    ws.setTrace(true);
+    wstrace::line("--", "connected to " + addr);
     sockRecvTimeout(s, timeoutMs);
     std::string e;
-    if (!ws.handshake(host, port, kPath, e)) { err = addr + ": " + e; return false; }
+    if (!ws.handshake(host, port, kPath, e)) { DIAG_ERROR(885889, "The WebSocket handshake with SDRconnect at %s failed (%s), so the source stays closed.", addr.c_str(), e.c_str()); err = addr + ": " + e; return false; }
     if (!askProps(ws, {"api_version", "valid_devices", "active_device", "valid_antennas", "active_antenna", "lna_state_min", "lna_state_max", "can_control",
                        "device_sample_rate"})) { err = "the connection to " + addr + " dropped"; return false; }
     std::vector<unsigned char> m;
@@ -185,11 +196,11 @@ bool connectAndAsk(WsClient& ws, const std::string& host, int port, int timeoutM
     for (int k = 0; k < 64; k++) {
         const auto kind = ws.readMessage(m, kMaxMessage);
         if (kind == WsClient::Kind::Timeout) break;
-        if (kind == WsClient::Kind::Closed || kind == WsClient::Kind::Bad) { err = addr + " closed the connection or sent bad data"; return false; }
+        if (kind == WsClient::Kind::Closed || kind == WsClient::Kind::Bad) { DIAG_ERROR(751733, "SDRconnect at %s closed the connection or sent bad data during start-up, so the source stays closed.", addr.c_str()); err = addr + " closed the connection or sent bad data"; return false; }
         if (kind == WsClient::Kind::Text && parseFlatJson(std::string(m.begin(), m.end()), kv)) absorb(kv, info);
         if (info.known && !info.devices.empty() && info.rate > 0) break;
     }
-    if (!info.known) { err = addr + " answered, but not as SDRconnect's WebSocket API (no api_version); is it the WebSocket port of SDRconnect (default 5454)?"; return false; }
+    if (!info.known) { DIAG_ERROR(343185, "The server at %s answered but not as SDRconnect, so the source stays closed (is it the WebSocket port, default 5454?).", addr.c_str()); err = addr + " answered, but not as SDRconnect's WebSocket API (no api_version); is it the WebSocket port of SDRconnect (default 5454)?"; return false; }
     return true;
 }
 
@@ -204,7 +215,7 @@ bool nrspStProbe(const std::string& host, int port, int timeoutMs, std::string& 
     NrspInfo info;
     const bool ok = connectAndAsk(ws, host, port, timeoutMs, info, err);
     if (ok) noteInfo((host.find(':') != std::string::npos ? "[" + host + "]" : host) + ":" + std::to_string(port), info);
-    if (ws.sock() != kBadSock) { ws.sendClose(); sockShutdown(ws.sock()); sockClose(ws.sock()); }
+    if (ws.sock() != kBadSock) { ws.sendClose(); sockShutdown(ws.sock()); sockClose(ws.sock()); ws.attach(kBadSock); }
     return ok;
 }
 
@@ -217,10 +228,10 @@ protected:
     bool openDevice(const TuneSettings& s, std::string& err) override {
         std::string host;
         int port = 0;
-        if (!splitHostPort(addr_, host, port)) { err = "nRSP-ST: bad address " + addr_ + " (host:port)"; openFailure_ = OpenFailure::Final; return false; }
+        if (!splitHostPort(addr_, host, port)) { DIAG_ERROR(772179, "The nRSP-ST address %s is not in host:port form, so no connection is tried.", addr_.c_str()); err = "nRSP-ST: bad address " + addr_ + " (host:port)"; openFailure_ = OpenFailure::Final; return false; }
         NrspInfo info;
         std::string e;
-        if (!connectAndAsk(ws_, host, port, kConnectMs, info, e)) { err = "nRSP-ST: " + e; openFailure_ = OpenFailure::Retry; return false; }
+        if (!connectAndAsk(ws_, host, port, kConnectMs, info, e)) { DIAG_ERROR(253807, "Connecting to SDRconnect at %s failed (%s), so the nRSP-ST stays closed.", addr_.c_str(), e.c_str()); err = "nRSP-ST: " + e; openFailure_ = OpenFailure::Retry; return false; }
         sentFreq_ = sentRate_ = sentLna_ = -1;
         sentAntenna_.clear();
         // a device chosen in the settings (by display name, with the network mode after a colon)
@@ -282,6 +293,7 @@ protected:
     }
     void closeDevice() override {
         if (ws_.sock() != kBadSock) {
+            wstrace::line("--", "OnAir stops: closing the connection");
             ws_.sendClose();
             sockShutdown(ws_.sock());
             sockClose(ws_.sock());
@@ -297,7 +309,7 @@ protected:
         while (run_) {
             const auto kind = ws_.readMessage(m, kMaxMessage);
             if (kind == WsClient::Kind::Closed || kind == WsClient::Kind::Timeout) break;   // closed or stalled: the connection is opened again
-            if (kind == WsClient::Kind::Bad) { fprintf(stderr, "nRSP-ST: bad data from %s, dropping the connection\n", addr_.c_str()); fflush(stderr); break; }
+            if (kind == WsClient::Kind::Bad) { DIAG(766145, "SDRconnect at %s sent bad data, so the connection is dropped.", addr_.c_str()); fprintf(stderr, "nRSP-ST: bad data from %s, dropping the connection\n", addr_.c_str()); fflush(stderr); break; }
             if (kind == WsClient::Kind::Text) {
                 if (!parseFlatJson(std::string(m.begin(), m.end()), kv)) { bad++; continue; }
                 NrspInfo i;
@@ -319,16 +331,24 @@ protected:
             const size_t n = (m.size() - 2) / 4;
             conv_.resize(n);
             const unsigned char* b = m.data() + 2;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
             for (size_t k = 0; k < n; k++) {
                 const int16_t re = (int16_t)(b[4 * k] | b[4 * k + 1] << 8), im = (int16_t)(b[4 * k + 2] | b[4 * k + 3] << 8);
                 conv_[k] = cf32(re / 32768.f, im / 32768.f);
             }
+#else
+            // 4.0: little-endian hosts take the 16-bit pairs as they are and convert them in one loop that vectorises (x / 32768 and
+            // x * (1 / 32768) are the same float: the samples are bit for bit the old ones). 10 Msps is 40 MB/s through here.
+            s16_.resize(2 * n);
+            std::memcpy(s16_.data(), b, 4 * n);
+            convertCs16(s16_.data(), n, conv_.data(), 1.0f / 32768);
+#endif
             if ((m.size() - 2) % 4) bad++;
             push(conv_.data(), n);
         }
         if (bad) { fprintf(stderr, "nRSP-ST: %llu malformed messages ignored\n", (unsigned long long)bad); fflush(stderr); }
         if (run_) {
-            fprintf(stderr, "nRSP-ST: lost the connection to SDRconnect at %s\n", addr_.c_str());
+            DIAG(300472, "The connection to SDRconnect at %s was lost, so the source tries to reconnect.", addr_.c_str()); fprintf(stderr, "nRSP-ST: lost the connection to SDRconnect at %s\n", addr_.c_str());
             fflush(stderr);
             lostAt_ = std::chrono::steady_clock::now();
         }
@@ -359,6 +379,7 @@ private:
     int sentLna_ = -1;
     std::string sentAntenna_;
     std::chrono::steady_clock::time_point lostAt_{};
+    std::vector<int16_t> s16_;   // one IQ message as 16-bit pairs (aligned for the conversion)
 };
 
 static void setCaps(DeviceInfo& d, const NrspInfo& i) {

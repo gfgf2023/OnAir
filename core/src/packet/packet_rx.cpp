@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // APRS / Packet receiver: one 25 kHz FM channel, AX.25 at 1200 baud (Bell 202 AFSK) and 9600 baud (G3RUH) decoded at the same time.
 // Front end: mix out the signal offset, decimate to about 100 kHz, resample to exactly 96 kHz, channel filter, FM discriminator.
 // 1200 baud: the audio goes to 48 kHz and three tone-correlator pairs run side by side (different windows and clock-loop speeds), each
@@ -6,7 +9,9 @@
 // "fix bits" (a failed frame retried with one or two bits flipped), and a sound-card mode where the input is FM-demodulated audio.
 // 9600 baud: two slicers with different filters, a clock loop, the G3RUH descrambler (x^17 + x^12 + 1) and NRZI.
 // The frame layer is packet_ax25.*, the APRS layer packet_aprs.*.
+#include <atomic>
 #include "dect2/session/mode_adapters.h"
+#include "dect2/wirecap/wire.h"
 #include "dect2/packet/packet_rx.h"
 #include "dect2/automation/engine.h"
 #include "dect2/results/results_io.h"
@@ -16,6 +21,7 @@
 #include "dect2/packet/packet_aprs.h"
 #include "dect2/packet/packet_ax25.h"
 #include "dect2/packet/packet_demod.h"
+#include "dect2/packet/packet_fec.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -30,7 +36,7 @@ namespace dect2 {
 namespace {
 
 using pktdemod::kMidRate;
-constexpr size_t kMaxFrames = 200, kMaxStations = 300;
+constexpr size_t kMaxFramesBase = 200, kMaxStationsBase = 300;
 constexpr int64_t kDupWindow = (int64_t)(0.03 * kMidRate);   // the same bytes this close together are one transmission
 constexpr double kDigiWindowSec = 30.0;                       // the same source, destination and text again within this: a digipeated copy
 const std::vector<float> kSlicerGains = {1.0f, 0.71f, 1.41f, 0.5f, 2.0f};   // mark against space: 0, -3, +3, -6, +6 dB (index 0 counts the failures)
@@ -50,10 +56,16 @@ struct Rec { PacketStation s; };
 struct PacketReceiver::Impl {
     std::mutex procMu, telMu;
     std::function<void(const std::string&)> log;
+    std::function<void(const ax25::Frame&, int)> frameTap;   // setFrameTap (set under procMu)
 
     double fs = 0;
+    std::atomic<int> capScale{1};          // setTableScale(): frame and station caps times this
+    size_t kMaxFrames() const { return kMaxFramesBase * (size_t)capScale.load(); }
+    size_t kMaxStations() const { return kMaxStationsBase * (size_t)capScale.load(); }
     bool narrow = false;                   // setNarrowChannel()
     int fixBits = 0;                       // setFixBits()
+    bool vote = true;                      // setVote(): failed frames are voted over the demodulators' copies
+    PacketPathGraph paths;                 // who repeated what
     int emphasis = 0;                      // setEmphasis(): 0 auto (the slicers cover it), 1 de-emphasis, 2 pre-emphasis
     bool audioIn = false;                  // setAudioInput(): the input is FM-demodulated audio
     bool wideInput = false;                // setWideInput(): one carrier brought to 192 ksps by the whole-span bank (the radio's minimum rate does not apply)
@@ -65,6 +77,7 @@ struct PacketReceiver::Impl {
     dmr::Fir<float> audio48;               // 96 -> 48 kHz low-pass for the 1200 baud path
     dmr::Fir<float> lp9600[2];
     AfskMulti afsk[3];
+    std::vector<std::unique_ptr<PacketFecRx>> fec;
     pktdemod::Emphasis emph;
     Fsk9600 fsk[2];
     // "fix bits": stretches of a frame's length that failed, tried again a little later unless another demodulator got the frame
@@ -84,6 +97,7 @@ struct PacketReceiver::Impl {
     std::deque<Fail> fails;
     std::deque<PacketFrameInfo> frames;
     std::unordered_map<std::string, Rec> stations;
+    AprsMessageLog msgs;                   // messages and bulletins (aprs_board.h)
     PacketTelemetry t;
     int lastState = 0;
     PacketTelemetry pub;
@@ -114,6 +128,16 @@ struct PacketReceiver::Impl {
         for (int i = 0; i < 3; i++)
             for (size_t k = 0; k < afsk[i].chains.size(); k++)
                 afsk[i].chains[k].hdlc.setCallback([this, i, k](const std::vector<uint8_t>& dat, bool ok) { onRaw(1200, i * 16 + (int)k, dat, ok, afsk[i].pos * 2); });
+        // FX.25 and IL2P on the same line bits (IL2P is not differentially coded and only makes sense before the 9600 scrambler, so the 1200 baud chains only)
+        fec.clear();
+        for (int i = 0; i < 3; i++)
+            for (size_t k = 0; k < afsk[i].chains.size(); k++) {
+                auto f = std::make_unique<PacketFecRx>();
+                f->setSink([this, i, k](const std::vector<uint8_t>& dat, int, bool) { onRaw(1200, -1, dat, true, afsk[i].pos * 2); });
+                PacketFecRx* fp = f.get();
+                afsk[i].chains[k].hdlc.setBitTap([fp](int lv) { fp->lineBit(lv, true); });
+                fec.push_back(std::move(f));
+            }
         for (int i = 0; i < 2; i++) fsk[i].hdlc.setCallback([this, i](const std::vector<uint8_t>& dat, bool ok) { onRaw(9600, i, dat, ok, fsk[i].pos); });
         applyFixBits();
         emph.set(emphasis);
@@ -151,7 +175,13 @@ struct PacketReceiver::Impl {
 
     void shiftTimes(double dt) {
         for (auto& f : frames) f.timeSec += dt;
-        for (auto& kv : stations) kv.second.s.lastHeardSec += dt;
+        for (auto& kv : stations) {
+            kv.second.s.lastHeardSec += dt;
+            kv.second.s.wx.timeSec += dt;
+            for (AprsWx& w : kv.second.s.wxHist) w.timeSec += dt;
+        }
+        msgs.shiftTimes(dt);
+        paths.shiftTimes(dt);
     }
     void fillLists(PacketTelemetry& o) const {
         o.frames.assign(frames.begin(), frames.end());
@@ -160,6 +190,8 @@ struct PacketReceiver::Impl {
         std::sort(order.begin(), order.end(), [](const PacketStation* a, const PacketStation* b) { return a->lastHeardSec > b->lastHeardSec; });
         o.stations.clear();
         for (const PacketStation* s : order) o.stations.push_back(*s);
+        o.messages = msgs.list();
+        o.myCall = msgs.myCall();
     }
     void republish() {   // procMu held: the lists alone, with no signal to wait for
         std::lock_guard<std::mutex> lk(telMu);
@@ -169,6 +201,7 @@ struct PacketReceiver::Impl {
 
     // ---- frames
     void applyFixBits() {
+        const bool want = fixBits > 0 || vote;
         auto cb = [this](int baud, const AfskMulti* a, const Fsk9600* f) {
             return [this, baud, a, f](const std::vector<uint8_t>& bits) {
                 if (!fe.carrierRecent(0.1) || cands.size() >= 48) return;   // no carrier: noise between two random flags
@@ -176,30 +209,47 @@ struct PacketReceiver::Impl {
             };
         };
         for (auto& a : afsk)
-            for (auto& ch : a.chains) ch.hdlc.setRawCallback(fixBits ? ax25::HdlcRx::RawCallback(cb(1200, &a, nullptr)) : nullptr);
-        for (auto& f : fsk) f.hdlc.setRawCallback(fixBits ? ax25::HdlcRx::RawCallback(cb(9600, nullptr, &f)) : nullptr);
+            for (auto& ch : a.chains) ch.hdlc.setRawCallback(want ? ax25::HdlcRx::RawCallback(cb(1200, &a, nullptr)) : nullptr);
+        for (auto& f : fsk) f.hdlc.setRawCallback(want ? ax25::HdlcRx::RawCallback(cb(9600, nullptr, &f)) : nullptr);
         cands.clear();
     }
 
-    // the failed stretches once every demodulator is past them: skipped when one of them got the frame; at most three tries per frame
+    // the failed stretches once every demodulator is past them: skipped when one of them got the frame. Per transmission: first the demodulators'
+    // copies are voted (ax25::voteRepair), then, with "fix bits" on, each copy gets the bit-flip patterns (at most three tries per frame)
     void repairCands() {
-        int64_t lastTry = -(int64_t)1e15; int tries = 0; bool done = false; int lastBaud = 0;
         while (!cands.empty() && cands.front().t < fe.n96 - 2 * kDupWindow) {
-            Cand c = std::move(cands.front());
-            cands.pop_front();
-            if (c.baud != lastBaud || c.t - lastTry > kDupWindow) { tries = 0; done = false; }
-            lastTry = c.t; lastBaud = c.baud;
-            if (done || tries >= 3) continue;
+            std::vector<Cand> grp;
+            const int64_t t0 = cands.front().t;
+            const int baud = cands.front().baud;
+            for (auto it = cands.begin(); it != cands.end();) {
+                if (it->baud == baud && std::llabs(it->t - t0) < kDupWindow && it->t < fe.n96 - 2 * kDupWindow) { grp.push_back(std::move(*it)); it = cands.erase(it); }
+                else ++it;
+            }
             bool had = false;
-            for (const Recent& r : recent) if (r.baud == c.baud && std::llabs(r.t - c.t) < 3 * kDupWindow) { had = true; break; }
-            if (had) { done = true; continue; }
-            tries++;
+            for (const Recent& r : recent) if (r.baud == baud && std::llabs(r.t - t0) < 3 * kDupWindow) { had = true; break; }
+            if (had) continue;
             std::vector<uint8_t> out;
-            const int n = ax25::repairFrame(c.bits, ax25::fixPatterns(fixBits, c.baud == 9600), out, ax25::plausibleFrame);
-            if (!n) continue;
-            done = true;
-            t.fixedFrames++;
-            onRaw(c.baud, -1, out, true, c.t, n);
+            if (vote && grp.size() >= 2) {
+                std::vector<std::vector<uint8_t>> copies;
+                for (const Cand& c : grp) copies.push_back(c.bits);
+                ax25::VoteResult vr;
+                if (ax25::voteRepair(copies, ax25::plausibleFrame, vr)) {
+                    t.votedFrames++;
+                    onRaw(baud, -1, vr.frame, true, t0, 4);
+                    continue;
+                }
+            }
+            if (!fixBits) continue;
+            int tries = 0;
+            for (const Cand& c : grp) {
+                if (tries >= 3) break;
+                tries++;
+                const int n = ax25::repairFrame(c.bits, ax25::fixPatterns(fixBits, c.baud == 9600), out, ax25::plausibleFrame);
+                if (!n) continue;
+                t.fixedFrames++;
+                onRaw(c.baud, -1, out, true, c.t, n);
+                break;
+            }
         }
     }
 
@@ -233,7 +283,7 @@ struct PacketReceiver::Impl {
     void touchStation(const std::string& call, const aprs::Info* a, bool object, const std::string& via, double tnow) {
         auto it = stations.find(call);
         if (it == stations.end()) {
-            if (stations.size() >= kMaxStations) {
+            if (stations.size() >= kMaxStations()) {
                 auto old = stations.begin();
                 for (auto j = stations.begin(); j != stations.end(); ++j) if (j->second.s.lastHeardSec < old->second.s.lastHeardSec) old = j;
                 stations.erase(old);
@@ -256,12 +306,18 @@ struct PacketReceiver::Impl {
             if (a->symTable) { s.symTable = a->symTable; s.symCode = a->symCode; }
             s.comment = a->comment;
         } else if (a->type == "Status") s.comment = a->text;
+        if (a->hasWx) {   // a weather report, with or without a position (aprs_board.h)
+            const AprsWx w = aprsWxFromReport(a->wx, tnow);
+            if (w.any()) { aprsWxAdd(s.wx, s.wxHist, w); s.hasWx = true; }
+        }
     }
 
     void accept(int baud, const std::vector<uint8_t>& dat, int64_t tt, int fixedBits) {
         const double tnow = (double)tt / kMidRate;
         ax25::Frame f;
         if (!ax25::parseFrame(dat.data(), dat.size(), f)) { t.blocksBad++; if (baud == 1200) t.bad1200++; else t.bad9600++; return; }
+        if (wire::on(wire::Aprs)) wire::Hub::get().publish(wire::Aprs, dat);
+        if (frameTap) frameTap(f, baud);
         t.blocksOk++;
         if (baud == 1200) { t.ok1200++; t.last1200Sec = tnow; } else { t.ok9600++; t.last9600Sec = tnow; }
         aprs::Info a;
@@ -276,19 +332,25 @@ struct PacketReceiver::Impl {
             pf.type = f.typeName();
             pf.summary = "AX.25 " + f.typeName() + (f.info.empty() ? "" : ": " + f.info);
         }
-        if (fixedBits) pf.summary += fixedBits == 3 ? " [2 bits fixed]" : " [1 bit fixed]";
+        if (fixedBits) pf.summary += fixedBits == 4 ? " [repaired by vote]" : fixedBits == 3 ? " [2 bits fixed]" : " [1 bit fixed]";
         // the same packet again through a digipeater (only the path differs): listed, but not counted, gated or announced twice
         const std::string key = pf.from + ">" + pf.to + ":" + f.info;
         auto hk = heard.find(key);
         const bool digiCopy = hk != heard.end() && tnow - hk->second < kDigiWindowSec && tnow >= hk->second;
         heard[key] = tnow;
+        {   // who repeated what: the position of the source from this frame, or from what is known of it
+            bool ppos = false; double plat = 0, plon = 0;
+            if (isAprs && a.hasPos && a.type != "Object" && a.type != "Item" && inner.empty()) { ppos = true; plat = a.lat; plon = a.lon; }
+            else { auto st = stations.find(pf.from); if (st != stations.end() && st->second.s.hasPos) { ppos = true; plat = st->second.s.lat; plon = st->second.s.lon; } }
+            paths.observe(f, tnow, ppos, plat, plon, digiCopy);
+        }
         if (heard.size() > 2000) for (auto it = heard.begin(); it != heard.end();) it = tnow - it->second > kDigiWindowSec ? heard.erase(it) : std::next(it);
         if (digiCopy) {
             t.digiCopies++;
             pf.summary = "(again, via " + (pf.path.empty() ? std::string("direct") : pf.path) + ") " + pf.summary;
             if (Feeds::get().wantKiss()) Feeds::get().kiss(dat.data(), dat.size());   // KISS clients get every frame, as from a TNC
             frames.push_back(pf);
-            while (frames.size() > kMaxFrames) frames.pop_front();
+            while (frames.size() > kMaxFrames()) frames.pop_front();
             auto st = stations.find(pf.from);
             if (st != stations.end()) st->second.s.lastHeardSec = tnow;
             clearFailsNear(baud, tt);
@@ -303,14 +365,28 @@ struct PacketReceiver::Impl {
             automation::emit(std::move(ev));
         }
         frames.push_back(pf);
-        while (frames.size() > kMaxFrames) frames.pop_front();
+        while (frames.size() > kMaxFrames()) frames.pop_front();
         if (!inner.empty()) {   // the gateway that sent it is heard, the station inside is where the position goes
             touchStation(pf.from, nullptr, false, "", tnow);
             touchStation(inner, &a, false, "", tnow);
             stations[inner].s.via = pf.from;
         } else touchStation(pf.from, isAprs ? &a : nullptr, false, "", tnow);
         if (isAprs && (a.type == "Object" || a.type == "Item") && !a.name.empty()) touchStation(a.name, &a, true, inner.empty() ? pf.from : inner, tnow);
+        if (isAprs && a.type == "Message") noteMessage(inner.empty() ? pf.from : inner, a, tnow);
         clearFailsNear(baud, tt);
+    }
+
+    // a message, bulletin, ack or reject: into the Messages view, and new ones to the automations (aprs.message)
+    void noteMessage(const std::string& from, const aprs::Info& a, double tnow) {
+        msgs.setMax(500 * (size_t)capScale.load());
+        if (msgs.add(tnow, from, a) != AprsMessageLog::Added::New) return;
+        const AprsMessage& m = msgs.list()[(size_t)msgs.lastIndex()];
+        if (m.toMe) say("APRS: message to you from " + m.from + ": " + m.text);
+        if (!automation::wants(automation::FAprs)) return;
+        automation::Event ev("aprs.message");
+        ev.at(automation::wallNow(), "APRS", 0);
+        ev.str("from", m.from).str("to", m.to).str("text", m.text).str("msgno", m.msgNo).str("kind", aprsMsgKindName(m.kind)).flag("to_me", m.toMe);
+        automation::emit(std::move(ev));
     }
 
     // a good frame explains a failure of another demodulator at the same moment (a failure is only counted 1.3 s after it, for this)
@@ -345,6 +421,13 @@ struct PacketReceiver::Impl {
         }
         PacketTelemetry o = t;
         fillLists(o);
+        o.directFrames = paths.directFrames();
+        paths.snapshot(tnow, [this](const std::string& call, double& la, double& lo) {
+            auto it = stations.find(call);
+            if (it == stations.end() || !it->second.s.hasPos) return false;
+            la = it->second.s.lat; lo = it->second.s.lon;
+            return true;
+        }, o.digis, o.edges);
         std::lock_guard<std::mutex> lk(telMu);
         o.seq = ++seq;
         pub = std::move(o);
@@ -367,7 +450,7 @@ struct PacketReceiver::Impl {
             if (!f9[i].empty()) fsk[i].process(f9[i].data(), f9[i].size());
         }
         fe.commit();
-        if (fixBits && !cands.empty()) repairCands();
+        if ((fixBits || vote) && !cands.empty()) repairCands();
         while (fe.n96 >= nextReport) {
             nextReport += (int64_t)(0.25 * kMidRate);
             publish();
@@ -387,6 +470,13 @@ void PacketReceiver::setWideInput(bool on) {
     p_->wideInput = on;
     if (p_->fs > 0) p_->configure(p_->fs);
 }
+void PacketReceiver::setMyCall(const std::string& call) {
+    std::lock_guard<std::mutex> lk(p_->procMu);
+    if (call == p_->msgs.myCall()) return;
+    p_->msgs.setMyCall(call);
+    p_->republish();
+}
+void PacketReceiver::setTableScale(int scale) { p_->capScale = std::max(1, std::min(20, scale)); }
 void PacketReceiver::setNarrowChannel(bool on) {
     std::lock_guard<std::mutex> lk(p_->procMu);
     if (p_->narrow == on) return;
@@ -403,6 +493,16 @@ void PacketReceiver::setFixBits(int level) {
     if (level == p_->fixBits) return;
     p_->fixBits = level;
     if (p_->isReady) p_->applyFixBits();
+}
+void PacketReceiver::setVote(bool on) {
+    std::lock_guard<std::mutex> lk(p_->procMu);
+    if (on == p_->vote) return;
+    p_->vote = on;
+    if (p_->isReady) p_->applyFixBits();
+}
+bool PacketReceiver::vote() const {
+    std::lock_guard<std::mutex> lk(p_->procMu);
+    return p_->vote;
 }
 void PacketReceiver::setEmphasis(int mode) {
     std::lock_guard<std::mutex> lk(p_->procMu);
@@ -455,8 +555,10 @@ bool PacketReceiver::telemetry(PacketTelemetry& out, uint64_t lastSeq) {
 }
 void PacketReceiver::clearResults() {
     std::lock_guard<std::mutex> lk(p_->procMu);
-    p_->frames.clear(); p_->stations.clear();
+    p_->frames.clear(); p_->stations.clear(); p_->msgs.clear();
+    p_->paths.clear();
     p_->republish();
+    { std::lock_guard<std::mutex> tl(p_->telMu); p_->pub.digis.clear(); p_->pub.edges.clear(); p_->pub.directFrames = 0; }
 }
 std::string PacketReceiver::saveResults() const {
     std::lock_guard<std::mutex> lk(p_->procMu);
@@ -479,6 +581,11 @@ void PacketReceiver::setVolume(float v) { p_->listen.volume = std::max(0.f, std:
 void PacketReceiver::setMuted(bool m) { p_->listen.muted = m; }
 void PacketReceiver::setSilent(bool s) { p_->listen.silent = s; }
 void PacketReceiver::setListenTap(std::function<void(const float* x, size_t n)> cb) { p_->listen.setTap(std::move(cb)); }
+void PacketReceiver::setFrameTap(std::function<void(const ax25::Frame& f, int baud)> cb) {
+    std::lock_guard<std::mutex> lk(p_->procMu);
+    p_->frameTap = std::move(cb);
+}
+
 void PacketReceiver::setLogCallback(std::function<void(const std::string&)> cb) {
     std::lock_guard<std::mutex> lk(p_->procMu);
     p_->log = std::move(cb);

@@ -1,15 +1,19 @@
 // EDACS receiver: FM front end at 76.8 kHz (8 samples per bit), dotting search at every phase, then the 240 payload bits are sliced for
-// the three alignments the dotting leaves open (one bit earlier, exact, one later) and the one whose three copies agree best is voted.
-// On top: the message layer (assumed layout, edacs_msg.h) with the call and talkgroup tables, a power scan of the voice channels of a frequency table (one FFT
+// the alignments the dotting leaves open (both polarities) and the one that matches the sync word 0x555557125555 and passes the BCH check is voted.
+// On top: the message layer (edacs_msg.h) with the call and talkgroup tables, a power scan of the voice channels of a frequency table (one FFT
 // of the capture), and the following of one analog voice channel through a second FM front end.
 #include "dect2/edacs/edacs_rx.h"
 #include "dect2/audio/audioout.h"
+#include "dect2/codec/codec_registry.h"
+#include "dect2/edacs/provoice.h"
 #include "dect2/dsp/fftutil.h"
 #include "dect2/dsp/fm_front.h"
 #include "dect2/edacs/edacs_msg.h"
 #include "dect2/edacs/edacs_proto.h"
 #include "dect2/edacs/edacs_tel.h"
+#include "dect2/trunkpool/one_radio.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -24,7 +28,7 @@ ModeTuning edacsTuning() {
     ModeTuning t;
     t.stdMode = 132;
     t.id = "edacs";
-    t.name = "EDACS trunking (WIP)";
+    t.name = "EDACS trunking";
     t.minMhz = 29.7;
     t.maxMhz = 960.0;
     t.defMhz = 856.0;
@@ -47,6 +51,7 @@ constexpr double kLockSec = 5.0;
 constexpr double kVoiceRate = 48000.0;
 constexpr double kCallHoldSec = 4.0;       // an announced call with no repeat and no carrier on its channel ends after this
 constexpr double kActivityHoldSec = 1.5;   // a carrier-only call ends this long after the carrier went
+constexpr int kPvRing = 16384, kPvMask = kPvRing - 1;   // ProVoice block buffer: 768 bits at 8 samples
 constexpr double kChanHalfHz = 6250.0;     // half the width of a channel in the power scan
 int pop(uint64_t x) { return __builtin_popcountll(x); }
 }
@@ -95,8 +100,48 @@ struct EdacsReceiver::Impl {
     std::atomic<float> volume{1.f};
     std::atomic<bool> muted{false}, silent{false};
     std::function<void(int, const float*, size_t)> tap;
+    // ---- ProVoice on the followed channel: the same FM front as the control channel
+    FmFront pv;
+    FmBiquad pvLp;
+    EyeEnvelope pvEnv;
+    std::vector<float> pvDisc;
+    float pvRing[kPvRing] = {};
+    uint64_t pvN = 0;
+    uint32_t pvReg[kSps] = {};
+    bool pvLocked = false, pvInv = false;
+    uint64_t pvAt = 0;                        // the sample of the last sync bit of the block being read
+    int pvMiss = 0;
+    bool followDig = false;
+    std::unique_ptr<codec::SpeechCodec> pvCodec;
+    uint64_t pvBlocks = 0, pvFrames = 0, pvBad = 0;
     int pendingLid = -1;
     double pendingLidT = -1e9;
+    // ---- single-radio trunking: every analog call inside the capture in a voice slot of its own
+    tpool::OneRadio one{"edacs", 4};
+
+    void slotsStep() {
+        one.setEnabled(follow);
+        one.setControlHz(centreHz > 0 ? centreHz + offHz : 0);
+        if (follow)
+            for (const auto& c : tel.calls) {
+                if (!c.active || c.freqHz <= 0 || c.digital) continue;   // ProVoice: only the listened channel (its decoder is the plug-in's)
+                if (c.fromActivity && !followAct) continue;
+                if (!followGroups.empty() && std::find(followGroups.begin(), followGroups.end(), c.gid) == followGroups.end()) continue;
+                tpool::GrantEvent g;
+                g.proto = tpool::Proto::Edacs; g.tg = c.gid; g.src = c.lid; g.freqHz = c.freqHz; g.channel = c.lcn; g.group = c.group; g.emergency = c.emergency;
+                one.onGrant(g);   // repeated every report while the call runs: the slot keeps it, a new call gets a free slot
+            }
+        int used = 0;
+        const std::vector<tpool::OneRadioCall> rows = one.calls(64);
+        for (auto& c : tel.calls) {
+            c.voiceSlot = -1;
+            if (!c.active) continue;
+            for (const auto& r : rows) if (r.active && r.followed && r.voiceSlot >= 0 && std::fabs(r.freqHz - c.freqHz) < 1 && r.tg == c.gid) { c.voiceSlot = r.voiceSlot; used++; break; }
+        }
+        tel.voiceSlots = one.slots(); tel.slotsInUse = used;
+        const std::string n = one.lastNote();
+        tel.slotsStatus = n.empty() ? one.status() : n;
+    }
 
     void initActivity() {
         int N = 256;
@@ -192,32 +237,25 @@ struct EdacsReceiver::Impl {
             return;
         }
         if (c) endCall(*c);
-        const int lid = t - pendingLidT < 0.1 ? pendingLid : -1;
-        newCall(m.lcn, m.gid, lid, group, m.emergency, m.digital, false, t);
+        newCall(m.lcn, m.gid, m.lid >= 0 ? m.lid : m.source, group, m.emergency, m.digital, false, t);
     }
-    void handleWord(uint32_t word, double t) {
-        const edacs::Msg m = edacs::parse(word, layout);
+    void handleFrame(uint32_t w1, uint32_t w2, double t) {
+        const edacs::Msg m = edacs::parse(w1, w2, layout);
         tel.messages++;
         if (m.type != edacs::MsgType::Unknown) tel.messagesKnown++;
+        if (m.lcn >= 1 && m.lcn <= 25 && m.lcn > tel.nChannels) tel.nChannels = m.lcn;   // the highest LCN seen so far
         switch (m.type) {
-        case edacs::MsgType::SiteId: tel.siteValid = true; tel.siteId = m.site; tel.systemId = m.system; break;
-        case edacs::MsgType::ControlChannel: tel.controlLcn = m.lcn; tel.nChannels = m.nChannels; break;
-        case edacs::MsgType::GroupAssign: case edacs::MsgType::IndividualAssign: assignment(m, t); break;
-        case edacs::MsgType::LidInfo:
-            pendingLid = m.lid; pendingLidT = t;
-            for (auto& c : tel.calls)
-                if (c.active && c.lid < 0 && t - c.lastSec < 0.3) {
-                    c.lid = m.lid;
-                    if (c.group) for (auto& g : tel.talkgroups) if (g.gid == c.gid) g.lastLid = m.lid;
-                    break;
-                }
+        case edacs::MsgType::SiteId:
+            tel.siteValid = true; tel.siteId = m.site; tel.systemId = m.area;
+            if (m.lcn >= 1 && m.lcn <= 25) tel.controlLcn = m.lcn;
             break;
+        case edacs::MsgType::GroupAssign: case edacs::MsgType::IndividualAssign: assignment(m, t); break;
         case edacs::MsgType::CallEnd: { EdacsCall* c = activeCall(m.lcn); if (c && !c->fromActivity) { c->lastSec = t; endCall(*c); } break; }
         default: break;
         }
     }
     std::string frameText(uint32_t a, uint32_t b) {
-        return edacs::describe(edacs::parse(a, layout)) + "  |  " + edacs::describe(edacs::parse(b, layout));
+        return edacs::describe(edacs::parse(a, b, layout));
     }
 
     // ---- housekeeping (every report): channel activity into calls, call timeouts, the choice of the followed channel
@@ -247,21 +285,24 @@ struct EdacsReceiver::Impl {
         if (followLcn) {
             EdacsCall* c = activeCall(followLcn);
             const bool carrier = chActive(followLcn) || t - chLastOn[(size_t)followLcn - 1] < 0.4 || (c && t - c->startSec < 1.0);   // the call is over when its carrier is
-            if (!follow || !c || !carrier) { flushAudio(); followLcn = 0; voice.reset(); }
+            if (!follow || !c || !carrier) { flushAudio(); followLcn = 0; followDig = false; voice.reset(); }
         }
         if (follow && !followLcn) {
             if (lcnFreq.empty()) tel.note = "no frequency table: enter the voice channel frequencies (LCN 1, 2, 3 ...) to follow calls";
             else if (centreHz <= 0) tel.note = "the frequency of the capture is not known (file input): the voice channels cannot be placed";
             for (int pass = 0; pass < 2 && !followLcn; pass++)   // first the calls with a carrier on the air, then the ones just announced
                 for (auto& c : tel.calls) {   // newest first
-                    if (!c.active || c.freqHz <= 0 || c.digital) continue;
+                    if (!c.active || c.freqHz <= 0) continue;
+                    if (c.digital && !codec::pluginLoaded("imbe")) { if (tel.note.empty()) tel.note = "ProVoice call: install the IMBE plug-in (onair-codec-imbe) for its sound"; continue; }
                     if (c.fromActivity && !followAct) continue;
                     if (!followGroups.empty() && std::find(followGroups.begin(), followGroups.end(), c.gid) == followGroups.end()) continue;
                     if (!inCapture(c.freqHz)) { if (tel.note.empty()) tel.note = "LCN " + std::to_string(c.lcn) + " is outside the captured span: use a wider capture"; continue; }
                     if (pass == 0 ? !chActive(c.lcn) : t - c.startSec > 1.0) continue;
                     followLcn = c.lcn;
+                    followDig = c.digital;
                     voice.reset(); vdc = 0; vlp.clear(); aud.clear();
                     voice.setOffset(c.freqHz - centreHz);
+                    if (followDig) startProvoice(c.freqHz);
                     break;
                 }
         }
@@ -269,6 +310,78 @@ struct EdacsReceiver::Impl {
         tel.follow = follow; tel.followActivity = followAct; tel.followLcn = followLcn;
         tel.audioOpen = followLcn != 0 && chActive(followLcn) && !muted.load();
     }
+
+    // ---- ProVoice: the 768 bit blocks of the followed digital channel. Sync on the 32 bit word (four variants: standard or Extended Addressing, both polarities), then one block
+    // of four IMBE 7100x4400 frames each 80 ms. The frames are corrected and rewritten as 7200x4400 code words for the user-installed plug-in.
+    void startProvoice(double hz) {
+        pv.reset(); pv.setOffset(hz - centreHz); pvEnv.clear(); pvLp.clear(); pvN = 0; for (auto& r : pvRing) r = 0; for (auto& r : pvReg) r = 0;
+        pvLocked = false; pvMiss = 0;
+        pvCodec = codec::pluginVocoder("imbe");
+    }
+    double pvSoft(uint64_t i) const { return (pvRing[i & kPvMask] + pvRing[(i - 1) & kPvMask] + pvRing[(i - 2) & kPvMask]) / 3.0; }
+    void pvDecodeBlock(uint64_t lastSync) {
+        const double thr = pvEnv.mid();
+        uint8_t bits[736];
+        for (int i = 0; i < 736; i++) {
+            const uint64_t idx = lastSync + (uint64_t)(i + 1) * kSps;
+            bits[i] = (uint8_t)((pvSoft(idx) > thr ? 0 : 1) ^ (pvInv ? 1 : 0));
+        }
+        provoice::Frame7100 fr[4];
+        uint16_t lid = 0;
+        provoice::splitBlock(bits, fr, &lid);
+        pvBlocks++;
+        for (int f = 0; f < 4; f++) {
+            uint8_t d[provoice::kInfoBits];
+            int errs = 0;
+            pvFrames++;
+            if (!provoice::decode7100(fr[f], d, &errs)) { pvBad++; continue; }
+            if (!pvCodec) continue;
+            provoice::convert7100to7200(d);
+            provoice::Frame7200 out;
+            provoice::encode7200(d, out);
+            const std::vector<int16_t> pcm = pvCodec->decode(codec::packCodeWords(&out.b[0][0], 8, 23));
+            // the plug-in gives 8 kHz; the follower plays at 48 kHz: each sample six times
+            for (int16_t v : pcm) for (int k = 0; k < 6; k++) aud.push_back(chActive(followLcn) ? (float)v / 32768.f : 0.f);
+            if (aud.size() >= 960) flushAudio();
+        }
+    }
+    void pvSample(double s) {
+        pvRing[pvN & kPvMask] = (float)s;
+        pvEnv.push(s);
+        const int ph = (int)(pvN % kSps);
+        const double thr = pvEnv.mid();
+        pvReg[ph] = (pvReg[ph] << 1) | (pvSoft(pvN) > thr ? 0u : 1u);   // a positive step is payload bit 0 (dsd_dibit.c)
+        pvN++;
+        if (pvLocked) {
+            if (pvN >= pvAt + 736 * kSps + 2) {
+                pvDecodeBlock(pvAt);
+                pvAt += (uint64_t)provoice::kBlockBits * kSps;
+                // is the next sync where it should be? a few samples each way, so clock drift is followed; otherwise hunt again
+                int best = 99; uint64_t bestAt = 0;
+                for (int d = -3; d <= 3; d++) {
+                    const uint64_t last = pvAt + (uint64_t)(int64_t)d;
+                    uint32_t v = 0;
+                    for (int i = 0; i < 32; i++) v = (v << 1) | (pvSoft(last - (uint64_t)(31 - i) * kSps) > thr ? 0u : 1u);
+                    const uint32_t tmpl = (pvInv ? ~pvTmpl : pvTmpl);
+                    const int e = __builtin_popcount(v ^ tmpl);
+                    if (e < best) { best = e; bestAt = last; }
+                }
+                if (best <= 5) { pvAt = bestAt; pvMiss = 0; }
+                else if (++pvMiss >= 3) pvLocked = false;
+            }
+            return;
+        }
+        if (pvN < 512 || pvEnv.range() < 800) return;
+        const uint32_t r = pvReg[ph];
+        for (uint32_t t : {provoice::kSyncStdValue, provoice::kSyncEaValue}) {
+            const int e0 = __builtin_popcount(r ^ t), e1 = __builtin_popcount(r ^ ~t);
+            if (e0 <= 2 || e1 <= 2) {
+                pvInv = e1 < e0; pvTmpl = t; pvAt = pvN - 1; pvLocked = true; pvMiss = 0;
+                return;
+            }
+        }
+    }
+    uint32_t pvTmpl = 0;
 
     // ---- the followed voice channel
     void voiceSamples() {
@@ -315,51 +428,55 @@ struct EdacsReceiver::Impl {
         // centre: sample index (1-based count) of the median dotting hit; the last sync bit was sampled at centre - 1
         const double thr = env.mid();
         // Frames follow each other every 288 bits, so after a good frame the next one is looked for where the clock says (predicted). The dotting alone
-        // cannot tell neighbouring bit alignments apart (the three copies agree under a shift) and the Barker word is not public.
+        // cannot tell neighbouring bit alignments apart (the three copies agree under a shift) and 
         const bool predicted = predictedMode;
-        struct Cand { int off, score, ea, eb; uint32_t a, b; };
-        Cand c[6];
+        struct Cand { int off, sub, pol, score, ea, eb; bool okA, okB; uint32_t a, b; };
+        Cand c[64];
         const int order[6] = {0, -1, 1, 2, -2, 3};   // the dotting looks the same two bits later or earlier, so these alignments are tried
         const int nOrd = predicted ? 3 : 6;
-        for (int oi = 0; oi < nOrd; oi++) {
-            const int off = order[oi];
-            const int64_t last = (int64_t)centre - 1 + (int64_t)off * kSps;
-            uint8_t bits[kPayloadBits];
-            for (int i = 0; i < kPayloadBits; i++) {
-                const bool one = soft((uint64_t)(last + (int64_t)(i + 1) * kSps)) > thr;
-                bits[i] = (uint8_t)(one != inverted);
-            }
-            // the 48 bits in front of the payload should be dotting at both ends: count the breaks in the first and last 16 of them
+        int nc = 0;
+        // after a good frame the bit clock is followed to the sample (a sender / radio clock difference moves the frame start a little every frame)
+        for (int oi = 0; oi < nOrd * (predicted ? 5 : 1); oi++) {
+            const int off = order[oi % nOrd];
+            const int sub = predicted ? std::array<int, 5>{0, -1, 1, -2, 2}[(size_t)(oi / nOrd)] : 0;
+            const int64_t last = (int64_t)centre - 1 + (int64_t)off * kSps + sub;
+            uint8_t raw[kPayloadBits];
+            for (int i = 0; i < kPayloadBits; i++) raw[i] = soft((uint64_t)(last + (int64_t)(i + 1) * kSps)) > thr ? 1 : 0;
             uint8_t pre[edacs::kSyncBits];
             for (int j = 0; j < edacs::kSyncBits; j++) pre[edacs::kSyncBits - 1 - j] = soft((uint64_t)(last - (int64_t)j * kSps)) > thr ? 1 : 0;
-            int dot = 0;
-            for (int j = 1; j < 16; j++) dot += pre[j] == pre[j - 1];
-            for (int j = edacs::kSyncBits - 15; j < edacs::kSyncBits; j++) dot += pre[j] == pre[j - 1];
-            int ea, eb;
-            const uint64_t va = edacs::vote(bits, ea), vb = edacs::vote(bits + 120, eb);
-            c[oi] = {off, dot + ea + eb, ea, eb, (uint32_t)(va >> 12) & 0xFFFFFFF, (uint32_t)(vb >> 12) & 0xFFFFFFF};
+            for (int pol = 0; pol < 2; pol++) {   // the polarity is found from the sync pattern and the check bits
+                uint8_t bits[kPayloadBits];
+                for (int i = 0; i < kPayloadBits; i++) bits[i] = (uint8_t)(raw[i] ^ pol);
+                // the 48 sync bits: dotting at both ends and the 16-bit Barker field 0x5712 in the middle; count the bits that differ from the pattern
+                int mism = 0;
+                for (int j = 0; j < edacs::kSyncBits; j++) mism += ((pre[j] ^ pol) != (int)((edacs::kSyncPattern >> (edacs::kSyncBits - 1 - j)) & 1));
+                int ea, eb;
+                const uint64_t va = edacs::vote(bits, ea), vb = edacs::vote(bits + 120, eb);
+                const bool okA = edacs::bchOk(va), okB = edacs::bchOk(vb);
+                c[nc++] = {off, sub, pol, mism + ea + eb + (okA ? 0 : 12) + (okB ? 0 : 12), ea, eb, okA, okB, (uint32_t)(va >> 12) & 0xFFFFFFF, (uint32_t)(vb >> 12) & 0xFFFFFFF};
+            }
         }
         int best = 0;
-        for (int i = 1; i < nOrd; i++) if (c[i].score < c[best].score) best = i;
-        if (predicted && c[0].score <= c[best].score + 1) best = 0;
-        const uint32_t bestA = c[best].a, bestB = c[best].b;
+        for (int i = 1; i < nc; i++) if (c[i].score < c[best].score) best = i;
+                const uint32_t bestA = c[best].a, bestB = c[best].b;
         const int bestEa = c[best].ea, bestEb = c[best].eb;
-        const uint64_t chosenStart = centre + (uint64_t)((int64_t)c[best].off * kSps);
+        const bool okA = c[best].okA, okB = c[best].okB;
+        const uint64_t chosenStart = centre + (uint64_t)((int64_t)c[best].off * kSps + c[best].sub);
         tel.syncs++;
         if (env.range() < kMinRangeHz) return;
-        const bool good = bestEa <= kMaxDisagree && bestEb <= kMaxDisagree;
+        const bool good = okA && bestEa <= kMaxDisagree;   // the first message is the command: its check bits must verify
         if (!good) { tel.blocksBad++; haveStart = false; return; }
+        inverted = c[best].pol != 0; tel.inverted = inverted;
         lastStart = chosenStart; haveStart = true;
         EdacsFrame f;
         f.wallTime = (int64_t)std::time(nullptr);
         f.timeSec = timeSec();
-        f.msgA = bestA; f.msgB = bestB; f.errA = bestEa; f.errB = bestEb; f.good = true;
-        f.text = frameText(bestA, bestB);
-        handleWord(bestA, f.timeSec);
-        handleWord(bestB, f.timeSec);
+        f.msgA = bestA; f.msgB = okB ? bestB : 0; f.errA = bestEa; f.errB = bestEb; f.good = true;
+        f.text = frameText(bestA, okB ? bestB : 0);
+        handleFrame(bestA, okB ? bestB : 0, f.timeSec);
         if (tel.frames.size() >= kEdacsLogMax) tel.frames.pop_back();
         tel.frames.insert(tel.frames.begin(), f);
-        wordCount[bestA]++; wordCount[bestB]++;
+        wordCount[bestA]++; if (okB) wordCount[bestB]++;
         std::vector<EdacsWordCount> w;
         for (auto& kv : wordCount) w.push_back({kv.first, kv.second});
         std::sort(w.begin(), w.end(), [](const EdacsWordCount& a, const EdacsWordCount& b) { return a.count > b.count; });
@@ -417,6 +534,7 @@ struct EdacsReceiver::Impl {
         tel.locked = timeSec() - lastGoodSec < kLockSec;
         tel.state = rateSet ? (tel.locked ? 2 : 1) : 0;
         housekeeping();
+        slotsStep();
         tel.seq++;
     }
 };
@@ -427,16 +545,21 @@ EdacsReceiver::~EdacsReceiver() = default;
 void EdacsReceiver::configure(double inputRateHz) {
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->fs = inputRateHz;
-    p_->rateSet = inputRateHz >= edacsTuning().minSampleRate - 1 && p_->fm.configure(inputRateHz, kWork, 9000.0);
+    p_->rateSet = inputRateHz >= edacsTuning().minSampleRate - 1 && p_->fm.configure(inputRateHz, kWork, 6500.0);
     p_->fm.setOffset(p_->offHz);
+    p_->fm.setAfc(true);   // 4.0: a 6.5 kHz channel filter (was 9) with the carrier follow-up, see docs/SENSITIVITY-4.0-A2.md
     p_->post.lowpass(6000.0, kWork, 0.7071);
     p_->voiceOk = p_->rateSet && p_->voice.configure(inputRateHz, kVoiceRate, 7500.0);
     p_->vlp.lowpass(3400.0, kVoiceRate, 0.7071);
+    p_->pv.configure(inputRateHz, kWork, 9000.0);
+    p_->pvLp.lowpass(6000.0, kWork, 0.7071);
     p_->initActivity();
     p_->clearState();
+    p_->one.configure(p_->rateSet ? inputRateHz : 0);
+    p_->one.setCentreHz(p_->centreHz);
 }
 void EdacsReceiver::setSignalOffset(double hz) { std::lock_guard<std::mutex> lk(p_->mu); p_->offHz = hz; p_->fm.setOffset(hz); }
-void EdacsReceiver::setCenterHz(double hz) { std::lock_guard<std::mutex> lk(p_->mu); p_->centreHz = hz; p_->tel.centerHz = hz; if (p_->fft) p_->resizeChannels(); }
+void EdacsReceiver::setCenterHz(double hz) { std::lock_guard<std::mutex> lk(p_->mu); p_->centreHz = hz; p_->tel.centerHz = hz; if (p_->fft) p_->resizeChannels(); p_->one.setCentreHz(hz); }
 void EdacsReceiver::setInverted(bool inv) { std::lock_guard<std::mutex> lk(p_->mu); p_->inverted = inv; p_->tel.inverted = inv; p_->tel.seq++; }
 bool EdacsReceiver::ready() const { return p_->rateSet; }
 void EdacsReceiver::reset() { std::lock_guard<std::mutex> lk(p_->mu); p_->clearState(); }
@@ -458,11 +581,16 @@ void EdacsReceiver::feed(const cf32* x, size_t n) {
             if (p_->blkN == N) { p_->activityBlock(); p_->blkN = 0; }
         }
     }
-    if (p_->followLcn && p_->voiceOk) {
+    if (p_->followLcn && p_->followDig && p_->pv.ready()) {
+        p_->pvDisc.clear();
+        p_->pv.feed(x, n, p_->pvDisc);
+        for (float d : p_->pvDisc) p_->pvSample(p_->pvLp.run(d));
+    } else if (p_->followLcn && p_->voiceOk) {
         p_->vdisc.clear();
         p_->voice.feed(x, n, p_->vdisc);
         p_->voiceSamples();
     }
+    p_->one.feed(x, n);   // the voice slots, from the same samples
     if (p_->timeSec() - p_->lastPub >= 0.25) { p_->lastPub = p_->timeSec(); p_->publish(); }
 }
 bool EdacsReceiver::telemetry(EdacsTelemetry& out, uint64_t lastSeq) {
@@ -487,5 +615,8 @@ void EdacsReceiver::setVolume(float v) { p_->volume = std::max(0.f, std::min(1.f
 void EdacsReceiver::setMuted(bool m) { p_->muted = m; }
 void EdacsReceiver::setSilent(bool s) { p_->silent = s; }
 void EdacsReceiver::setAudioTap(std::function<void(int, const float*, size_t)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->tap = std::move(cb); }
+void EdacsReceiver::setVoiceSlots(int n) { std::lock_guard<std::mutex> lk(p_->mu); p_->one.setSlots(n); p_->tel.voiceSlots = p_->one.slots(); }
+void EdacsReceiver::setRecordDir(const std::string& dir) { std::lock_guard<std::mutex> lk(p_->mu); p_->one.setRecordDir(dir); }
+void EdacsReceiver::setSlotAudioTap(std::function<void(int, const float*, size_t, int)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->one.setAudioTap(std::move(cb)); }
 
 } // namespace dect2

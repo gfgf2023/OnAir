@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Shortwave through the real path: the synthetic HF slice (AM + RTTY + CW + BPSK31, shortwave_gen.h) goes into ShortwaveReceiver exactly as the
 // engine feeds it, the buttons are pressed, and the real decoders (HF digital RTTY, CW skimmer, PSK) produce the text.
 // Checked: each decoder alone at an offset with a carrier offset and noise, three decoders in parallel on one channel, a lower sideband
@@ -7,6 +10,7 @@
 #include "dect2/shortwave/shortwave_tel.h"
 #include "dect2/shortwave/shortwave_gen.h"
 #include "dect2/hfdig/hfdig_rtty.h"
+#include "dect2/hfdig/hfdig_gen.h"
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -63,6 +67,13 @@ SynthConfig cfg(int which, double snr = 30, double cfo = 0) {
     SynthConfig sc;
     sc.mode = 214; sc.snrDb = snr; sc.cfoHz = cfo; sc.modeOpt[0] = which;
     return sc;
+}
+// Weather RTTY as DDK9 sends it (#506): 50 baud, 450 Hz shift, upper sideband; the signal centre is at the marker plus awayHz
+std::unique_ptr<ModeSynth> rtty50x450(double snr, double awayHz) {
+    SynthConfig rc = cfg(0, snr);
+    rc.cfoHz = (kSwSynthRttyCentreHz - 1360.0) + awayHz;
+    rc.modeOpt[0] = 0;
+    return makeHfdigSynthFromAudio(makeRttyTxAudio("", 1, 3, false, 1360.0 - 225.0), rc, kRate);
 }
 bool has(const std::string& s, const std::string& what) { return s.find(what) != std::string::npos; }
 
@@ -194,6 +205,34 @@ int main() {
         CHECK(!has(w.dec(Dec::Rtty).text, "CQ CQ DE ONAIR"), "wrong fixed settings do not decode");
     }
 
+    // ---- 50 baud / 450 Hz RTTY (the weather stations): Auto, fixed settings and fixed settings with the marker off the signal (#506)
+    for (int variant = 0; variant < 4; variant++) {
+        const bool manual = variant & 1;
+        const double away = variant & 2 ? 700 : 0;
+        Rig r(cfg(2, 30));
+        r.syn = rtty50x450(30, away);
+        if (manual) { Opts o; o.rttyBaud = 1; o.rttyShift = 3; r.rx.setDecoderOpts(Dec::Rtty, o); }
+        r.rx.startDecoder(Dec::Rtty);
+        r.run(manual ? 22 : 40);
+        const SwDecoderStatus s = r.dec(Dec::Rtty);
+        printf("  RTTY 50/450 %s, signal %.0f Hz from the marker: %s | %.50s\n", manual ? "fixed" : "Auto", away, s.status.c_str(), s.text.c_str());
+        CHECK(has(s.text, "CQ CQ DE ONAIR"), "50 baud / 450 Hz %s, %.0f Hz off the marker: '%s' (%s)", manual ? "fixed" : "Auto", away, s.text.c_str(), s.status.c_str());
+    }
+
+    // ---- 50 baud / 85 Hz RTTY (DWD on 147.3 kHz, #539): chosen by hand, the marker on the signal and 300 Hz off it
+    for (int away : {0, 300}) {
+        Rig r(cfg(2, 30));
+        SynthConfig rc = cfg(0, 30);
+        rc.cfoHz = (kSwSynthRttyCentreHz - 1360.0) + away;
+        r.syn = makeHfdigSynthFromAudio(makeRttyTxAudio("", 1, 5, false, 1360.0 - 42.5), rc, kRate);
+        Opts o; o.rttyBaud = 1; o.rttyShift = 5; r.rx.setDecoderOpts(Dec::Rtty, o);
+        r.rx.startDecoder(Dec::Rtty);
+        r.run(22);
+        const SwDecoderStatus s = r.dec(Dec::Rtty);
+        printf("  RTTY 50/85 fixed, signal %d Hz from the marker: %s | %.50s\n", away, s.status.c_str(), s.text.c_str());
+        CHECK(has(s.text, "CQ CQ DE ONAIR"), "50 baud / 85 Hz fixed, %d Hz off the marker: '%s' (%s)", away, s.text.c_str(), s.status.c_str());
+    }
+
     // ---- Auto finds the text decoder that works
     {
         Rig r(cfg(2, 30));
@@ -209,17 +248,18 @@ int main() {
     // ---- the text log and the saved text
     {
         const std::string dir = (std::filesystem::temp_directory_path() / "onair_sw_log_test").string();
-        std::filesystem::remove_all(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
         std::filesystem::create_directories(dir);
+        {   // the receiver is gone (its worker joined, the log closed) before the directory is deleted: Windows refuses to delete a file that is still open
         Rig r(cfg(2, 30));
         r.rx.startDecoder(Dec::Rtty);
         r.rx.setDecoderLog(Dec::Rtty, true, dir);
         r.run(20);
         const std::string path = r.rx.decoderLogPath(Dec::Rtty);
         CHECK(!path.empty() && std::filesystem::exists(path), "log file made: '%s'", path.c_str());
-        std::ifstream f(path);
         std::stringstream ss;
-        ss << f.rdbuf();
+        { std::ifstream f(path); ss << f.rdbuf(); }   // closed again at once: Windows will not delete a file that is still open
         CHECK(has(ss.str(), "CQ CQ DE ONAIR"), "the log holds the text: '%.80s'", ss.str().c_str());
         const std::string out = dir + "/saved.txt";
         std::string err;
@@ -228,7 +268,8 @@ int main() {
         r.rx.clearDecoder(Dec::Rtty);
         r.run(0.5);
         CHECK(r.dec(Dec::Rtty).text.size() < 40, "clear empties the pane");
-        std::filesystem::remove_all(dir);
+        }
+        std::filesystem::remove_all(dir, ec);
     }
 
     // ---- the listening side: the AM station is heard by the general receiver while decoders run

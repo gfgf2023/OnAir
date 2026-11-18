@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Sigfox uplinks in the ISM sensors mode: generated RC1 frames (0, 4 and 12 byte payloads, three repetitions each on random frequencies
 // within the 192 kHz span) through the ISM receiver. Must hold: ID, sequence and payload decode, the three repetitions merge into one
 // message, +-1 kHz radio offset, 12 dB in the 100 Hz channel, noise gives nothing.
@@ -41,6 +44,7 @@ static IsmTelemetry run(const std::vector<cf32>& x, double rate, double dialOff)
     const size_t chunk = 65536;
     for (size_t i = 0; i < x.size(); i += chunk) rx.feed(x.data() + i, std::min(chunk, x.size() - i));
     IsmTelemetry t;
+    rx.flush();
     rx.telemetry(t, 0);
     return t;
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The manifest.json of a plugin: parsing and validation. Hostile or malformed input is refused with a message, never crashes
 // (the JSON reader is bounded in size and depth), and nothing in a manifest can name a path outside the plugin's own folder.
 #pragma once
@@ -43,6 +46,8 @@ struct Manifest {
 bool validId(const std::string& id);
 // -1 / 0 / 1; compares dotted numbers ("0.2.10" > "0.2.9"), ignores a suffix after '-' or '+'
 int compareVersions(const std::string& a, const std::string& b);
+// A version spec: "*" (every version), "1.2.0" (exactly) or "<=1.2.0" (this and older). Used by the store's revocation list.
+bool versionSpecMatches(const std::string& spec, const std::string& version);
 // false and err on any problem. hostVersion: the running OnAir version ("0.2.7") for minimum-version checks (empty skips it).
 bool parseManifest(const std::string& text, Manifest& out, std::string& err, const std::string& hostVersion = {});
 

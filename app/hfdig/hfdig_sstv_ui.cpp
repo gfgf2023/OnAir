@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital, the SSTV view of the main tab (called by hfdig_ui.cpp): the picture being received (scaled to fit, aspect kept) with a
 // progress bar and the mode and slant under it; beside it (under it in a narrow pane) the last finished pictures as thumbnails to click,
 // Save (PNG) and Clear, and "Save every picture" (PNG files in <data folder>/sstv/, named by the time and the mode).
@@ -264,8 +267,9 @@ void hfdigSetDemod(const App& a, int d);   // hfdig_ui.cpp
 struct SstvBand { const char* name; double mhz; int demod; const char* note; };
 const SstvBand kSstvBands[] = {{"80m", 3.730, dect2::HfDemodLsb, "Europe (3.845 in America)"}, {"40m", 7.171, dect2::HfDemodLsb, ""},
                                {"20m", 14.230, dect2::HfDemodUsb, "the busiest"}, {"15m", 21.340, dect2::HfDemodUsb, ""},
-                               {"10m", 28.680, dect2::HfDemodUsb, ""}, {"2m", 145.500, dect2::HfDemodNfm, "FM calling frequency (Europe)"},
-                               {"ISS", 145.800, dect2::HfDemodNfm, "the ISS's SSTV events, FM"}};
+                               {"10m", 28.680, dect2::HfDemodUsb, ""}, {"11m / CB band", 27.700, dect2::HfDemodUsb, "CB band: check your licence"}, {"2m", 145.500, dect2::HfDemodNfm, "FM calling frequency (Europe)"},
+                               {"ISS", 145.800, dect2::HfDemodNfm, "the ISS's SSTV events, FM"},
+                               {"ISS 437.550 MHz (UHF)", 437.550, dect2::HfDemodNfm, "the ISS on UHF, FM; follows the Doppler shift of about +-10 kHz with Follow the next pass"}};
 
 void sstvBandButtons(App& a) {
     ImGui::AlignTextToFramePadding();

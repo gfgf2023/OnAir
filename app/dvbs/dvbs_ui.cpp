@@ -1,6 +1,9 @@
 // DVB-S/S2 screens: lock lamps and readouts, constellation and quality plots, the receiver tab, symbol rate and standard controls,
 // and the options of the test signal.
 #include "app.h"
+#include "d40/d40_ui.h"
+#include "ease/ease_ui.h"
+#include "dect2/satmisc/feed_hunter.h"
 #include "dect2/dvbs/dvbs_s2.h"
 #include "dvbs_autoservice.h"
 #include <cfloat>
@@ -125,8 +128,9 @@ void tick(App& a) {
     S.wasRunning = run;
     if (run && S.autoSvc && live(a)) {   // one service in the signal: play it, and again after a retune to another signal
         Player& pl = a.engine.player();
-        const int id = dect2::autoServicePick(S.as, a.ts.services, pl.selected(), a.rx.dvbs.tsLock, ImGui::GetTime());
-        if (id >= 0) { pl.select(id); pl.setVolume(a.volume); }
+        bool restart = false;
+        const int id = dect2::autoServicePick(S.as, a.ts.services, pl.selected(), a.rx.dvbs.tsLock, ImGui::GetTime(), &restart);
+        if (id >= 0) { if (restart) pl.select(-1); pl.select(id); pl.setVolume(a.volume); }   // restart: same id on a new carrier (#410)
     }
     if (live(a) && a.rx.seq != S.lastSeq) {
         S.lastSeq = a.rx.seq;
@@ -331,6 +335,33 @@ void streamsSection(App& a, const DvbsTelemetry& t) {
 // A wide capture can hold many carriers: the list shows every one found in the spectrum; "Decode" makes the receiver work on that one. The symbol file is for other tools.
 bool g_symDumpOn = false;
 
+// ---------------------------------------------------------------------------------------------- feed hunter: tries every narrow carrier in turn
+dect2::satmisc::FeedHunter g_hunter;
+bool g_huntOn = false;
+void feedHunterSection(App& a, const DvbsTelemetry& t) {
+    if (ImGui::Checkbox(tr("Feed hunter: try every narrow carrier"), &g_huntOn) && !g_huntOn) { g_hunter.reset(); a.engine.dvbs().selectCarrier(false, 0); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Contribution feeds: carriers up to 12 Msym/s, tried one by one for 20 seconds. Carriers that appear after the first 30 seconds are marked new. A carrier that never locks may be another standard or not TV at all."));
+    if (!g_huntOn) return;
+    std::vector<dect2::satmisc::FeedCarrierIn> in;
+    for (const auto& c : t.carriers) in.push_back({c.centerHz, c.rateHz, c.snrDb});
+    g_hunter.update(ImGui::GetTime(), in, a.tune.centerHz, t.tsLock, std::string());
+    if (g_hunter.hasRequest()) a.engine.dvbs().selectCarrier(true, g_hunter.requestOffsetHz());
+    if (g_hunter.feeds().empty()) { ImGui::TextDisabled("%s", tr("No narrow carrier found yet.")); return; }
+    if (ImGui::BeginTable("##feeds", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("MHz"); ImGui::TableSetupColumn("Msym/s"); ImGui::TableSetupColumn(tr("Seen")); ImGui::TableSetupColumn(tr("State"));
+        ImGui::TableHeadersRow();
+        for (const auto& f : g_hunter.feeds()) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("%.3f%s", f.mhz, f.isNew ? "  NEW" : "");
+            ImGui::TableNextColumn(); ImGui::Text("%.2f", f.rateHz / 1e6);
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(f.present ? tr("now") : tr("gone"));
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(f.state == dect2::satmisc::FeedState::Locked ? tr("locked") : f.state == dect2::satmisc::FeedState::Trying ? tr("trying") : f.state == dect2::satmisc::FeedState::NoLock ? tr("no lock") : tr("waiting"));
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::SmallButton(tr("Try the rest again"))) g_hunter.retry();
+}
+
 void carriersSection(App& a, const DvbsTelemetry& t) {
     if (t.carriers.empty() && !g_symDumpOn && t.symbolDumpPath.empty()) return;
     ImGui::Spacing();
@@ -359,6 +390,7 @@ void carriersSection(App& a, const DvbsTelemetry& t) {
         }
         if (t.carrierPicked && ImGui::SmallButton("Back to the carrier nearest the centre")) a.engine.dvbs().selectCarrier(false, 0);
     }
+    feedHunterSection(a, t);
     bool on = g_symDumpOn;
     if (ImGui::Checkbox("Write the symbols to a file", &on)) {
         g_symDumpOn = on;
@@ -508,7 +540,16 @@ void ipSection(App& a, const DvbsTelemetry& t) {
 
 void receiver(App& a) {
     const DvbsTelemetry& t = a.rx.dvbs;
+    {   // aim on the strongest carrier in view, or the locked one
+        float best = t.snrDb; bool any = t.state > 0 && t.snrDb > 0;
+        for (const auto& c : t.carriers) if (c.snrDb > best) { best = c.snrDb; any = true; }
+        easeui::alignButton(a, "dvbs", best, live(a) && any);
+    }
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
+    {   // the network's own transponder list; the polarisation of a row goes to the warning below (pn 1 vertical, 2 horizontal; the NIT has 0 H, 1 V)
+        int pol = -1;
+        if (easeui::nitTransponders(a, 1, t.tsLock, t.inverted, pol) && (pol == 0 || pol == 1)) { S.txPol = pol == 1 ? 1 : 2; saveState(a); }
+    }
     struct KV { std::string k, v; };
     std::vector<KV> L, R;
     auto head = [](std::vector<KV>& v, const char* h) { if (!v.empty()) v.push_back({"", ""}); v.push_back({h, "#"}); };
@@ -605,6 +646,8 @@ void receiver(App& a) {
     cidSection(a, t);
     streamsSection(a, t);
     ipSection(a, t);
+    d40SatCard(a);   // 4.0: blind scan, modcods, dish pointing (app/d40)
+    smart5DvbsCard(a);   // round-5 smart checks: rain fade and margin log (app/smart5)
     ImGui::Spacing();
     ImGui::TextColored(pal::accent(), "NOTES");
     ImGui::PushTextWrapPos(0);
@@ -623,6 +666,11 @@ void receiver(App& a) {
 // ---------------------------------------------------------------------------------------------- tuner
 
 void tuner(App& a, bool& retune) {
+    if (ImGui::SmallButton(tr("ISS HamTV preset"))) {   // 2395 MHz, DVB-S, 2 Msym/s, FEC 1/2 (BATC wiki); listed for reference, the transmitter was reported in testing in 2025
+        a.freqMhz = 2395.0; S.srMsym = 2.0; saveState(a); retune = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("ISS HamTV: 2395 MHz, DVB-S, 2.0 Msym/s, FEC 1/2. Needs an S-band antenna and pass tracking; check ARISS for whether it is on."));
+    
     (void)retune;   // the symbol rate and the standard are handed to the running receiver, no retune needed
     loadState();
     const double fs = a.engine.running() ? a.engine.sampleRate() : dvbsTuning().sampleRate;
@@ -632,8 +680,9 @@ void tuner(App& a, bool& retune) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Auto measures the width of the carrier in the spectrum. Set it by hand for weak or narrow carriers, or when Auto is a few percent off.\n\n"
                           "A HackRF sees about 17 MHz of band at most (20 Msps), which is a carrier of up to about %.1f Msym/s.\n"
-                          "At %.0f Msps the limit is %.1f Msym/s. Wide transponders (27.5 Msym/s and more) do not fit: use a recording or a wider radio.",
-                          dvbsMaxSymbolRate(20e6) / 1e6, fs / 1e6, dvbsMaxSymbolRate(fs) / 1e6);
+                          "At %.0f Msps the limit is %.1f Msym/s. Wide transponders (27.5 Msym/s and more) do not fit: use a recording or a wider radio.\n"
+                          "Narrow carriers (reduced bandwidth DATV): Auto finds them down to %.0f ksym/s at this rate, by hand down to %.0f ksym/s.",
+                          dvbsMaxSymbolRate(20e6) / 1e6, fs / 1e6, dvbsMaxSymbolRate(fs) / 1e6, dvbsMinAutoSymbolRate(fs) / 1e3, dvbsMinSymbolRate() / 1e3);
     sameLineIf(ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("Auto").x, 6 * gUi);
     bool autoSr = S.srMsym <= 0;
     if (ImGui::Checkbox("Auto##dvbssr", &autoSr)) {
@@ -649,7 +698,7 @@ void tuner(App& a, bool& retune) {
     ImGui::SetNextItemWidth(std::min(104 * gUi, ImGui::GetContentRegionAvail().x));   // no wider than the side panel
     double v = autoSr ? (live(a) ? a.rx.dvbs.symbolRate / 1e6 : 0.0) : S.srMsym;
     if (ImGui::InputDouble("##dvbssrv", &v, 0, 0, autoSr ? "%.3f Msym/s" : "%.3f Msym/s")) {
-        if (!autoSr) { S.srMsym = std::max(0.05, std::min(maxMsym, v)); ch = true; }
+        if (!autoSr) { S.srMsym = std::max(dvbsMinSymbolRate() / 1e6, std::min(maxMsym, v)); ch = true; }
     }
     ImGui::EndDisabled();
     ImGui::TextDisabled("Standard");
@@ -718,7 +767,7 @@ void tuner(App& a, bool& retune) {
 #else
                               "Direct3D 11 compute (Windows)",
 #endif
-                              gpuOk ? GpuLdpc::instance().deviceName() : "none usable");
+                              gpuOk ? GpuLdpc::instance().deviceName() : "none usable");        ImGui::SameLine(0, 8 * gUi); gpuModeTick(a, "DVB-S/S2");
     }
     if (ch) saveState(a);
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Pagers: the "Decoded only" table filter. Pure predicate so a test can check it; the UI applies it to the message table, the Copy export and the side list.
 #pragma once
 #include "dect2/pager/pager_tel.h"
@@ -33,6 +36,7 @@ struct PagerHeard {
 inline std::vector<PagerHeard> pagerHeardTable(const std::vector<PagerMessage>& msgs) {
     std::vector<PagerHeard> rows;
     for (const PagerMessage& m : msgs) {
+        if (m.selcall) continue;   // five-tone calls have no capcode
         auto it = std::find_if(rows.begin(), rows.end(), [&](const PagerHeard& r) { return r.address == m.address && r.flex == m.flex; });
         if (it == rows.end()) { rows.emplace_back(); it = rows.end() - 1; it->address = m.address; it->flex = m.flex; }
         it->count++;

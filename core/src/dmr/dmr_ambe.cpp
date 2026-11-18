@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/dmr/dmr_ambe.h"
 #include <cstring>
 
@@ -14,6 +17,12 @@ void DmrAmbe::decodeBurst(const dmr::Bits& vs, int16_t pcm[480]) {
     uint8_t f[3][72];
     dmrVoiceFrames(vs, f);
     for (int k = 0; k < 3; k++) a_.decode(f[k], pcm + 160 * k);
+}
+
+void DmrAmbe::decodeBurstSoft(const dmr::Bits& vs, const uint8_t rel[216], int16_t pcm[480]) {
+    uint8_t f[3][72];
+    dmrVoiceFrames(vs, f);
+    for (int k = 0; k < 3; k++) a_.decodeSoft(f[k], rel + 72 * k, pcm + 160 * k);
 }
 
 } // namespace dect2

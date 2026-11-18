@@ -1,12 +1,18 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #pragma once
 #include "dect2/audio/audioin.h"
 #include "dect2/dsp/resampler.h"
 #include <atomic>
+#include <memory>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace dect2 {
+
+struct AudioFileStream;   // a long audio file decoded as it plays (audioin.cpp)
 
 struct AudioIn::Impl {
     void* backend = nullptr;
@@ -22,6 +28,9 @@ struct AudioIn::Impl {
     std::vector<float> scratch;
     std::vector<float> file;          // looped file, interleaved stereo at the session rate
     size_t filePos = 0;
+    std::shared_ptr<AudioFileStream> stream;   // a file longer than the in-memory limit: decoded while it plays, looped (#471)
+    std::vector<float> streamBuf;     // decoded and not yet read, interleaved stereo
+    size_t streamPos = 0;             // samples (not frames) of streamBuf already read
     double toneHz = 1000, tph = 0;
     int actualRate = 0;               // set by a backend that cannot deliver the rate asked for (and did not resample to it)
     // A backend that has to capture at the device's own rate (CoreAudio's input unit does no rate conversion) gives that rate and resamples to the wanted one.

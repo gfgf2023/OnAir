@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Inmarsat-C receiver for the NCS common channel: 1200 symbol/s BPSK in frames of 8.64 s with EGC messages (SafetyNET, FleetNET).
 // The channel at -tuneOffsetHz is decoded; a search of the whole capture band adds up to three more Inmarsat-C channels it finds (telemetry().channels).
 #pragma once
@@ -20,6 +23,7 @@ public:
     bool ready() const;                                  // false when the input rate is too low for this mode
     void reset();                                        // after a retune: forget the signal (the messages stay: clearResults)
     void setChannelSearch(bool on);                      // look for more channels in the band (default on); off drops the ones found
+    void setSearchSpan(double hz);                       // that search stays within +-hz of 0 Hz (0 = the whole input, the default)
     void feed(const cf32* x, size_t n);
     bool telemetry(InmcTelemetry& out, uint64_t lastSeq);
     // The message list stay through reset(), configure() and retunes: only clearResults() empties them

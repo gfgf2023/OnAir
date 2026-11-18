@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The command palette (Ctrl+K): see command_palette.h. Every entry calls a function the menus and buttons already use.
 #include "command_palette.h"
 #include "../i18n/i18n.h"
 #include "scale.h"
 #include "input_map.h"
 #include "../voice/voice_monitor_ui.h"
+#include "../panels/debug_report.h"
 #include "dect2/engine/updater.h"
 #include <algorithm>
 #include <cctype>
@@ -28,11 +32,11 @@ int gTabFrame = -1;
 struct Panel { const char* name; bool App::*on; };
 const Panel kPanels[] = {
     {"Passes", &App::passesOpen}, {"Scheduler", &App::schedulerOpen}, {"Recordings", &App::recmgrOpen}, {"SatNOGS transmitters", &App::satnogsOpen}, {"Direction finder", &App::dfOpen}, {"Interference hunter", &App::rfiOpen},
-    {"Passive radar", &App::passiveRadarOpen}, {"Images", &App::galleryOpen}, {"Data feeds...", &App::feedsOpen},
-    {"Messages...", &App::msgdbOpen}, {"Protocol lab...", &App::protolabOpen}, {"TX studio...", &App::txStudioOpen}, {"Mode Builder...", &App::modeBuilderOpen}, {"Signal Lab...", &App::signallabOpen}, {"Conversations...", &App::ssbConvOpen}, {"Watchlists...", &App::watchlistOpen}, {"Integrations...", &App::integrationsOpen},
+    {"Passive radar", &App::passiveRadarOpen}, {"Images", &App::galleryOpen}, {"Data feeds...", &App::feedsOpen}, {"EchoLink...", &App::echolinkOpen}, {"Wireshark...", &App::wiresharkOpen},
+    {"Messages...", &App::msgdbOpen}, {"Protocol lab...", &App::protolabOpen}, {"TX studio...", &App::txStudioOpen}, {"Mode Builder...", &App::modeBuilderOpen}, {"Signal Lab...", &App::signallabOpen}, {"nRF24 / ESP32 radio...", &App::esp32Open}, {"Conversations...", &App::ssbConvOpen}, {"Watchlists...", &App::watchlistOpen}, {"Integrations...", &App::integrationsOpen},
     {"Automations...", &App::automationOpen}, {"Plugins...", &App::pluginsOpen}, {"Memory...", &App::memoryOpen},
     {"Datasets...", &App::datasetsOpen}, {"Data packs...", &App::packsOpen}, {"Frequencies...", &App::freqOpen}, {"Map", &App::mapOpen}, {"Propagation...", &App::propOpen},
-    {"Sweep scanner", &App::sweepOpen}, {"Station health", &App::stationHealthOpen}, {"Reception doctor", &App::doctorOpen}, {"RF fingerprint", &App::rfFpOpen}, {"Antenna rotator...", &App::rotatorOpen},
+    {"Sweep scanner", &App::sweepOpen}, {"Station health", &App::stationHealthOpen}, {"My station", &App::stationOpen}, {"Surprise me", &App::surpriseReq}, {"Search everything heard", &App::heardOpen}, {"Insights", &App::insightOpen}, {"Reception doctor", &App::doctorOpen}, {"RF fingerprint", &App::rfFpOpen}, {"Everything in view", &App::wideAllOpen}, {"Multi-radio trunking", &App::trunkPoolOpen}, {"Antenna rotator...", &App::rotatorOpen},
     {"Antenna designer...", &App::antdOpen},
 };
 
@@ -50,12 +54,14 @@ std::vector<Cmd> collect(App& a) {
     c.push_back({"Modes shown", "Action", [](App& x) { x.modeVisOpen = true; }});
     for (int i = 0; i < kNumModes; i++) c.push_back({modeHiddenNow(a, kModes[i]) ? std::string(kModes[i].name) + " (hidden)" : std::string(kModes[i].name), "Mode", [f = kModes[i].family, s = kModes[i].subId](App& x) { selectMode(x, f, s); }, modeHiddenNow(a, kModes[i])});
     c.push_back({"Voice codecs", "Action", [](App& x) { x.voiceCodecsOpen = true; }});
+    c.push_back({"Hardware", "Action", [](App& x) { x.hardwareOpen = true; }});   // Help > Hardware
     c.push_back({"Voice monitor", "Action", [](App&) { voiceui::open(); }});
     c.push_back({"Voice keys", "Action", [](App& x) { x.voiceKeysOpen = true; }});
     c.push_back({"Credits", "Action", [](App& x) { x.creditsOpen = true; x.creditsTab = 0; }});
     c.push_back({"Credits and licences", "Action", [](App& x) { x.creditsOpen = true; x.creditsTab = 1; }});
     c.push_back({"Documentation", "Action", [](App&) { dect2::openUrl("https://on-air.dev/docs/"); }});
     c.push_back({"Troubleshooting", "Action", [](App&) { dect2::openUrl("https://on-air.dev/docs/troubleshooting/"); }});
+    c.push_back({"Report a problem (Ctrl+D)", "Action", [](App&) { debugReportRequest(); }});
     return c;
 }
 
@@ -91,7 +97,7 @@ void commandPalette(App& a) {
     static bool closeReq = false, focusSearch = false;
     ImGuiIO& io = ImGui::GetIO();
     const char* id = trw("Command palette");
-    if ((io.KeyCtrl || io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_K, false)) {   // Ctrl+K (Cmd+K): open, or close when open
+    if (inputmap::pressed(inputmap::Action::CommandPalette)) {   // Ctrl+K (Cmd+K) by default: open, or close when open (it fires while typing, F_Typing)
         if (ImGui::IsPopupOpen(id)) closeReq = true;
         else { ImGui::OpenPopup(id); q[0] = 0; sel = 0; focusSearch = true; }
     }

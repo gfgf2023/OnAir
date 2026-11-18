@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Vaisala RS92: frame decoder from hard symbols, and the frame builder for the test signal. Phase B of the radiosonde mode.
 // Facts from rs1729/RS (demod/mod/rs92mod.c, rs92/rs92.txt, whose example frame the known-answer test uses).
 //
@@ -28,6 +31,7 @@ public:
     ~Rs92Decoder() override;
     const char* type() const override { return "RS92"; }
     double symbolRate() const override { return 4800.0; }
+    bool narrowChannel() const override { return true; }
     void push(const uint8_t* sym, size_t n, double timeSec, std::vector<SondeFix>& out) override;
     void reset() override;
     // frame: 240 bytes as sent (header, message, parity), already unframed. Returns true when the header matched.

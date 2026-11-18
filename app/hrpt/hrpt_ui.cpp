@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HRPT / AHRPT screens: the AVHRR picture of the pass growing line by line (a false-colour composite or one of the five channels in
 // grey), Save PNG and New picture; the frequency presets and the variant; the receiver's state, the packets heard and the constellation.
 // The tab and the empty-state text say what the mode needs: a dish and a fast radio.
+#include "ui/kit/mode_panel.h"
 #include "app.h"
 #include "gfx/gfx.h"
 #include "platform/platform.h"
@@ -190,6 +194,7 @@ void receiver(App& a) {
     }
     kvRow(a, "input", "%.3f Msps, %.1f dBFS", t.inputRate / 1e6, t.levelDb);
     kvRow(a, "signal time", "%.1f s", t.timeSec);
+    smart5WxPassCard(a);   // round-5 smart checks (app/smart5, docs/SMART5-UI-3.9.md)
 }
 
 void panels(App& a) {
@@ -278,6 +283,12 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
+// Simple view: the picture with its controls, and the signal and the products / channels beside it
+static void command(App& a) {
+    modepanel::panes({{"##hrptcpic", nullptr, [&a] { tab(a); }, 2.2f, 300.f},
+                      {"##hrptcsig", tr("Signal"), [&a] { receiver(a); ImGui::Spacing(); list(a); }, 1.f, 240.f}}, 340.f);
+}
+
 extern const ModeUi kHrptUi;
 const ModeUi kHrptUi = {
     .sideTitle = "PACKETS",
@@ -293,4 +304,5 @@ const ModeUi kHrptUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

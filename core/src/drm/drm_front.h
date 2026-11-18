@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRM receiver front end: any input rate to the 48 kHz complex baseband the OFDM receiver works on (DRM+, mode E: 192 kHz). Private to the DRM receiver.
 #pragma once
 #include "dect2/dsp/exact_resampler.h"
@@ -47,7 +50,15 @@ public:
     void process(const cf32* in, size_t n, std::vector<cf32>& out);
     double levelDbfs() const;             // mean power of the 48 kHz stream since the last call, in dB re full scale
     void resetLevel() { pw_ = 0; pn_ = 0; }
+    // Optional channel filter on the 48 kHz output: keeps +-passHz around the middle, 0 = off (the default: the whole +-22 kHz stays).
+    // Narrower than the usual 20 kHz channel it takes out the neighbouring stations; a constant delay of kChTaps / 2 samples. Not for the DRM+ lane.
+    void setChannelPass(double passHz);
+    double channelPass() const { return chPass_; }
+    static constexpr int kChTaps = 161;
 private:
+    double chPass_ = 0;
+    std::vector<float> chH_;
+    std::vector<cf32> chHist_, chTmp_;
     double inRate_ = 0, outRate_ = kOutRate;
     bool ready_ = false, pass_ = false;
     std::vector<DecimFir> stages_;

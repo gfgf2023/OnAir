@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // RDS-TMC decoder, see rds_tmc.h.
 #include "dect2/fm/rds_tmc.h"
 #include <algorithm>
@@ -195,6 +198,16 @@ std::string TmcDecoder::eventText(int code, bool* longLasting) {
     return "event " + std::to_string(code);
 }
 
+bool TmcDecoder::eventKnown(int code) {
+    for (const Ev& e : kEvents) if (e.code == code) return true;
+    return false;
+}
+
+std::string TmcDecoder::durationText(int code, bool longLasting) {
+    if (code < 1 || code > 7) return "";
+    return (longLasting ? kDurL : kDurD)[code];
+}
+
 void TmcDecoder::onGroup3A(uint16_t b, uint16_t c, uint16_t d) {
     if (d != 0xCD46 && d != 0xCD47) return;
     if ((b & 31) != 16) return;   // the application sits in group 8A (group type 8, version A)
@@ -257,6 +270,7 @@ void TmcDecoder::finish(Pending& p, double now) {
         const int n = kLabelBits[label];
         if (label >= 14 || pos + (size_t)n > p.bits.size()) break;   // separator or reserved: the rest is padding
         const int v = take(n);
+        if (label == 2 || label == 3 || label == 9 || label == 10 || label == 11) m.details.push_back({label, v});
         char buf[64];
         switch (label) {
         case 0: dur = v; break;

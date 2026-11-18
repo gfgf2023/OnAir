@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // View > Automations: rules ("when this happens, do that") and Lua scripts that act on what the receivers decode. The rules are built from
 // drop-down lists; an expression and a script editor are there for the rest. Recipes are single JSON files in <data folder>/automations.
 // The engine itself (events, rules, limits, the sandbox) is in core/src/automation; the actions are in automation_sink.cpp.
 #include "../app.h"
+#include "dect2/common/diag.h"
 #include "automation_internal.h"
 #include "dect2/automation/catalog.h"
 #include "dect2/automation/expr.h"
@@ -694,7 +698,7 @@ void windowPanel(App& a) {
             std::ofstream f(pth(p), std::ios::binary | std::ios::trunc);
             Recipe copy = it.r;
             if (copy.kind == Recipe::KindRule) copy.rule.enabled = true; else copy.script.enabled = true;
-            if (f) { f << au::recipeToText(copy); S.msg = std::string(tr("Saved to")) + " " + p; } else S.msg = tr("Cannot write the file.");
+            if (f) { f << au::recipeToText(copy); S.msg = std::string(tr("Saved to")) + " " + p; } else { DIAG(737493, "Writing the automation recipe file %s failed (the folder may be read-only), so the recipe was not exported.", p.c_str()); S.msg = tr("Cannot write the file."); }
         }
     }
     ImGui::SameLine();
@@ -770,6 +774,22 @@ void windowPanel(App& a) {
 }
 } // namespace
 
+bool automationAddRule(const dect2::automation::Rule& r, std::string& err) {
+    if (!S.loaded) loadAll();
+    Recipe rc;
+    rc.kind = Recipe::KindRule;
+    rc.rule = r;
+    Item it;
+    it.r = std::move(rc);
+    idOf(it) = uniqueId(au::makeId(nameOf(it)));
+    validate(it);
+    if (!it.err.empty()) { err = it.err; return false; }
+    saveItem(it);
+    S.items.push_back(std::move(it));
+    S.dirty = true;   // the engine gets the list on the next frame (automationWindow runs every frame)
+    return true;
+}
+
 void automationWindow(App& a) {
     if (a.rxId != 1) {   // the automations belong to the program, not to one receiver: RX 1's window
         if (App* f = receiverById(1)) { f->automationOpen = a.automationOpen; automationWindow(*f); a.automationOpen = f->automationOpen; }
@@ -795,6 +815,7 @@ void automationWindow(App& a) {
         eng.setTzOffset(tzOffset());
     }
     if (S.dirty) applyEngine();
+    { void digestTick(); digestTick(); }   // the daily digest (adsb/digest_ui.cpp)
     automationapp::uiTick(a);
     automationapp::drawBanner();
     if (a.automationOpen) windowPanel(a);

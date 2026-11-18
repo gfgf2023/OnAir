@@ -1,10 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Yaesu System Fusion receiver (see fusion_rx.h).
 #include "dect2/fusion/fusion_rx.h"
+#include "dect2/fusion/fusion_gps.h"
+#include <cstring>
 #include "dect2/dsp/cic3.h"
+#include "dect2/dsp/spectral_afc.h"
 #include "dect2/fusion/fusion_proto.h"
 #include "dect2/audio/audioout.h"
 #include "dect2/voice/voice_monitor.h"
 #include "dect2/common/mathconst.h"
+#include "dect2/nxdn/nxdn_ambe.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -18,6 +25,8 @@ namespace {
 using dect2::math::kPi;
 constexpr double kFs = 48000;           // demodulator rate, 10 samples per symbol
 constexpr int kSps = 10;
+constexpr double kChanWideHz = 8000.0;     // channel filter until the carrier follow-up has settled
+constexpr double kChanCutHz = 5500.0;      // 4.0: after it (the 3.9 receiver always used 8 kHz)
 constexpr int kFrame = fusion::kFrameDibits * kSps;   // samples per frame (100 ms)
 constexpr int kYMask = 16383;
 
@@ -55,6 +64,15 @@ struct FusionReceiver::Impl {
     bool codecChanged = true;
     std::atomic<float> volume{1.f};
     std::atomic<bool> muted{false}, silent{false};
+    // V/D mode 1 voice is the same 72 bit AMBE+2 frame as DMR and NXDN (the bit positions were checked against MMDVMHost's tables), so the user's own mbelib
+    // (the one DMR and NXDN use) decodes it without the 'ysf' plug-in; not while silent (tests, hidden mode)
+    std::unique_ptr<NxdnAmbe> ambe;
+    bool ambeTried = false;
+    NxdnAmbe* ambeFor(const fusion::VoiceUnit& v) {
+        if (v.kind != 1 || v.bytes.size() != 9 || silent.load()) return nullptr;
+        if (!ambeTried) { ambeTried = true; auto a = std::make_unique<NxdnAmbe>(); if (a->ok()) ambe = std::move(a); }
+        return ambe.get();
+    }
     voice::Monitor* monSet = nullptr;   // setVoiceMonitor; else voice::monitor("ysf") while not silent
     voice::CallInfo playing;            // the call being played
     voice::Monitor* activeMonitor() { return monSet ? monSet : silent.load() ? nullptr : &voice::monitor("ysf"); }
@@ -71,6 +89,8 @@ struct FusionReceiver::Impl {
     int D = 1;
     double fd = 0;
     std::complex<double> lo{1, 0}, loStep{1, 0};
+    SpectralAfc afc;
+    double afcApplied = 0;
     int loCount = 0;
     Cic3 cic;   // the decimator (dsp/cic3.h: exact for as long as it runs)
     int decCount = 0;
@@ -79,6 +99,31 @@ struct FusionReceiver::Impl {
     double rp = 0, rstep = 0;
     int M = 0, nPh = 64;
     std::vector<float> fir;
+    std::vector<cf32> firNarrow;
+    double narrowAt = 1e9;                 // centre of the narrow filter (Hz from 0 Hz of the stream); 1e9: not built yet
+    void buildNarrow(double f0) {
+        narrowAt = f0;
+        firNarrow.assign((size_t)nPh * 2 * M, cf32(0, 0));
+        const double fc = kChanCutHz / fd;
+        for (int ph = 0; ph < nPh; ph++) {
+            const double frac = (double)ph / nPh;
+            double sum = 0;
+            std::vector<double> v((size_t)2 * M);
+            for (int k = 0; k < 2 * M; k++) {
+                const double t = (double)(k - M + 1) - frac;
+                const double x = 2 * fc * t;
+                const double s = std::fabs(x) < 1e-9 ? 1.0 : std::sin(kPi * x) / (kPi * x);
+                const double w = 0.42 + 0.5 * std::cos(kPi * t / M) + 0.08 * std::cos(2 * kPi * t / M);
+                v[(size_t)k] = std::fabs(t) < M ? 2 * fc * s * w : 0;
+                sum += v[(size_t)k];
+            }
+            for (int k = 0; k < 2 * M; k++) {
+                const double t = (double)(k - M + 1) - frac;
+                const double ph2 = -2 * kPi * f0 * t / fd;
+                firNarrow[(size_t)ph * 2 * M + k] = cf32((float)(v[(size_t)k] / sum * std::cos(ph2)), (float)(v[(size_t)k] / sum * std::sin(ph2)));
+            }
+        }
+    }
     cf32 prevZ{0, 0};
     float fh[7] = {0, 0, 0, 0, 0, 0, 0};
     int fhPos = 0;
@@ -114,28 +159,32 @@ struct FusionReceiver::Impl {
         fd = rate > 0 ? rate / D : 0;
         lo = 1; loCount = 0;
         loStep = rate > 0 ? std::polar(1.0, -2 * kPi * offset / rate) : std::complex<double>(1, 0);
+        afc.configure(fd); afc.setOpenLoop(true); afcApplied = 0; narrowAt = 1e9;
         cic.reset();
         decCount = 0;
         dbuf.assign(8192, cf32(0, 0)); dN = 0;
         if (fd > 0) {
             rstep = fd / kFs;
             M = std::max(8, (int)std::ceil(5.5 * fd / 5000.0 / 2));
-            fir.assign((size_t)nPh * 2 * M, 0.f);
-            const double fc = 8000.0 / fd;   // the channel filter: windowed sinc, 8 kHz cut
-            for (int ph = 0; ph < nPh; ph++) {
-                const double frac = (double)ph / nPh;
-                double sum = 0;
-                for (int k = 0; k < 2 * M; k++) {
-                    const double t = (double)(k - M + 1) - frac;
-                    const double x = 2 * fc * t;
-                    const double s = std::fabs(x) < 1e-9 ? 1.0 : std::sin(kPi * x) / (kPi * x);
-                    const double w = 0.42 + 0.5 * std::cos(kPi * t / M) + 0.08 * std::cos(2 * kPi * t / M);
-                    const double v = std::fabs(t) < M ? 2 * fc * s * w : 0;
-                    fir[(size_t)ph * 2 * M + k] = (float)v;
-                    sum += v;
+            auto build = [&](std::vector<float>& tab, double cutHz) {
+                tab.assign((size_t)nPh * 2 * M, 0.f);
+                const double fc = cutHz / fd;   // the channel filter: windowed sinc
+                for (int ph = 0; ph < nPh; ph++) {
+                    const double frac = (double)ph / nPh;
+                    double sum = 0;
+                    for (int k = 0; k < 2 * M; k++) {
+                        const double t = (double)(k - M + 1) - frac;
+                        const double x = 2 * fc * t;
+                        const double s = std::fabs(x) < 1e-9 ? 1.0 : std::sin(kPi * x) / (kPi * x);
+                        const double w = 0.42 + 0.5 * std::cos(kPi * t / M) + 0.08 * std::cos(2 * kPi * t / M);
+                        const double v = std::fabs(t) < M ? 2 * fc * s * w : 0;
+                        tab[(size_t)ph * 2 * M + k] = (float)v;
+                        sum += v;
+                    }
+                    for (int k = 0; k < 2 * M; k++) tab[(size_t)ph * 2 * M + k] /= (float)sum;
                 }
-                for (int k = 0; k < 2 * M; k++) fir[(size_t)ph * 2 * M + k] /= (float)sum;
-            }
+            };
+            build(fir, kChanWideHz);          // until the carrier follow-up has found the signal's centre
             rp = M + 2;
         }
         prevZ = cf32(0, 0);
@@ -168,16 +217,23 @@ struct FusionReceiver::Impl {
     }
 
     void pushDecimated(cf32 z) {
+        afc.push(&z, 1);
+        if (afc.settled() && std::fabs(afc.adjustHz() - narrowAt) > 150.0 && M > 0) buildNarrow(afc.adjustHz());   // follow the carrier with the narrow filter
         dbuf[(size_t)(dN & 8191)] = z;
         dN++;
         while (dN > (int64_t)std::floor(rp) + M) {
             const int64_t base = (int64_t)std::floor(rp);
             const double frac = rp - (double)base;
             const int ph = std::min(nPh - 1, (int)std::lround(frac * nPh));
-            const float* h = &fir[(size_t)ph * 2 * M];
             cf32 acc(0, 0);
             const int64_t i0 = base - M + 1;
-            for (int k = 0; k < 2 * M; k++) acc += dbuf[(size_t)((i0 + k) & 8191)] * h[k];
+            if (narrowAt < 1e8) {      // narrow filter centred on the signal (complex taps: the signal is not moved, the discriminator sees what it saw before)
+                const cf32* hc = &firNarrow[(size_t)ph * 2 * M];
+                for (int k = 0; k < 2 * M; k++) acc += dbuf[(size_t)((i0 + k) & 8191)] * hc[k];
+            } else {
+                const float* h = &fir[(size_t)ph * 2 * M];
+                for (int k = 0; k < 2 * M; k++) acc += dbuf[(size_t)((i0 + k) & 8191)] * h[k];
+            }
             rp += rstep;
             demod(acc);
         }
@@ -244,7 +300,7 @@ struct FusionReceiver::Impl {
         if (!fusion::parseFrameBits(bits.data(), c)) { tel.blocksBad++; return false; }
         polarity = pol;
         tel.inverted = pol < 0;
-        tel.cfoHz = d;
+        tel.cfoHz = d + afcApplied;
         tel.snrDb = snr;
         tel.blocksOk++;
         lastFrameSec = (double)S / kFs;
@@ -295,6 +351,7 @@ struct FusionReceiver::Impl {
         tel.dest.clear(); tel.src.clear(); tel.down.clear(); tel.up.clear();
         for (auto& r : tel.rem) r.clear();
         tel.slowText.clear();
+        tel.hasGps = false; tel.radioModel.clear(); gpsLen = 0; std::memset(gpsBuf, 0, sizeof gpsBuf);
         for (bool& h : tel.haveCsd) h = false;
         for (int i = 0; i < 13; i++) { chunk[i].clear(); chunkHave[i] = false; }
         tel.voiceSubFrames = 0; tel.voiceDecoded = 0;
@@ -307,6 +364,9 @@ struct FusionReceiver::Impl {
         report();
     }
 
+    uint8_t gpsBuf[300] = {};
+    int gpsLen = 0;
+
     void csd1(const uint8_t* p) { tel.dest = fusion::trimField(p, 10); tel.src = fusion::trimField(p + 10, 10); tel.haveCsd[0] = true; }
     void csd2(const uint8_t* p) { tel.down = fusion::trimField(p, 10); tel.up = fusion::trimField(p + 10, 10); tel.haveCsd[1] = true; }
     void csd3(const uint8_t* p) { for (int i = 0; i < 4; i++) tel.rem[i] = remText(p + 5 * i, 5); tel.haveCsd[2] = true; }
@@ -316,6 +376,12 @@ struct FusionReceiver::Impl {
         for (size_t i = 0; i < n; i++) c += (p[i] >= 32 && p[i] < 127) ? (char)p[i] : ' ';
         chunk[idx] = c;
         chunkHave[idx] = true;
+        if ((size_t)idx * n + n <= sizeof gpsBuf) {
+            std::memcpy(gpsBuf + (size_t)idx * n, p, n);
+            if ((int)(((size_t)idx + 1) * n) > gpsLen) gpsLen = (int)(((size_t)idx + 1) * n);
+            const fusion::YsfGps g = fusion::ysfGpsParse(gpsBuf, gpsLen);
+            if (g.ok) { tel.hasGps = true; tel.gpsLat = g.lat; tel.gpsLon = g.lon; tel.radioModel = g.radio; }
+        }
         std::string t;
         for (int i = 0; i < 13; i++) if (chunkHave[i]) t += chunk[i];
         while (!t.empty() && t.back() == ' ') t.pop_back();
@@ -366,7 +432,7 @@ struct FusionReceiver::Impl {
         if (mon) {   // the voice monitor (voice_monitor.h) lists the call and says whether it is played
             voice::CallInfo ci;
             ci.srcText = tel.src; ci.dstText = tel.dest; ci.group = tel.callMode != 3;
-            { std::lock_guard<std::mutex> lk(codecMu); ci.codecMissing = !codec; }
+            { std::lock_guard<std::mutex> lk(codecMu); ci.codecMissing = !codec && !ambeFor(v); }
             if (tel.squelch >= 0 && tel.squelch < 127) ci.access = tel.squelch ? "SQL " + std::to_string(tel.squelch) : std::string("SQL off");
             if (!tel.down.empty()) ci.access += (ci.access.empty() ? "" : ", ") + std::string("via ") + tel.down;
             if (mon->offer(ci) != voice::Verdict::Play) return;
@@ -374,7 +440,13 @@ struct FusionReceiver::Impl {
         }
         std::vector<int16_t> pcm;
         int sr = 8000;
-        {
+        if (NxdnAmbe* a = ambeFor(v)) {
+            uint8_t bits[72];
+            for (int i = 0; i < 72; i++) bits[i] = (uint8_t)((v.bytes[(size_t)(i / 8)] >> (7 - i % 8)) & 1);
+            int16_t p[160];
+            a->decode(bits, p);
+            pcm.assign(p, p + 160);
+        } else {
             std::lock_guard<std::mutex> lk(codecMu);
             if (!codec) return;
             pcm = codec->decode(v.bytes);
@@ -408,8 +480,9 @@ struct FusionReceiver::Impl {
         tel.state = txOn ? 2 : (nIn > 0 ? 1 : 0);
         {
             std::lock_guard<std::mutex> lk(codecMu);
-            tel.codecReady = codec != nullptr;
-            tel.codecText = codec ? std::string() : codecText;
+            const bool ambeReady = ambe != nullptr;   // V/D mode 1 voice through mbelib
+            tel.codecReady = codec != nullptr || ambeReady;
+            tel.codecText = (codec || ambeReady) ? std::string() : codecText;
         }
         std::lock_guard<std::mutex> lk(mu);
         tel.centerHz = centerHz;
@@ -464,7 +537,7 @@ ModeTuning fusionTuning() {
     ModeTuning t;
     t.stdMode = 130;
     t.id = "fusion";
-    t.name = "Yaesu Fusion (WIP)";
+    t.name = "Yaesu Fusion";
     t.minMhz = 28; t.maxMhz = 1300; t.defMhz = 145.000;
     t.sampleRate = 2000000;
     t.basebandHz = 1750000;

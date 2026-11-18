@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! A fake RTL2832U dongle for tests and fuzzing: models the register file, the I2C repeater, an R820T / R828D / E4000 (or no) tuner and the EEPROM,
 //! without hardware. Chips are modelled just far enough for the driver: the R82xx status bytes (chip id, PLL lock, VCO fine tune, filter calibration
 //! code, bit reversed like the real chip), the E4000 chip id and PLL lock bit, plain register files for everything else. A seeded corruption
@@ -14,7 +17,7 @@ pub enum FakeChip {
     R828D,
     /// E4000 at 0xc8
     E4000,
-    /// FC0013 at 0xc6 (recognised, not driven)
+    /// FC0013 at 0xc6
     Fc0013,
     /// No tuner answers
     None,
@@ -100,6 +103,12 @@ impl FakeRtl {
             FakeChip::None => {}
         }
         f
+    }
+
+    /// Makes the chip at 0xc6 an FC0012 (chip id 0xa1: found only after the GPIO reset probe; the driver does not drive it).
+    pub fn add_fc0012(&mut self) {
+        self.present[3] = true;
+        self.regs[3][0] = 0xa1;
     }
 
     /// Sets the seed of the corruption generator.

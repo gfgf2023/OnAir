@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // BB frame <-> transport stream round trips (normal and high-efficiency mode, with lost frames) and PSI/SI parsing.
 #include "dect2/tv/dvb_text.h"
 #include "dect2/tv/bbunpack.h"
@@ -110,7 +113,23 @@ static void feedSection(TsDemux& d, int pid, const std::vector<uint8_t>& sec, in
     d.feed(p);
 }
 
+// A platform converter (Android's java.nio.charset) takes precedence over iconv and falls back to it when it declines.
+static bool fakeConvert(const char* cs, const uint8_t*, int, std::string& out) {
+    if (strcmp(cs, "BIG5") != 0) return false;
+    out = "\xE9\x81\x93";   // U+9053
+    return true;
+}
+static void testExternalConvert() {
+    const uint8_t big5[] = {0x14, 0xA4, 0xA4};   // 0x14 = Big5 selector
+    dect2::dvbsi::setExternalConvert(fakeConvert);
+    CHECK(dect2::dvbsi::dvbText(big5, 3) == "\xE9\x81\x93", "external converter not used for the Big5 selector");
+    const uint8_t gb[] = {'A', 'B'};
+    CHECK(dect2::dvbsi::dvbText(gb, 2) == "AB", "plain text changed by the external converter");
+    dect2::dvbsi::setExternalConvert(nullptr);
+}
+
 int main() {
+    testExternalConvert();
     std::mt19937 rng(4);
     roundTrip(true, rng);
     roundTrip(false, rng);
@@ -162,6 +181,19 @@ int main() {
         if (sv.streams.size() == 2) CHECK(sv.streams[0].codec == "H.264" && sv.streams[1].codec == "AAC" && sv.streams[1].lang == "eng", "stream parse: %s / %s %s", sv.streams[0].codec.c_str(), sv.streams[1].codec.c_str(), sv.streams[1].lang.c_str());
     }
     CHECK(sn.onid == 0x2310 && sn.tsid == 7, "ids onid %x tsid %x", sn.onid, sn.tsid);
+    // issue #517: the provider name of the SDT service descriptor comes through for any original_network_id (1, 0, 0x2025, 0xFFFF) and with no NIT at all
+    for (int onid : {0, 1, 0x2025, 0xFFFF}) {
+        TsDemux o;
+        int cs = 0;
+        std::vector<uint8_t> dsc = {0x48, (uint8_t)(3 + 4 + 7), 0x19, 4, 'S', 'Z', 'M', 'G', 7, 'S', 'Z', 'T', 'V', '-', '1', 'H'};
+        std::vector<uint8_t> sd = {0x42, 0xF0, 0, 0x00, 0x04, 0xC1, 0, 0, (uint8_t)(onid >> 8), (uint8_t)(onid & 0xFF), 0xFF, 0x00, 42, 0xFC, (uint8_t)(0x80 | (dsc.size() >> 8)), (uint8_t)(dsc.size() & 0xFF)};
+        sd.insert(sd.end(), dsc.begin(), dsc.end());
+        sd[2] = (uint8_t)(sd.size() - 3 + 4);
+        feedSection(o, 0x11, section(sd), cs);
+        const TsSnapshot os = o.snapshot();
+        CHECK(os.services.size() == 1 && os.services[0].provider == "SZMG" && os.services[0].name == "SZTV-1H" && os.networkName.empty() && os.onid == onid,
+              "provider for original_network_id %d: %zu services, provider '%s', name '%s'", onid, os.services.size(), os.services.empty() ? "" : os.services[0].provider.c_str(), os.services.empty() ? "" : os.services[0].name.c_str());
+    }
     // ISDB-T one-seg without a PAT (#313): the partial-reception PMT on 0x1FC8 alone builds the service
     {
         TsDemux o;
@@ -181,17 +213,14 @@ int main() {
     const uint8_t gb[] = {0x13, 0xD6, 0xD0, 0xD1, 0xEB, 0xB5, 0xE7, 0xCA, 0xD3, 0xCC, 0xA8}; // GB-2312: "中央电视台"
     const char* cctv = "\xE4\xB8\xAD\xE5\xA4\xAE\xE7\x94\xB5\xE8\xA7\x86\xE5\x8F\xB0";
     CHECK(dvbText(gb, 11) == cctv, "GB2312 decode");
-    CHECK(dvbText(gb + 1, 10, true) == cctv, "unprefixed GB2312 decode (DTMB)");
+    CHECK(dvbText(gb + 1, 10, {dvbsi::TextEncoding::Gb2312}) == cctv, "unprefixed GB2312 decode (DTMB)");
     CHECK(dvbText(gb + 1, 10) != cctv, "unprefixed high bytes stay ISO 6937 outside DTMB");
     const uint8_t guangdong[] = {0xB9, 0xE3, 0xB6, 0xAB, 0xCE, 0xC0, 0xCA, 0xD3, '-', 'H', 'D'};
-    CHECK(dvbText(guangdong, sizeof(guangdong), true) == "广东卫视-HD", "unprefixed Guangdong GBK service name");
-    {   // GBK names with a character outside GB 2312 (U+5586 is 86 B4) convert whole, and the DTMB switch reaches every dvbText() caller
+    CHECK(dvbText(guangdong, sizeof(guangdong), {dvbsi::TextEncoding::Gb2312}) == "广东卫视-HD", "unprefixed Guangdong GBK service name");
+    {   // GBK names with a character outside GB 2312 (U+5586 is 86 B4) convert whole, through the explicit stream context
         const uint8_t gbk[] = {0xD6, 0xD0, 0x86, 0xB4};
         const char* want = "\xE4\xB8\xAD\xE5\x96\x86";
-        CHECK(dvbText(gbk, 4, true) == want, "unprefixed GBK decode (DTMB)");
-        dvbsi::setGbDefaultGlobal(true);
-        CHECK(dvbText(gbk, 4) == want, "DTMB switch decodes GBK without the argument");
-        dvbsi::setGbDefaultGlobal(false);
+        CHECK(dvbText(gbk, 4, {dvbsi::TextEncoding::Gb2312}) == want, "unprefixed GBK decode (DTMB)");
         CHECK(dvbText(gbk, 4) != want, "switch off: ISO 6937 again");
     }
     const uint8_t ks[] = {0x12, 0xC7, 0xD1, 0xB1, 0xB9}; // KS X 1001: "한국"
@@ -282,11 +311,25 @@ int main() {
         v.push_back(0x00); v.push_back(0x02);    // service type 2
         v.push_back(0x00); v.push_back(0x01);    // source id
         v.push_back(0xFC); v.push_back(0x00);    // no descriptors
+        {   // a second entry as some stations still send it: an analog channel with no program in this stream (0xFFFF), not a service
+            v[9] = 2;
+            const char* an = "KDEC-AN";
+            for (int k = 0; k < 7; k++) { v.push_back(0); v.push_back((uint8_t)an[k]); }
+            v.push_back(0xF0 | (major >> 6)); v.push_back((uint8_t)(((major & 0x3F) << 2) | 0)); v.push_back(0);
+            v.push_back(0x01);                   // modulation: analog
+            for (int k = 0; k < 4; k++) v.push_back(0);
+            v.push_back(0x00); v.push_back(0x07);
+            v.push_back(0xFF); v.push_back(0xFF);   // program number 0xFFFF
+            v.push_back(0x00); v.push_back(0x01);   // service type 1 (analog television)
+            v.push_back(0x00); v.push_back(0x02);
+            v.push_back(0xFC); v.push_back(0x00);
+        }
         v.push_back(0xFC); v.push_back(0x00);    // additional descriptors length 0
         v[2] = (uint8_t)(v.size() - 3 + 4);
         feedSection(a, 0x1FFB, section(v), c2);
         TsSnapshot sn = a.snapshot();
         bool found = false;
+        for (auto& sv : sn.services) CHECK(sv.id != 0xFFFF && sv.id != 0, "TVCT: an entry without a program (%d) became a service", sv.id);
         for (auto& sv : sn.services) if (sv.id == 3) { found = true; CHECK(sv.name == "KDEC-DT" && sv.provider == "channel 5.1" && sv.lcn == 501, "TVCT: name '%s' provider '%s' lcn %d", sv.name.c_str(), sv.provider.c_str(), sv.lcn); }
         CHECK(found, "TVCT service missing");
         printf("ATSC PSIP (TVCT) checked\n");
@@ -385,6 +428,50 @@ int main() {
         CHECK(!avsServiceMessage(0x42, 0x20, false).empty() && avsServiceMessage(0xD2, 0x20, true).empty() && !avsServiceMessage(0xD2, 0x20, false).empty() && avsServiceMessage(0x1B, -1, false).empty(), "decoder missing / other codecs");
         CHECK(std::string(kDraAudioNote) == "DRA audio: install the DRA add-on to hear this service", "DRA note '%s'", kDraAudioNote);
         printf("AVS / DRA player notes\n");
+    }
+    {
+        // subtitle tracks (issue #517): language names and the PMT subtitling (0x59) and teletext (0x56) descriptors
+        CHECK(isoLanguageName("CHS") == "Chinese (simplified)" && isoLanguageName("cht") == "Chinese (traditional)", "Chinese variants");
+        CHECK(isoLanguageName("chi") == "Chinese" && isoLanguageName("ZHO") == "Chinese", "chi/zho");
+        CHECK(isoLanguageName("eng") == "English" && isoLanguageName("jpn") == "Japanese" && isoLanguageName("kor") == "Korean" && isoLanguageName("fra") == "French" &&
+              isoLanguageName("fre") == "French" && isoLanguageName("deu") == "German" && isoLanguageName("rus") == "Russian" && isoLanguageName("spa") == "Spanish" &&
+              isoLanguageName("por") == "Portuguese" && isoLanguageName("ita") == "Italian", "common names");
+        CHECK(isoLanguageName("").empty() && isoLanguageName("xyz") == "XYZ", "empty and unknown codes");
+        TsSubEntry d; d.lang = "chs"; d.type = 0x10;
+        CHECK(subtitleTrackLabel(d) == "Chinese (simplified) - DVB subtitles", "DVB label '%s'", subtitleTrackLabel(d).c_str());
+        d.type = 0x21;
+        CHECK(subtitleTrackLabel(d) == "Chinese (simplified) - DVB subtitles, 4:3 (hearing impaired)", "DVB HI label '%s'", subtitleTrackLabel(d).c_str());
+        TsSubEntry t; t.teletext = true; t.lang = "eng"; t.type = 5; t.page = 888;
+        CHECK(subtitleTrackLabel(t) == "English - Teletext subtitles 888 (hearing impaired)", "teletext label '%s'", subtitleTrackLabel(t).c_str());
+        t.type = 1;
+        CHECK(!subtitleEntryIsSubtitle(t) && subtitleEntryIsSubtitle(d), "teletext initial page is not a subtitle");
+
+        TsDemux b;
+        int c = 0;
+        std::vector<uint8_t> pat = {0x00, 0xB0, 13, 0x00, 0x04, 0xC1, 0, 0, 0x02, 0x03, 0xE2, 0x03};   // program 515 -> PMT 0x203
+        feedSection(b, 0, section(pat), c);
+        std::vector<uint8_t> pmt = {0x02, 0xB0, 0, 0x02, 0x03, 0xC1, 0, 0, 0xE2, 0x01, 0xF0, 0x00,
+                                    0x1B, 0xE2, 0x01, 0xF0, 0x00,                                                                  // video
+                                    0x81, 0xE2, 0x02, 0xF0, 0x00,                                                                  // AC-3
+                                    0x06, 0xE2, 0x10, 0xF0, 18, 0x59, 16, 'c', 'h', 's', 0x10, 0x00, 0x01, 0x00, 0x02, 'c', 'h', 't', 0x21, 0x00, 0x03, 0x00, 0x04,   // two subtitling entries
+                                    0x06, 0xE2, 0x11, 0xF0, 12, 0x56, 10, 'e', 'n', 'g', 0x10, 0x88, 'e', 'n', 'g', 0x08, 0x00};   // teletext: subtitle page 888, then an initial page (type 1)
+        pmt[2] = (uint8_t)(pmt.size() - 3 + 4);
+        feedSection(b, 0x203, section(pmt), c);
+        TsService sv;
+        bool found = false;
+        for (auto& x : b.snapshot().services) if (x.id == 515) { sv = x; found = true; }
+        CHECK(found, "service 515 missing");
+        const TsStream* sub = nullptr; const TsStream* ttx = nullptr;
+        for (auto& st : sv.streams) { if (st.pid == 0x210) sub = &st; if (st.pid == 0x211) ttx = &st; }
+        CHECK(sub && sub->subs.size() == 2, "DVB subtitle entries: %zu", sub ? sub->subs.size() : (size_t)0);
+        if (sub && sub->subs.size() == 2) {
+            CHECK(sub->subs[0].lang == "chs" && !sub->subs[0].teletext && sub->subs[0].type == 0x10 && sub->subs[0].page == 1 && sub->subs[0].ancPage == 2, "entry 0: %s %x %d %d", sub->subs[0].lang.c_str(), sub->subs[0].type, sub->subs[0].page, sub->subs[0].ancPage);
+            CHECK(sub->subs[1].lang == "cht" && sub->subs[1].type == 0x21 && sub->subs[1].page == 3 && sub->subs[1].ancPage == 4, "entry 1: %s %x", sub->subs[1].lang.c_str(), sub->subs[1].type);
+            bool hi = false; subtitleTypeName(sub->subs[1], &hi);
+            CHECK(hi, "type 0x21 is hearing impaired");
+        }
+        CHECK(ttx && ttx->subs.size() == 2 && ttx->subs[0].teletext && ttx->subs[0].type == 2 && ttx->subs[0].page == 888 && ttx->subs[1].type == 1, "teletext entries: %zu", ttx ? ttx->subs.size() : (size_t)0);
+        printf("subtitle languages and PMT descriptors\n");
     }
     return fails ? 1 : 0;
 }

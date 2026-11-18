@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Carousels view of the TV data tab (DTMB and the DVB TV modes): the DSM-CC carousels with progress, their files, "Save all files", and a preview of the selected file:
 // text as text, PNG/JPEG as a picture, MHEG-5 files as the parsed object tree and, for a Scene, a static drawing (experimental: no real broadcast stream was available;
 // nothing is executed and the interactive links are not followed).
@@ -225,7 +228,7 @@ void carouselView(App& a) {
     const TsSnapshot& ts = a.ts;
     if (!ts.carousels || ts.carousels->empty()) { ImGui::TextDisabled("%s", tr("no DSM-CC carousel found")); return; }
     ImGui::PushTextWrapPos(0);
-    ImGui::TextColored(pal::accent(), "%s", tr("EXPERIMENTAL: the file preview and the MHEG-5 scene drawing are untested on a real broadcast stream (no recording was available). Scripts and interactive links are not run or followed."));
+    ImGui::TextColored(pal::accent(), "%s", tr("Data services: the files of the data carousels are shown (name, size, save to disk, text, pictures, MHEG-5 object tree and scene drawing); interactive pages are not run, except by the limited Red Button subset below. EXPERIMENTAL: untested on a real broadcast stream, and the Hong Kong DTMB MHEG-5 profile (weather and stock pages) is not verified."));
     ImGui::PopTextWrapPos();
     redButton(a);
     if (ImGui::Button(tr("Save all files"))) {

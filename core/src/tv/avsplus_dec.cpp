@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // AVS+ video through the user's FFmpeg add-on (avsplus_dec.h). Same loading model as core/src/audio/ac4_dec.cpp.
 #include "dect2/tv/avsplus_dec.h"
 #include "../source/native_common.h"
@@ -8,6 +11,7 @@
 #include <filesystem>
 #include <mutex>
 #include <set>
+#include "dect2/common/diag.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
@@ -122,6 +126,7 @@ std::vector<std::string> searchFolders(const std::string& override) {
     std::vector<std::string> v;
     if (!override.empty()) { v.push_back(override); return v; }
     if (const char* e = getenv("DECT2_AVSPLUS_DIR")) if (*e) v.push_back(e);
+    { const std::string x = dect2::codec::externalFfmpegDir(); if (!x.empty()) v.push_back(x); }   // the user's own FFmpeg folder (Settings)
     for (auto& d : native::codecFolders()) v.push_back(d);
     return v;
 }
@@ -225,16 +230,16 @@ bool AvsPlusDecoder::open() {
         LibState& s = S();
         std::lock_guard<std::mutex> lk(s.mu);
         if (!s.searched) { doSearch(s); s.searched = true; }
-        if (!s.lib) { p_->err = s.info.message.empty() ? "AVS+ add-on not found" : s.info.message; return false; }
+        if (!s.lib) { DIAG_DEBUG(475358, "The AVS+ decoder add-on library was not found or could not be loaded, so AVS+ video has no picture."); p_->err = s.info.message.empty() ? "AVS+ add-on not found" : s.info.message; return false; }
         L = s.lib.get();   // never freed: the library stays loaded
         name = wantedName(s);
     }
     p_->L = L;
     const AVCodec* c = L->find_decoder_by_name(name.c_str());
-    if (!c) { p_->err = "the add-on has no \"" + name + "\" decoder"; return false; }
+    if (!c) { DIAG(203683, "The AVS+ decoder add-on has no decoder named %s, so AVS+ video has no picture.", name.c_str()); p_->err = "the add-on has no \"" + name + "\" decoder"; return false; }
     p_->ctx = L->alloc_context3(c);
     if (!p_->ctx) { p_->err = "out of memory"; return false; }
-    if (L->open2(p_->ctx, c, nullptr) < 0) { L->free_context(&p_->ctx); p_->err = "the AVS+ decoder would not open"; return false; }
+    if (L->open2(p_->ctx, c, nullptr) < 0) { DIAG(536967, "The AVS+ decoder %s from the add-on did not open, so AVS+ video has no picture.", name.c_str()); L->free_context(&p_->ctx); p_->err = "the AVS+ decoder would not open"; return false; }
     p_->pkt = L->packet_alloc();
     p_->frame = L->frame_alloc();
     if (!p_->pkt || !p_->frame) { p_->err = "out of memory"; return false; }
@@ -258,7 +263,7 @@ bool AvsPlusDecoder::send(const uint8_t* data, size_t size, int64_t pts, bool ke
     const int r = L.send_packet(p_->ctx, p_->pkt);
     L.packet_unref(p_->pkt);
     sent++;
-    if (r < 0 && r != AVERROR(EAGAIN)) { p_->err = "the AVS+ decoder rejected the data"; return false; }
+    if (r < 0 && r != AVERROR(EAGAIN)) { DIAG_DEBUG_EVERY(605832, 10.0, "The AVS+ decoder rejected a packet (error %d), so that picture is skipped.", r); p_->err = "the AVS+ decoder rejected the data"; return false; }
     if (pts != INT64_MIN) p_->pending.insert({pts, key});
     if (p_->pending.size() > 64) p_->pending.erase(p_->pending.begin());
     return true;

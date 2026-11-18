@@ -1,6 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Drone Remote ID screens: the drone table (serial number or session ID, UA type, position, altitude and height, speed and track, operator
 // position, last seen), a map with each drone, its trail and a line to its operator, the message log, and the band picker.
 // Receive only: Remote ID (ASTM F3411 / ASD-STAN EN 4709-002) is a public broadcast meant for anyone to read; nothing is transmitted.
+#include "map/my_location.h"
+#include "dect2/rid/rid_alerts.h"
+#include "dect2/airports/airports.h"
+#include <deque>
+#include <unordered_map>
 #include "dect2/common/time_fmt.h"
 #include "../adsb/adsb_map.h"
 #include "app.h"
@@ -177,9 +185,9 @@ void mapView(App& a, ImVec2 size) {
             S.map.zoom = std::max(2, std::min(17, (int)std::floor(std::min(zw, zh))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     const dect2::RidDrone* hit = nullptr; float best = 16 * gUi;
@@ -227,9 +235,10 @@ void mapView(App& a, ImVec2 size) {
                 const float rad = d.direction * 3.14159265f / 180.f;
                 dl->AddLine(q, ImVec2(q.x + std::sin(rad) * r * 2.2f, q.y - std::cos(rad) * r * 2.2f), col, 1.5f * gUi);
             }
-            if (S.map.zoom >= 13 || sel) {
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
                 const std::string s = idOf(d);
-                char b2[48]; snprintf(b2, sizeof b2, "%s", altText(d.height).c_str());
+                char b2[96]; snprintf(b2, sizeof b2, "%s", altText(d.height).c_str());
+                if (sel) { const std::string mine = mylocmap::distanceBearingText(d.lat, d.lon); if (!mine.empty()) snprintf(b2, sizeof b2, "%s  %s", altText(d.height).c_str(), mine.c_str()); }
                 const ImVec2 ts = ImGui::CalcTextSize(s.c_str()), ts2 = ImGui::CalcTextSize(b2);
                 const float w = std::max(ts.x, ts2.x) + 8 * gUi, hh = ts.y + ts2.y + 4 * gUi;
                 const ImVec2 lp(q.x + 14 * gUi, q.y - hh * 0.5f);
@@ -325,11 +334,54 @@ void tuner(App& a, bool& retune) {
     }
 }
 
+// Airspace alerts (3.9, docs/SMART5-avia-3.9.md): above 120 m, within 5 km of an airport, near a manned aircraft that ADS-B hears at the
+// same time (only when this app has live ADS-B telemetry next to the drones, as the second mode). The drone is reported, not its operator.
+dect2::DroneAirspaceWatch gRidWatch;
+std::deque<dect2::DroneAlert> gRidAlerts;
+std::unordered_map<std::string, double> gRidFed;   // the last signal time fed per drone
+void tick(App& a) {
+    if (!live(a)) return;
+    if (!gRidWatch.nearestAirport) gRidWatch.nearestAirport = [](double lat, double lon, std::string& code, double& km) {
+        for (const auto& h : dect2::AirportDb::builtin().nearby(lat, lon, 10, 20, false)) {
+            const auto& ap = dect2::AirportDb::builtin().all()[h.index];
+            if (ap.kind == 'L' || ap.kind == 'M' || ap.scheduled) { code = ap.icao; km = h.km; return true; }   // airports with traffic, not every strip
+        }
+        return false;
+    };
+    const double now = ImGui::GetTime();
+    const dect2::AdsbTelemetry* ad = a.second.rx.standard == 12 ? &a.second.rx.adsb : nullptr;   // ADS-B as the second mode
+    if (ad) for (const auto& ac : ad->aircraft) {
+        if (!ac.hasPos || !ac.hasAlt || ac.posAgeSec > 5) continue;
+        dect2::MannedFix m; m.icao = ac.icao; m.callsign = ac.callsign; m.t = now - ac.posAgeSec; m.lat = ac.lat; m.lon = ac.lon;
+        m.altM = (ac.hasGeoAlt ? ac.geoAltFt : ac.altFt) * 0.3048;
+        gRidWatch.aircraft(m);
+    }
+    std::vector<dect2::DroneAlert> out;
+    for (const auto& d : a.rx.rid.drones) {
+        if (!d.hasPos) continue;
+        const std::string id = !d.serial.empty() ? d.serial : !d.sessionId.empty() ? d.sessionId : d.mac;
+        double& fed = gRidFed[id];
+        if (d.lastSec == fed) continue;
+        fed = d.lastSec;
+        dect2::DroneFix f; f.id = id; f.t = now; f.lat = d.lat; f.lon = d.lon; f.heightM = d.height; f.altM = d.altGeo > -1000 ? d.altGeo : d.altBaro;
+        gRidWatch.drone(f, out);
+    }
+    for (auto& x : out) { gRidAlerts.push_back(x); if (gRidAlerts.size() > 50) gRidAlerts.pop_front(); }
+}
+void alertsView() {
+    { ImGui::PushTextWrapPos(0);
+      ImGui::TextDisabled("%s", tr("Drones above 120 m, within 5 km of an airport, or near a manned aircraft heard on ADS-B at the same time (needs ADS-B running as the second mode). Each drone and reason once per 10 minutes."));
+      ImGui::PopTextWrapPos(); }
+    if (gRidAlerts.empty()) { ImGui::TextDisabled("%s", tr("none")); return; }
+    for (auto it = gRidAlerts.rbegin(); it != gRidAlerts.rend(); ++it) ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.25f, 1), "%s", it->text.c_str());
+}
+
 void tab(App& a) {
     loadState();
-    subNav("ridv", S.view, {"Drones", "Map", "Messages"});
+    subNav("ridv", S.view, {"Drones", "Map", "Messages", "Alerts"});
     if (S.view == 0) dronesView(a);
     else if (S.view == 1) { const ImVec2 av = ImGui::GetContentRegionAvail(); if (av.x > 60 && av.y > 60) mapView(a, av); ImGui::Dummy(ImVec2(0, 0)); }
+    else if (S.view == 3) alertsView();
     else messagesView(a);
 }
 
@@ -404,4 +456,5 @@ const ModeUi kRidUi = {
     .status = status,
     .summary = summary,
     .tuner = tuner,
+    .tick = tick,
 };

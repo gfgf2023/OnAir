@@ -1,10 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // A small WebSocket client (RFC 6455) over the TCP helpers of tcp_client.h, for the SDRconnect API of the nRSP-ST (source_nrspst.cpp):
 // the upgrade handshake (ws://, no TLS), masked text and binary frames out, frames in with fragmentation, ping/pong, close, and a limit
 // on the size of one message. A blocking client: reads give up after the socket's receive timeout (sockRecvTimeout).
 #pragma once
 #include "tcp_client.h"
 #include "dect2/net/remote_api.h"
+#include "dect2/net/ws_trace.h"
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <random>
 #include <string>
@@ -18,7 +25,9 @@ public:
     static constexpr size_t kDefaultMaxMessage = 4u << 20;
 
     WsClient() = default;
-    void attach(sock_t s) { s_ = s; }
+    void attach(sock_t s) { s_ = s; closeSent_ = false; rbPos_ = rbLen_ = 0; }
+    // Log the text messages of this connection to the SDRconnect traffic log (ws_trace.h) when that is on.
+    void setTrace(bool on) { trace_ = on; }
     sock_t sock() const { return s_; }
 
     // The upgrade request and its answer: 101 with the matching Sec-WebSocket-Accept. err says why not, in plain words.
@@ -60,9 +69,14 @@ public:
         return true;
     }
 
-    bool sendText(const std::string& s) { return sendFrame(0x1, s.data(), s.size()); }
+    bool sendText(const std::string& s) { if (trace_) wstrace::line("->", s); return sendFrame(0x1, s.data(), s.size()); }
     bool sendBinary(const void* d, size_t n) { return sendFrame(0x2, d, n); }
-    void sendClose() { sendFrame(0x8, "\x03\xe8", 2); }
+    // The close frame goes out once per connection (a second one made SDRconnect_headless crash, #peterdewitte): later calls do nothing until attach().
+    void sendClose() {
+        if (closeSent_.exchange(true)) { if (trace_) wstrace::line("--", "close not sent again (already sent)"); return; }
+        if (trace_) wstrace::line("->", "[close frame]");
+        sendFrame(0x8, "\x03\xe8", 2);
+    }
 
     // One whole message (fragments joined; pings answered, pongs dropped). Closed: a close frame or the connection went. Timeout: nothing
     // came within the receive timeout. Bad: not a valid frame, a message over maxMessage, or a masked frame from the server.
@@ -89,7 +103,11 @@ public:
                 if (len > 125 || !fin) return Kind::Bad;
                 std::vector<unsigned char> p((size_t)len);
                 if (len && recvExact(p.data(), p.size()) != 1) return Kind::Closed;
-                if (op == 0x8) { sendFrame(0x8, p.data(), p.size() >= 2 ? 2 : 0); return Kind::Closed; }
+                if (op == 0x8) {
+                    if (trace_) wstrace::line("<-", "[close frame]");
+                    if (!closeSent_.exchange(true)) { if (trace_) wstrace::line("->", "[close frame echo]"); sendFrame(0x8, p.data(), p.size() >= 2 ? 2 : 0); }
+                    return Kind::Closed;
+                }
                 if (op == 0x9) sendFrame(0xA, p.data(), p.size());
                 else if (op != 0xA) return Kind::Bad;
                 continue;
@@ -100,18 +118,30 @@ public:
             const size_t at = out.size();
             out.resize(at + (size_t)len);
             if (len && recvExact(out.data() + at, (size_t)len) != 1) return Kind::Closed;
-            if (fin) return kind == 0x1 ? Kind::Text : Kind::Binary;
+            if (fin) {
+                if (kind == 0x1 && trace_) wstrace::line("<-", std::string(out.begin(), out.end()));
+                return kind == 0x1 ? Kind::Text : Kind::Binary;
+            }
         }
     }
 
 private:
     // 1: all n bytes. 0: nothing came within the timeout (at the start of a frame only). -1: the connection went, or stopped in a frame.
+    // 4.0: reads go through a buffer of 256 KiB, so a stream of small frames (SDRconnect's IQ at 10 Msps is 40 MB/s in messages of a few
+    // KiB) costs one system call per many frames instead of three per frame; a large payload is read straight to its place.
     int recvExact(void* d, size_t n, bool start = false) {
         char* p = (char*)d;
         size_t got = 0;
+        if (rbLen_ > rbPos_) {
+            const size_t c = std::min(n, rbLen_ - rbPos_);
+            std::memcpy(p, rb_.data() + rbPos_, c);
+            rbPos_ += c; got = c;
+        }
         int midStalls = 0;
         while (got < n) {
-            const long long k = sockRecv(s_, p + got, n - got);
+            const bool direct = n - got >= kDirectRead;
+            if (!direct && rb_.size() != kReadBuf) rb_.resize(kReadBuf);
+            const long long k = direct ? sockRecv(s_, p + got, n - got) : sockRecv(s_, rb_.data(), rb_.size());
             if (k <= 0) {
                 if (start && got == 0 && k < 0 && timedOut()) return 0;
                 // a timeout in the middle of a frame (a slow or congested link, a frame split over TCP segments) is not a lost connection:
@@ -119,10 +149,16 @@ private:
                 if (k < 0 && timedOut() && ++midStalls <= 10) continue;
                 return -1;
             }
-            got += (size_t)k;
+            if (direct) { got += (size_t)k; continue; }
+            const size_t c = std::min(n - got, (size_t)k);
+            std::memcpy(p + got, rb_.data(), c);
+            got += c; rbPos_ = c; rbLen_ = (size_t)k;
         }
         return 1;
     }
+    static constexpr size_t kReadBuf = 256u << 10, kDirectRead = 64u << 10;
+    std::vector<unsigned char> rb_;
+    size_t rbPos_ = 0, rbLen_ = 0;
     static bool timedOut() {
 #ifdef _WIN32
         const int e = WSAGetLastError();
@@ -148,6 +184,8 @@ private:
 
     sock_t s_ = kBadSock;
     std::mutex sendMu_;
+    std::atomic<bool> closeSent_{false};
+    bool trace_ = false;
 };
 
 } // namespace dect2

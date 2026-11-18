@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Map layers: the receivers' result lists turned into plain markers (position, label, age, track) for the live map, and the
 // geometry of a satellite (sub-point, footprint circle, ground track). Pure functions, no drawing.
 #pragma once
@@ -14,6 +17,7 @@
 
 namespace dect2 {
 
+struct TetraTelemetry;
 enum MapLayer { LayerAdsb = 0, LayerAis, LayerAprs, LayerSonde, LayerSat, LayerCell, LayerDmr, LayerCount };
 
 struct MapMarker {
@@ -30,6 +34,7 @@ struct MapMarker {
 };
 
 std::vector<MapMarker> markersFromAdsb(const AdsbTelemetry& t);     // aircraft with a position
+std::vector<MapMarker> markersFromTetra(const TetraTelemetry& t);    // clear LIP positions (tetra_sds.h)
 std::vector<MapMarker> markersFromAis(const AisTelemetry& t);       // vessels with a position
 std::vector<MapMarker> markersFromVdes(const VdesTelemetry& t);     // VDES ASM frames that carried an AIS position, the latest per MMSI (drawn on the AIS ships layer)
 std::vector<MapMarker> markersFromAprs(const PacketTelemetry& t);   // stations and objects with a position

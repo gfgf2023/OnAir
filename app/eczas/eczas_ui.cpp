@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // e-Czas screens (Poland's national time service, 225 kHz long wave, GUM): the time and date of the last time packet with the local offset, the
 // summer-time and leap-second flags, the transmitter state, lock / sync / time lamps, the carrier level and SNR, the computer clock against the
 // received time (and its history), the frame counters with the error counts, the phase plot of the carrier and the signal the bit slicer sees,
@@ -13,6 +16,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "../ui/font_size.h"
 
 namespace {
 
@@ -140,7 +144,7 @@ void timeView(App& a) {
     notes(a);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? tr("starting") : tr("start the receiver to read the time service")); return; }
     const dect2::EczasTelemetry& t = a.rx.eczas;
-    ImGui::PushFont(a.mono, 30 * gUi);
+    ImGui::PushFont(a.mono, 30.f);
     if (t.timeValid) ImGui::TextColored(t.confirmed ? pal::okGreen() : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s UTC", dateText((int64_t)t.utcNow).c_str());
     else ImGui::TextDisabled("----.--.-- --:--:-- UTC");
     ImGui::PopFont();

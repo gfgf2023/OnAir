@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DVB-T2 receiver front-end (phase 1): P1 detection and S1/S2 decoding, guard-interval detection,
 // symbol synchronisation, CFO / timing tracking and raw OFDM cell extraction.
 #pragma once
@@ -9,6 +12,7 @@
 #include "dect2/dab/dab_tel.h"
 #include "dect2/fm/fm_tel.h"
 #include "dect2/dvbs/dvbs_tel.h"
+#include "dect2/dvbc2/dvbc2_rx.h"
 #include "dect2/dtmb/dtmb_tel.h"
 #include "dect2/atv/atv_tel.h"
 #include "dect2/dmr/dmr_tel.h"
@@ -35,6 +39,7 @@
 #include "dect2/vor/vor_tel.h"
 #include "dect2/ndb/ndb_tel.h"
 #include "dect2/dme/dme_tel.h"
+#include "dect2/sitor/sitor_tel.h"
 #include "dect2/m17/m17_tel.h"
 #include "dect2/hfdl/hfdl_tel.h"
 #include "dect2/cell/cell_tel.h"
@@ -54,10 +59,15 @@
 #include "dect2/nfc/nfc_engine.h"
 #include "dect2/mpt1327/mpt1327_engine.h"
 #include "dect2/isdbs/isdbs_rx.h"
+#include "dect2/dvbsh/dvbsh_engine.h"
 #include "dect2/fusion/fusion_rx.h"
 #include "dect2/ltr/ltr_tel.h"
 #include "dect2/edacs/edacs_tel.h"
+#include "dect2/smartnet/smartnet_tel.h"
+#include "dect2/tetradmo/tetradmo_tel.h"
+#include "dect2/opensky/opensky_tel.h"
 #include "dect2/marinevhf/marinevhf_tel.h"
+#include "dect2/chanvoice/chv_tel.h"
 #include "dect2/p25p2/p25p2_tel.h"
 #include "dect2/milhf/milhf_engine.h"
 #include "dect2/sbas/sbas_engine.h"
@@ -69,6 +79,7 @@
 #include "dect2/ale/ale_tel.h"
 #include "dect2/p25/p25_tel.h"
 #include "dect2/ble/ble_tel.h"
+#include "dect2/btc/btc_tel.h"
 #include "dect2/iono/iono_tel.h"
 #include "dect2/psk/psk_tel.h"
 #include "dect2/js8/js8_tel.h"
@@ -84,6 +95,8 @@
 #include "dect2/vdes/vdes_tel.h"
 #include "dect2/zigbee/zigbee_tel.h"
 #include "dect2/flarm/flarm_tel.h"
+#include "dect2/adsl/adsl_tel.h"
+#include "dect2/avroad/avroad_tel.h"
 #include "dect2/hfbeacon/hfbeacon_tel.h"
 #include "dect2/dji/dji_tel.h"
 #include "dect2/nbiot/nbiot_tel.h"
@@ -99,13 +112,37 @@
 #include "dect2/lorawan/lorawan_tel.h"
 #include "dect2/lorasat/lorasat_tel.h"
 #include "dect2/pactor/pactor_tel.h"
+#include "dect2/hfutil/hfutil_tel.h"
+#include "dect2/pactorhf/pactorhf_tel.h"
+#include "dect2/rpr/rpr_tel.h"
 #include "dect2/esubghz/esubghz_tel.h"
 #include "dect2/roshf/roshf_tel.h"
 #include "dect2/ssdv/ssdv_tel.h"
 #include "dect2/ebicab/ebicab_tel.h"
 #include "dect2/inmsat/inmsat_tel.h"
+#include "dect2/rclink/rc_tel.h"
+#include "dect2/xlink/xlink_tel.h"
+#include "dect2/cishf/cishf_tel.h"
+#include "dect2/w1a/w1a_tel.h"
 #include "dect2/nrf24/nrf24_tel.h"
+#include "dect2/sensors/sensors_tel.h"
+#include "dect2/bgan/bgan_tel.h"
+#include "dect2/sferics/sferics_tel.h"
+#include "dect2/sferics/ltpos_tel.h"
+#include "dect2/fbr/fbr_tel.h"
+#include "dect2/x40/x40_tel.h"
 #include "dect2/atis/atis_tel.h"
+#include "dect2/selcal/selcal_tel.h"
+#include "dect2/umts/umts_rx.h"
+#include "dect2/cdma/cdma_rx.h"
+#include "dect2/tdscdma/tdscdma_rx.h"
+#include "dect2/vdl3/vdl3_tel.h"
+#include "dect2/cp16/cp16_tel.h"
+#include "dect2/fy3/fy3_tel.h"
+#include "dect2/wxsat/wxsat_tel.h"
+#include "dect2/sd3/sd3_tel.h"
+#include "dect2/hamsci/hamsci_tel.h"
+#include "dect2/xband/xband_tel.h"
 #include "dect2/shortwave/shortwave_tel.h"
 #include "dect2/pskdsp/pskdsp_tel.h"
 #include "dect2/wisun/wisun_tel.h"
@@ -131,11 +168,16 @@
 #include "dect2/goesdcs/goesdcs_tel.h"
 #include "dect2/bletrk/bletrk_tel.h"
 #include "dect2/satbeacon/satbeacon_tel.h"
+#include "dect2/satmisc/satdetect_tel.h"
+#include "dect2/navic/navic.h"
 #include "dect2/rid/rid_tel.h"
+#include "dect2/espnow/espnow_tel.h"
 #include "dect2/meteor/meteor_tel.h"
 #include "dect2/nr/nr_tel.h"
 #include "dect2/goes/goes_tel.h"
+#include "dect2/gk2a/gk2a_tel.h"
 #include "dect2/elektro/elektro_tel.h"
+#include "dect2/fygeo/fygeo_tel.h"
 #include "dect2/uat/uat_tel.h"
 #include "dect2/hrpt/hrpt_tel.h"
 #include "t2.h"
@@ -208,30 +250,60 @@ struct RxTelemetry {
     SpecanTelemetry specan;   // valid when standard == 43 (spectrum analyser)
     OrbcommTelemetry orbcomm;   // valid when standard == 45
     DvbcTelemetry dvbc;    // valid when standard == 41
+    Dvbc2Telemetry dvbc2;  // valid when standard == 742 (DVB-C2, family 741)
     UplinkTelemetry uplink;   // valid when standard == 44 (Mode S uplink)
     AleTelemetry ale;         // valid when standard == 50 (HF ALE)
     P25Telemetry p25;         // valid when standard == 51 (P25 Phase 1)
     BleTelemetry ble;         // valid when standard == 52 (Bluetooth LE advertising)
+    BtcTelemetry btc;         // valid when standard == 381 (Bluetooth Classic discovery)
     IonoTelemetry iono;       // valid when standard == 53 (ionospheric sounders)
     Qo100Telemetry qo100;     // valid when standard == 54 (QO-100)
     WifiTelemetry wifi;       // valid when standard == 55 (Wi-Fi networks)
     GeneralTelemetry general; // valid when standard == 56 (general receiver)
     TimeTelemetry timesig;    // valid when standard == 59 (time signals)
     FlarmTelemetry flarm;     // valid when standard == 67 (FLARM)
+    AvRoadTelemetry avroad;   // valid when standard is 401 - 412 (families 400 - 411)
+    AdslTelemetry adsl;       // valid when standard == 301 (ADS-L, family 300, engine standard 302)
     DjiTelemetry dji;         // valid when standard == 69 (DJI drones)
     CubeTelemetry cube;       // valid when standard == 62 (CubeSat telemetry)
     GlobalstarTelemetry globalstar;   // valid when standard == 63 (Globalstar activity monitor)
     VdesTelemetry vdes;       // valid when standard == 64 (VDES)
     NbiotTelemetry nbiot;     // valid when standard == 70 (NB-IoT cells)
     ZigbeeTelemetry zigbee;   // valid when standard == 66 (Zigbee / 802.15.4)
+    ZigbeeTelemetry thread;   // valid when standard == 245 (Thread, family 244, engine standard 246)
     LoraRawTelemetry loraraw; // valid when standard == 72 (LoRa raw)
     LorawanTelemetry lorawan; // valid when standard == 201 (LoRaWAN all channels, family 200, engine standard 202)
     LoraSatTelemetry lorasat; // valid when standard == 202 (LoRa satellites, family 201, engine standard 203)
+    HfUtilTelemetry hfutil;   // valid when standard is 431 .. 440 (HF utility modes, families 430 .. 439)
     PactorTelemetry pactor;   // valid when standard == 204 (PACTOR-I monitor, family 203, engine standard 205)
     RoshfTelemetry roshf;     // valid when standard == 206 (ROS (HF) detector, family 205, engine standard 207)
     SsdvTelemetry ssdv;       // valid when standard == 207 (SSDV pictures, family 206, engine standard 208)
+    Sd3Telemetry sd3;         // valid when standard is 291 .. 300 or 511 (families 290 .. 299, 510, sd3_tel.h)
+    WxsatTelemetry wxsat;     // valid when standard is 261 .. 272 (families 260 .. 271, wxsat_tel.h)
+    HamsciTelemetry hamsci;   // valid when standard is 461 .. 466 or 501 .. 503 (the ham science modes, families 460 .. 465 and 500 .. 502, hamsci_tel.h)
+    XbTelemetry xband;        // valid when standard is 531 .. 550 (families 530 .. 549, xband_tel.h)
+    Fy3Telemetry fy3a;        // valid when standard == 236 (FY-3 AHRPT, family 235, engine standard 237)
+    Fy3Telemetry fy3m;        // valid when standard == 237 (FY-3 MPT, family 236, engine standard 238)
+    RprTelemetry rpr;   // valid when standard == 900 (Robust Packet, family 899, engine standard 901)
+    PactorHfTelemetry pactorhf;   // valid when standard == 238, 239 or 240 (PACTOR-II / -III / -IV, families 237 .. 239, engine standards 239 .. 241)
+    UmtsTelemetry umts;   // valid when standard == 481 (UMTS cells, family 480, engine standard 482)
+    CdmaTelemetry cdma;   // valid when standard == 661 (CDMA2000 cells, family 660, engine standard 662)
+    TdscdmaTelemetry tdscdma;   // valid when standard == 662 (TD-SCDMA cells, family 661, engine standard 663)
+    Vdl3Telemetry vdl3;   // valid when standard == 641 (VDL Mode 3, family 640, engine standard 642)
+    Cp16Telemetry cp16;   // valid when standard == 881 (CP16, family 880, engine standard 882)
+    SelcalTelemetry selcal;   // valid when standard == 241 (SELCAL, family 240, engine standard 242)
     AtisTelemetry atis;       // valid when standard == 212 (ATIS inland waterways, family 211, engine standard 213)
     ShortwaveTelemetry shortwave;   // valid when standard == 213 (Shortwave, family 212, engine standard 214)
+    SensorsTelemetry sensors; // valid when standard == 242 (Sub-GHz sensors, family 241, engine standard 243)
+    BganTelemetry bgan;       // valid when standard == 246 (Inmarsat BGAN, family 245, engine standard 247)
+    SfericsTelemetry sferics; // valid when standard == 244 (Sferics, family 243, engine standard 245)
+    X40Telemetry x40;       // valid when standard is 882 - 897 (the 4.0 signal modes, families 881 - 896, docs/X40-4.0.md)
+    FbrTelemetry fbr;       // valid when standard == 871 (Fleet Broadcast, family 870, engine standard 872)
+    LtPosTelemetry ltpos;   // valid when standard == 791 (Lightning position, family 790, engine standard 792)
+    CisHfTelemetry cishf;     // valid when standard == 621 .. 627 (CIS HF modes, families 620 - 626)
+    W1aTelemetry w1a;         // valid when standard == 801 .. 803 (HF packet 300 Bd, voice inversion, ELT; families 800 - 802)
+    XlinkTelemetry xlink;     // valid when standard == 601 (Extra links, family 600, engine standard 602)
+    RcTelemetry rclink;       // valid when standard == 361 (RC and mesh links, family 360, engine standard 362)
     Nrf24Telemetry nrf24;     // valid when standard == 211 (nRF24L01, family 210, engine standard 212)
     InmsatTelemetry inmsat;   // valid when standard == 209 (Inmarsat all carriers, family 208, engine standard 210)
     EbicabTelemetry ebicab;   // valid when standard == 208 (EBICab / Eurobalise, family 207, engine standard 209)
@@ -257,9 +329,13 @@ struct RxTelemetry {
     ModeAcTelemetry modeac;   // valid when standard == 143 (Mode A/C, family 142)
     EczasTelemetry eczas;     // valid when standard == 86 (e-Czas, 225 kHz Poland)
     MsTelemetry mscatter;     // valid when standard == 105 (meteor scatter)
+    SitorTelemetry sitor;     // valid when standard == 120 (SITOR, engine standard 121)
     DmeTelemetry dme;         // valid when standard == 123 (DME, engine standard 123)
     DcsTelemetry goesdcs;     // valid when standard == 142 (GOES DCS, family 141)
+    DcsTelemetry hrdcp;       // valid when standard == 701 (Meteosat HRDCP, family 700)
     BletrkTelemetry bletrk;   // valid when standard == 144 (BLE tracker detector, family 143)
+    NavicTelemetry navic;     // valid when standard == 562 (NavIC)
+    SatDetectTelemetry satdetect;   // valid for the satellite detector modes (active standards 551 on)
     SbTelemetry satbeacon;    // valid when standard == 145 (satellite beacon)
     HfbTelemetry hfb;         // valid when standard == 68 (HF beacons)
     WbTelemetry wb;           // valid when standard == 74 (Signal workbench)
@@ -272,10 +348,13 @@ struct RxTelemetry {
     MultitoneTelemetry multitone;   // valid when standard == 76 (Multitone paging)
     HalowTelemetry halow;     // valid when standard == 71 (Wi-Fi HaLow / 802.11ah)
     RidTelemetry rid;         // valid when standard == 57 (Drone Remote ID)
+    EspnowTelemetry espnow;   // valid when standard == 899 (ESP-NOW, family 898)
     MeteorTelemetry meteor;   // valid when standard == 60 (Meteor-M LRPT)
     NrTelemetry nr;           // valid when standard == 58 (5G NR cells)
     GoesTelemetry goes;       // valid when standard == 61 (GOES HRIT)
+    Gk2aTelemetry gk2a;       // valid when standard == 231 (GK-2A LRIT, family 230, engine standard 232) or 232 (GK-2A HRIT, family 231, engine standard 233)
     ElektroTelemetry elektro; // valid when standard == 81 (Elektro-L)
+    FygeoTelemetry fygeo;     // valid when standard == 233 .. 235 (FY-4 LRIT, FY-4A HRIT, FY-2 S-VISSR; families 232 - 234)
     UatTelemetry uat;         // valid when standard == 84 (UAT 978 MHz)
     HrptTelemetry hrpt;       // valid when standard == 65 (HRPT / AHRPT)
     PskTelemetry psk;      // valid when standard == 37
@@ -291,11 +370,16 @@ struct RxTelemetry {
     ElLoranTelemetry eloran;    // valid when standard == 127 (eLoran / Loran-C, family 126)
     NfcTelemetry nfc;           // valid when standard == 149 (NFC / RFID 13.56 MHz, family 148, engine standard 150)
     IsdbsTelemetry isdbs;       // valid when standard == 155 (ISDB-S, family 154)
+    DvbshTelemetry dvbsh;       // valid when standard == 747 (DVB-SH, family 746)
     MptTelemetry mpt1327;       // valid when standard == 128 (MPT1327 trunking, family 127)
     FusionTelemetry fusion;     // valid when standard == 129 (Yaesu Fusion, family 128, stdMode 130)
     LtrTelemetry ltr;           // valid when standard == 130 (LTR control channel, engine standard 131)
+    ChvTelemetry chanvoice;     // valid when standard is 341 .. 347 (CB, FRS / GMRS, PMR446, ham FM, HF voice, MDC-1200, wireless mic; families 340 - 346, engine standards 342 - 348)
     MarineVhfTelemetry marinevhf;   // valid when standard == 156 (Marine VHF voice, engine standard 157)
     EdacsTelemetry edacs;       // valid when standard == 131 (EDACS control channel, engine standard 132)
+    SmartnetTelemetry smartnet; // valid when standard == 321 (Motorola Type II, family 320)
+    TetraDmoTelemetry tetradmo; // valid when standard == 322 (TETRA Direct Mode, family 321)
+    OpenSkyTelemetry opensky;   // valid when standard == 323 (OpenSky identifier, family 322)
     SbasTelemetry sbas;         // valid when standard == 151 (SBAS, family 150, engine standard 152)
     ArgosTelemetry argos;       // valid when standard == 153 (Argos, engine standard 154)
     SigfoxModeTelemetry sigfoxm;   // valid when standard == 154 (Sigfox, engine standard 155)
@@ -310,6 +394,9 @@ struct RxTelemetry {
         int symbolIdx = 0;
         uint64_t fecDropped = 0;   // symbols the error correction thread was too slow for (pipelined receiver: dropped, the decoder restarted)
         bool viterbiOnGpu = false; // the Viterbi runs on the GPU (GpuViterbi), not on the CPU
+        bool indepth = false, dvbh = false, timeSlicing = false, mpeFec = false;   // DVB-H (EN 300 744 annex F): in-depth interleaver, TPS service bits
+        int mpePid = -1;           // DVB-H data link (EN 301 192): the last MPE stream heard (-1 none), its datagrams and MPE-FEC rows
+        uint64_t mpeDatagrams = 0, mpeRowsCorrected = 0, mpeRowsFailed = 0;
     } dvbt;
     struct Isdbt {               // ISDB-T only: the TMCC parameters and the statistics of the three layers
         bool tmccOk = false;
@@ -394,6 +481,8 @@ struct RxTelemetry {
     struct PlpInfo { int id = 0, type = 0, payloadType = 0, mod = 0, cod = 0, rotation = 0, fecType = 0, tiType = 0, tiLength = 0, blocks = 0; bool supported = true; };
     std::vector<PlpInfo> plpList;          // every PLP signalled in L1-post
     int plpSelectedId = -1;                // PLP being decoded
+    int t2Layer = 0;                       // layer being followed: 1 T2-Base, 2 T2-Lite
+    uint64_t t2OtherLayerP1 = 0;           // P1 symbols of the other layer seen (a mixed signal carries both)
     std::vector<std::string> unsupported;  // reasons why (part of) this multiplex cannot be decoded, e.g. "MISO transmission"
     std::vector<std::vector<uint8_t>> blockMap; // per decoded frame (oldest first, last 90): 1 = FEC block decoded, 0 = failed
 };
@@ -414,12 +503,15 @@ public:
     // for the samples to be processed (they are, in order, by a later call). Off (the default) feed() is synchronous: file sources and
     // tests see everything processed when it returns.
     void setPipelined(bool on);
+    // A recording or a test: a PLP frame waits for the error correction instead of being dropped when it falls behind (off: live radios)
+    void setBlocking(bool on);
     bool telemetry(RxTelemetry& out, uint64_t lastSeq);
     // Called (on the receiver thread) for every decoded PLP frame, in order.
     // LDPC compute backend: 0 = CPU, 1 = GPU, 2 = auto (GPU once the CPU can't keep up)
     void setComputeMode(int m);
     // Which PLP to decode: its PLP_ID, or -1 for automatic (the first data PLP).
     void selectPlp(int id);
+    void selectLayer(int layer);   // 0 = automatic (the first layer seen), 1 = T2-Base, 2 = T2-Lite
     void setPlpCallback(std::function<void(const PlpResult&)> cb);
 
 private:

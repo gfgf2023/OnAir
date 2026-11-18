@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Time signal screens: the received time in large type with the date, time zone, summer time, leap second and DUT1 flags, the computer
 // clock against it (after the path delay from the shared receiver position), the seconds tick, the symbols of the minute, the decoded
 // minute log, level / SNR / tick / offset histories, and the station and frequency pickers. LF stations need a radio that tunes below
@@ -14,6 +17,7 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include "../ui/font_size.h"
 
 namespace {
 using namespace dect2::timesig;
@@ -125,7 +129,7 @@ void timeView(App& a) {
     const dect2::TimeTelemetry& t = a.rx.timesig;
     const Fields& f = t.fields;
     // the received time, large
-    ImGui::PushFont(a.mono, 30 * gUi);
+    ImGui::PushFont(a.mono, 30.f);
     if (t.timeValid) ImGui::TextColored(t.confirmed ? pal::okGreen() : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s UTC", utcText(t.utcNow).c_str());
     else ImGui::TextDisabled("----.--.-- --:--:-- UTC");
     ImGui::PopFont();
@@ -340,7 +344,9 @@ void receiver(App& a) {
     kvRow(a, "signal time", "%.1f s", t.timeSec);
     ImGui::Spacing();
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Not used: the DCF77 and WWVB phase codes, the WWV voice announcements.");
+    if (t.dcfPhaseLocked) ImGui::TextDisabled("DCF77 phase code: locked, correlation %.2f, last bit %d", t.dcfPhaseCorr, t.dcfPhaseBit);
+    if (t.wwvbPhaseLocked) ImGui::TextDisabled("WWVB phase code: minute %lld (UTC seconds)", (long long)t.wwvbPhaseUtc);
+    ImGui::TextDisabled("Not used: the WWV voice announcements.");
     ImGui::PopTextWrapPos();
 }
 

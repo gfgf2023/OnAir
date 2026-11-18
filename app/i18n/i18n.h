@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Interface translations. The key is the English text as written in the source: tr("Start") gives the text in the chosen
 // language, or the English text itself when there is no translation. The catalogs are app/i18n/<code>.txt, compiled in.
 // The returned pointers stay valid for the whole run (a language once loaded is never freed).
@@ -16,7 +19,7 @@ const char* trw(const char* english);
 namespace i18n {
 struct Language { const char* code; const char* name; };   // name: in the language itself
 const Language* languages(int& count);                     // English first
-// Choose the language by code ("de", "fr", "es", "zh", "lt", "hu", "pt", "it", "ru" ... "en"); an unknown code or one with a region ("de-AT", "zh_CN.UTF-8",
+// Choose the language by code ("de", "fr", "es", "zh", "lt", "hu", "pt", "it", "ru", "tr" ... "en"); an unknown code or one with a region ("de-AT", "zh_CN.UTF-8",
 // "zh-Hans") is matched by its first letters. Returns the code actually chosen.
 const char* set(const std::string& code);
 const char* current();                                     // "en" when nothing is chosen

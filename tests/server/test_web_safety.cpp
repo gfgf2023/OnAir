@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // OnAir Web safety rules, checked three ways:
 //  1. compile time: the web classes have no transmit / arm / key / record member (detection idiom);
 //  2. the protocol: every transmit / key / decrypt / record message type is refused with "forbidden" by default (transmit: unless the host sets
@@ -63,7 +66,7 @@ static void testProtocol() {
     }
     // what a session can send at all: none of it reaches a transmitter, a key or the disk
     for (const auto& t : clientTypes()) CHECK(!isForbiddenType(t), "%s", t.c_str());
-    CHECK(clientTypes().size() == 9, "the protocol has exactly the nine documented client types");
+    CHECK(clientTypes().size() == 10, "the protocol has exactly the ten documented client types");
     h.leave(id);
 }
 

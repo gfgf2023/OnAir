@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The first-run setup and the lessons, pure part (no ImGui, no App): the goals, the antennas, the regions, a one-line note per radio,
 // the lesson table (data: add a row to add a lesson), the step checks, the saved progress, the checkup rules and the glossary.
 // Drawn by wizard.cpp (the setup) and learn.cpp (lessons, glossary, checkup); tested by tests/app/test_learn.cpp.
@@ -92,9 +95,20 @@ inline const char* radioBlurb(const std::string& board, const std::string& name)
     const std::string b = lower(board + " " + name);
     struct R { const char* key; const char* text; };
     static const R k[] = {
+        {"rtl_tcp", N_("rtl_tcp: an RTL-SDR shared by another computer over the network.")},
+        {"rtltcp", N_("rtl_tcp: an RTL-SDR shared by another computer over the network.")},
+        {"airspyhf", N_("Airspy HF+: a very sensitive receiver for long, medium and short wave and FM, up to 260 MHz.")},
+        {"fobos", N_("Fobos SDR: a wideband receiver, 100 kHz to 6 GHz. Needs the radio's own library, see the ? in Radio settings.")},
+        {"rfnm", N_("RFNM: a wideband radio board with one or two daughter boards, on USB or the network.")},
+        {"nrspst", N_("SDRplay nRSP-ST: a network radio, used through SDRconnect running on a computer.")},
+        {"tci", N_("TCI: a radio of the ExpertSDR family (SunSDR and others) on the network. Receive only.")},
+        {"sdrpp", N_("SDR++ server: a radio shared by another computer running SDR++.")},
+        {"audio", N_("A sound card or a web radio used as the input.")},
         {"hackrf", N_("HackRF: covers 1 MHz to 6 GHz with a wide view, and can transmit. Less sensitive than an RTL-SDR.")},
         {"rtl", N_("RTL-SDR: the cheap and popular USB stick, about 24 MHz to 1.7 GHz. Good for FM, airband, ADS-B and AIS.")},
+        {"hydrasdr", N_("HydraSDR RFOne: a sensitive receive-only radio with three antenna inputs.")},
         {"airspy", N_("Airspy: a sensitive receiver with low noise, good for weak signals.")},
+        {"mirics", N_("SDRplay RSP1 or a Mirics MSi2500 stick on OnAir's own driver, 10 kHz to 2 GHz, no SDRplay API needed. Untested on hardware: please report how it works.")},
         {"sdrplay", N_("SDRplay RSP: covers long wave to 2 GHz, very good on short wave. Needs the SDRplay API.")},
         {"rsp", N_("SDRplay RSP: covers long wave to 2 GHz, very good on short wave. Needs the SDRplay API.")},
         {"pluto", N_("PlutoSDR: receives and transmits, 70 MHz to 6 GHz (more after the usual tweak).")},
@@ -106,7 +120,7 @@ inline const char* radioBlurb(const std::string& board, const std::string& name)
         {"hermes", N_("Hermes Lite 2: a short-wave transceiver on the network.")},
         {"kiwi", N_("KiwiSDR: a short-wave receiver somewhere on the internet, shared by its owner.")},
         {"spyserver", N_("SpyServer: a radio shared by another computer over the network.")},
-        {"rtl_tcp", N_("rtl_tcp: an RTL-SDR shared by another computer over the network.")},
+        {"spectran", N_("Aaronia Spectran V6: a real-time spectrum analyser radio, up to 6 GHz or more with the wide models, with a very wide view. Receive only.")},
         {"hamlib", N_("A transceiver controlled over CAT, with its sound card for audio.")},
     };
     for (const R& r : k) if (b.find(r.key) != std::string::npos) return r.text;

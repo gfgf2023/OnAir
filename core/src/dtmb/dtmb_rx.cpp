@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DTMB receiver (GB 20600-2006, multi-carrier C=3780 mode): matched filter and resampling to the symbol rate, frame search from the PN headers,
 // tracking (timing, carrier offset, channel from the headers), header leakage removal and equalisation of the OFDM body, system information,
 // then the channel decoder. See docs/modes/dtmb.md.
@@ -8,11 +11,13 @@
 #include "dect2/dtmb/dtmb_front.h"
 #include "dect2/dtmb/dtmb_map.h"
 #include "dect2/dtmb/dtmb_sync.h"
+#include "dect2/dsp/fftutil.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <chrono>
+#include <cstddef>
 #include <ctime>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +33,7 @@ using namespace dtmb;
 namespace {
 using dect2::math::kPi;
 constexpr float kPeakNoiseRatio = 25.f;    // a header counts when its strongest tap stands this far (power) above the estimation noise
+constexpr int kMaxSilentFrames = 3200;     // about 2 s of PN945 frames of exact silence, then the lock is given up as usual (a dead source)
 constexpr int kLostFrames = 12;            // frames without a usable header before the lock is given up
 }
 
@@ -62,7 +68,7 @@ struct SiTracker {
         for (int i = 0; i < kSiSymbols; i++) w[i] = 1.f / sivar[i];
         siScores(si, w, sc);
         for (int i = 0; i < 22; i++) acc[i] = 0.7f * acc[i] + 0.3f * sc[i];
-        count++;
+        if (count < 30) count++;
         int best = 0, second = 1;
         if (acc[1] > acc[0]) std::swap(best, second);
         for (int i = 2; i < 22; i++) { if (acc[i] > acc[best]) { second = best; best = i; } else if (acc[i] > acc[second]) second = i; }
@@ -71,7 +77,7 @@ struct SiTracker {
         score = acc[best] / std::max(norm, 0.3f);
         const float margin = (acc[best] - acc[second]) / std::max(norm, 0.3f);
         if (score > 0.45f && margin > 0.35f) {
-            if (best == cand) run++; else { cand = best; run = 1; }
+            if (best == cand) run = std::min(run + 1, 3); else { cand = best; run = 1; }
         } else run = 0;
         return run >= 3 ? best + 3 : -1;
     }
@@ -102,28 +108,37 @@ struct DtmbReceiver::Impl {
     bool rateOk = false;
     SrrcResampler front;
     std::atomic<bool> resetReq{false};
+    std::atomic<bool> autoW{false};     // Auto (setAutoWidth): the channel width follows the occupied band of the input
+    double curBw = 8;
+    int widthVotes = 0, widthVoted = 0;
+    std::vector<cf32> widthBuf;
+    std::vector<double> widthPow;
+    int widthFrames = 0;
+    double widthFound = 0;
+    int widthRequest = 0;               // receiver thread: the width to change to (before the next block)
+    void widthTick(const cf32* x, size_t n);
     std::vector<cf32> tmp;
     double levelAcc = 0; uint64_t levelN = 0; float levelDb = -120;
 
     // ---- symbol stream
     std::vector<cf32> buf;                 // buf[i] is symbol number base + i
-    long base = 0;
+    int64_t base = 0;
     double cfoHz = 0, derotPhase = 0;      // the stream is multiplied by exp(j derotPhase); the phase moves by -2 pi cfoHz / symbol rate per symbol
-    long reportAt = 0;                     // symbol count of the next telemetry report
+    int64_t reportAt = 0;                  // symbol count of the next telemetry report
 
     // ---- search
     Acquirer acq;
     double symRate = kSymbolRate;   // 7.56 Msym/s, or 5.67 in a 6 MHz channel
     int hyp = 0;
-    long sinceAttempt = 1 << 30;
+    int64_t sinceAttempt = 1 << 30;
     std::vector<cf32> block;
 
     // ---- tracking
     int state = 0;                         // 0 searching, 1 tracking, 2 decoding
     Header hdr = Header::Pn945;
     bool rotates = true;
-    long S = 0;                            // first symbol of the header of the frame being processed
-    int fnum = 0;                          // its number inside the super-frame
+    int64_t S = 0;                         // first symbol of the header of the frame being processed
+    int64_t fnum = 0;                      // frame index; the PN phase repeats each super-frame
     std::unique_ptr<HeaderEstimator> est, estWide;   // est: the window that fits the channel, estWide: the widest the header allows
     Taps rawA, rawB, cleanA, cleanB, rawW, cleanW;
     bool haveA = false, haveWide = false;
@@ -137,6 +152,7 @@ struct DtmbReceiver::Impl {
     int siLost = 0;
     uint64_t frames = 0;
     int lostRun = 0;
+    int silentRun = 0;           // frames whose header is exact silence: a gap the source filled with zeros of its length (SpyServer drops, #435)
     double lossAvg = 0;
     double snrPn = 0, merAvg = 0, frameErr = 0; bool snrInit = false;
     double timeInt = 0;
@@ -156,7 +172,7 @@ struct DtmbReceiver::Impl {
     std::atomic<int> computeMode{2};                      // 0 CPU, 1 GPU, 2 auto
     uint64_t pktTotal = 0;
     ChainStats lastStats;
-    long lastGoodAt = (std::numeric_limits<long>::min() / 2);
+    int64_t lastGoodAt = (std::numeric_limits<int64_t>::min() / 2);
     std::function<void(const uint8_t*, size_t, double)> pktCb;
     std::function<void(const std::string&)> logCb;
 
@@ -184,7 +200,8 @@ struct DtmbReceiver::Impl {
     }
 
     // ------------------------------------------------------------------ plumbing
-    long produced() const { return base + (long)buf.size(); }
+    // Absolute symbol positions need an explicit 64-bit type because Windows long is 32 bits.
+    int64_t produced() const { return base + (int64_t)buf.size(); }
 
     size_t pullMore(size_t want) {
         Prof::Scope pp(prof, 8);
@@ -220,21 +237,21 @@ struct DtmbReceiver::Impl {
     }
 
     // make symbols with absolute index < upTo available; false when the front end has no more input
-    bool ensure(long upTo) {
+    bool ensure(int64_t upTo) {
         while (produced() < upTo) {
             if (!pullMore((size_t)(upTo - produced()))) return false;
         }
         return true;
     }
 
-    const cf32* at(long i) const { return &buf[(size_t)(i - base)]; }
+    const cf32* at(int64_t i) const { return &buf[(size_t)(i - base)]; }
 
-    void dropBefore(long idx) {
+    void dropBefore(int64_t idx) {
         if (idx - base > 8192) {
             Prof::Scope pt(prof, 9);
             const size_t d = (size_t)(idx - base);
-            buf.erase(buf.begin(), buf.begin() + (long)d);
-            base += (long)d;
+            buf.erase(buf.begin(), buf.begin() + (std::ptrdiff_t)d);
+            base += (int64_t)d;
         }
     }
 
@@ -242,16 +259,16 @@ struct DtmbReceiver::Impl {
         front.reset();
         buf.clear(); base = 0;
         cfoHz = 0; derotPhase = 0;
-        reportAt = (long)(symRate * 0.25);
+        reportAt = (int64_t)(symRate * 0.25);
         hyp = 0; sinceAttempt = 1 << 30;
-        state = 0; haveA = false; haveWide = false; frames = 0; lostRun = 0; lossAvg = 0;
+        state = 0; haveA = false; haveWide = false; frames = 0; lostRun = 0; silentRun = 0; lossAvg = 0;
         snrInit = false; timeInt = 0; timeJumpRun = 0;
         resetSi();
         if (chain) chain->reset();
         chain.reset();
         lastStats = ChainStats();
         pktTotal = 0;
-        lastGoodAt = (std::numeric_limits<long>::min() / 2);
+        lastGoodAt = (std::numeric_limits<int64_t>::min() / 2);
         cells.clear(); cir.clear();
     }
 
@@ -260,9 +277,9 @@ struct DtmbReceiver::Impl {
         for (;;) {
             const size_t got = pullMore(65536);
             if (!got) break;
-            sinceAttempt += (long)got;
+            sinceAttempt += (int64_t)got;
             // keep the block the search needs and a little more
-            if ((long)buf.size() > Acquirer::kBlock + 131072) dropBefore(produced() - Acquirer::kBlock - 16384);
+            if (buf.size() > (size_t)(Acquirer::kBlock + 131072)) dropBefore(produced() - Acquirer::kBlock - 16384);
             if ((int)buf.size() >= Acquirer::kBlock && sinceAttempt >= 262144) {
                 sinceAttempt = 0;
                 if (attempt()) return;
@@ -276,9 +293,9 @@ struct DtmbReceiver::Impl {
         // offset itself within +-14 kHz of the one tried
         // A UHF radio 50 ppm off is up to 43 kHz away: hypotheses out to +-40 kHz, the fit covering the rest
         static const double hyps[11] = {0, 8000, -8000, 16000, -16000, 24000, -24000, 32000, -32000, 40000, -40000};
-        const double h = hyps[hyp % 11];
-        hyp++;
-        const long first = produced() - Acquirer::kBlock;
+        const double h = hyps[hyp];
+        hyp = (hyp + 1) % 11;
+        const int64_t first = produced() - Acquirer::kBlock;
         block.resize((size_t)Acquirer::kBlock);
         const double dph = -2.0 * kPi * h / symRate;
         cf32 rot(1, 0), step((float)std::cos(dph), (float)std::sin(dph));
@@ -311,14 +328,14 @@ struct DtmbReceiver::Impl {
         return true;
     }
 
-    void startTrack(const AcqResult& r, long start, double newCfo) {
+    void startTrack(const AcqResult& r, int64_t start, double newCfo) {
         hdr = r.header; rotates = r.rotates; S = start; fnum = r.frame;
         // re-derotate what is already in the buffer: the stream carried a derotation of cfoHz, it should carry newCfo
         {
-            const long n0 = std::max(base, S - 256);
+            const int64_t n0 = std::max(base, S - 256);
             const double dph = -2.0 * kPi * (newCfo - cfoHz) / symRate;
             cf32 step((float)std::cos(dph), (float)std::sin(dph)), rot(1, 0);
-            for (long i = n0; i < produced(); i++) {
+            for (int64_t i = n0; i < produced(); i++) {
                 buf[(size_t)(i - base)] *= rot;
                 rot *= step;
                 if (((i - n0) & 1023) == 1023) rot /= std::abs(rot);
@@ -365,9 +382,9 @@ struct DtmbReceiver::Impl {
     }
 
     // ------------------------------------------------------------------ one signal frame
-    int phaseOf(int f) const { return rotates ? pnPhase(hdr, f % headerInfo(hdr).framesPerSuper) : 0; }
+    int phaseOf(int64_t f) const { return rotates ? pnPhase(hdr, (int)(f % headerInfo(hdr).framesPerSuper)) : 0; }
 
-    void estimateAt(long s, int phase, Taps& raw, Taps& clean) {
+    void estimateAt(int64_t s, int phase, Taps& raw, Taps& clean) {
         Prof::Scope ps(prof, 1);
         est->estimate(at(s), phase, raw);
         clean = raw;
@@ -375,7 +392,7 @@ struct DtmbReceiver::Impl {
     }
 
     // The channel's extent from an estimate over the widest window: the narrow window follows it (cheaper, and a better fit)
-    void adaptWindow(long s, int phase) {
+    void adaptWindow(int64_t s, int phase) {
         Prof::Scope pw(prof, 14);
         estWide->estimate(at(s), phase, rawW);
         cleanW = rawW;
@@ -396,12 +413,20 @@ struct DtmbReceiver::Impl {
         }
     }
 
+    // [pos, pos + n) is a zero-filled gap: after the front end (its DC offset taken out, the carrier turned) the zeros become a constant of one
+    // magnitude, which no signal or noise keeps over a whole header
+    bool silentAt(int64_t pos, int n) const {
+        float mn = 1e30f, mx = 0.f;
+        for (int i = 0; i < n; i++) { const float m = std::norm(*at(pos + i)); mn = std::min(mn, m); mx = std::max(mx, m); if (mx > mn * 1.02f + 1e-12f) return false; }
+        return n > 0;
+    }
+
     bool processFrame() {
         const HeaderInfo& hi = headerInfo(hdr);
         const int Lh = hi.length, Lf = Lh + kBody;
         // (a frame further on than the header after this one: room to look for that header after lost samples, and the one after it)
         if (!ensure(S + Lf + relockSpan())) return false;
-        const long S2 = S + Lf;
+        const int64_t S2 = S + Lf;
         const int phA = phaseOf(fnum), phB = phaseOf(fnum + 1);
         if (++sinceWide >= 32) { sinceWide = 0; adaptWindow(S2, phB); haveA = false; }
         if (!haveA) { estimateAt(S, phA, rawA, cleanA); haveA = true; }
@@ -410,6 +435,17 @@ struct DtmbReceiver::Impl {
         const bool goodB = cleanB.peakPower > kPeakNoiseRatio * rawB.tapVar;
         lossAvg = 0.95 * lossAvg + 0.05 * ((goodA && goodB) ? 0.0 : 1.0);
         frames++;
+        // A header of exact zeros is no signal at all, not a weak one: a source that knows how much it lost (the SpyServer client puts dropped
+        // messages back as zeros of their length) keeps the time line, so the grid is still right. Coast across it with the frames erased and
+        // without counting it towards losing the lock; a fixed-phase header could not count the frames again after a relock (#435).
+        if (!goodB && silentAt(S2, Lh) && silentRun < kMaxSilentFrames) {
+            silentRun++;
+            if (chain && siOk) chain->skipFrame();
+            haveA = false;
+            S += Lf; fnum++;
+            return true;
+        }
+        silentRun = 0;
         if (!goodB) { Prof::Scope pr(prof, 11); if (relock(S2)) { lostRun = 0; return true; } }
         if (!goodB) {
             // no header where it should be: coast on the old timing
@@ -467,16 +503,15 @@ struct DtmbReceiver::Impl {
             pendingJump = j;
             peakOffUs = (float)(e / (symRate / 1e6));
         }
-        // ---- the body. The header says which carrier mode can be there: PN420 and PN945 go with multi-carrier, PN595 with either (single carrier is
-        // defined with PN595 only); until the system information tells, both are tried
+        // ---- the body. Select the carrier mode from system information, independently of the PN header.
         int8_t chipsA[945], chipsB[945];
         pnHeader(hdr, phA, chipsA); pnHeader(hdr, phB, chipsB);
         const int8_t* ca = chipsA; const int8_t* cb = chipsB;
         // a header that is not usable stands in for its neighbour
         const Taps& ha = goodA ? cleanA : cleanB;
         const double hAmp = std::sqrt(hi.powerRatio / 2.0);
-        const bool tryOfdm = hdr != Header::Pn595 || !siOk || carriers == 3780;
-        const bool trySingle = hdr == Header::Pn595 && (!siOk || carriers == 1);
+        const bool tryOfdm = !siOk || carriers == 3780;
+        const bool trySingle = !siOk || carriers == 1;
         if (tryOfdm) {
             Prof::Scope pe(prof, 2);
             eq.run(at(S + Lh), ha, ca, cleanB, cb, Lh, hAmp, bins.data(), var.data());
@@ -568,10 +603,10 @@ struct DtmbReceiver::Impl {
     // After lost samples the new grid sits a fraction of a symbol off the old sampling instants (the gap is a whole number of input samples, not
     // of symbols); the timing loop would take tens of frames to pull it in. The symbols from shortly before the new header on are taken again
     // at instants moved by that fraction, from the input the front end still holds.
-    void regrid(long newS, double frac) {
+    void regrid(int64_t newS, double frac) {
         if (std::fabs(frac) < 0.02) return;
-        const long t0 = std::max(base, newS - 512);
-        const long k = produced() - t0;
+        const int64_t t0 = std::max(base, newS - 512);
+        const int64_t k = produced() - t0;
         if ((double)k * front.ratio() + 64 > (double)SrrcResampler::kHistory) return;
         buf.resize((size_t)(t0 - base));
         front.shift(-(double)k + frac);
@@ -611,15 +646,15 @@ struct DtmbReceiver::Impl {
         }
         return c[bi];
     }
-    long relockSpan() const { const int Lh = headerInfo(hdr).length; return 8 + Lh + kBody + 2 * Lh + 512 + std::max(est->post(), estWide->post()); }
-    bool relock(long S2) {
+    int64_t relockSpan() const { const int Lh = headerInfo(hdr).length; return 8 + Lh + kBody + 2 * Lh + 512 + std::max(est->post(), estWide->post()); }
+    bool relock(int64_t S2) {
         const HeaderInfo& hi = headerInfo(hdr);
         const int Lh = hi.length, Lf = Lh + kBody;
         // (Not reaching back into the header of this frame: it repeats itself as the new one does, and the header of frame f + 2 m is that of f
         // moved m chips, it would be taken for lost frames.)
         // Once a frame has been coasted, the header of this frame was not found either: the new one may sit where it was (lost samples that
         // were most of a frame), so the search starts a little before it.
-        const long lo = lostRun > 0 ? S2 - Lf - 16 : S2 - Lf + Lh, hiPos = S2 + 8;
+        const int64_t lo = lostRun > 0 ? S2 - Lf - 16 : S2 - Lf + Lh, hiPos = S2 + 8;
         if (lo - 512 < base) return false;
         if (!ensure(S2 + relockSpan())) return false;
         // correlation of the received samples with the core of each candidate header, at every position
@@ -650,7 +685,7 @@ struct DtmbReceiver::Impl {
         }
         const int nm = rotates ? kMaxLost : 1;
         int bestM = -1; double best = 0;
-        std::vector<double> mBest((size_t)nm, 0.0); std::vector<long> mPos((size_t)nm, 0);
+        std::vector<double> mBest((size_t)nm, 0.0); std::vector<int64_t> mPos((size_t)nm, 0);
         std::vector<float> ch((size_t)clen);
         int8_t chips[945];
         for (int m = 0; m < nm; m++) {
@@ -675,14 +710,14 @@ struct DtmbReceiver::Impl {
         // with the channel in the same place in both headers wins; between those about as good, the fewest lost frames.
         if (best <= 30.0 * clen * pw) return false;   // a header stands far above the correlation of noise (clen * power per lag)
         Taps raw, clean, raw2, clean2;
-        long newS = 0;
+        int64_t newS = 0;
         double newFrac = 0, bestOff = 1e9;
         for (int m = 0; m < nm; m++) {
             if (mBest[(size_t)m] < 0.5 * best) continue;
             est->estimate(at(mPos[(size_t)m]), phaseOf(fnum + 1 + m), raw);
             clean = raw; HeaderEstimator::clean(clean, raw.tapVar, 12.f);
             if (clean.peakPower <= kPeakNoiseRatio * raw.tapVar) continue;
-            const long s1 = mPos[(size_t)m] + clean.peakIndex;
+            const int64_t s1 = mPos[(size_t)m] + clean.peakIndex;
             est->estimate(at(s1 + Lf), phaseOf(fnum + 2 + m), raw2);
             clean2 = raw2; HeaderEstimator::clean(clean2, raw2.tapVar, 12.f);
             if (clean2.peakPower <= kPeakNoiseRatio * raw2.tapVar) continue;
@@ -697,7 +732,7 @@ struct DtmbReceiver::Impl {
         // erase the frame that held the gap and the frames lost with it
         if (chain && siOk) for (int k = 0; k <= bestM; k++) chain->skipFrame();
         char b[160];
-        snprintf(b, sizeof b, "samples lost: frame grid moved by %ld symbols, %d frame(s) erased", newS - S2 - (long)bestM * Lf, bestM + 1);
+        snprintf(b, sizeof b, "samples lost: frame grid moved by %lld symbols, %d frame(s) erased", (long long)(newS - S2 - (int64_t)bestM * Lf), bestM + 1);
         log(b);
         relocks++;
         S = newS; fnum += 1 + bestM;
@@ -811,15 +846,15 @@ struct DtmbReceiver::Impl {
 
     bool report() {
         if (produced() < reportAt) return false;
-        reportAt = produced() + (long)(symRate * 0.25);
+        reportAt = produced() + (int64_t)(symRate * 0.25);
         DtmbTelemetry t;
-        t.state = state == 0 ? 0 : ((chain && produced() - lastGoodAt < (long)(symRate * 0.7)) ? 2 : 1);
+        t.state = state == 0 ? 0 : ((chain && produced() - lastGoodAt < (int64_t)(symRate * 0.7)) ? 2 : 1);
         t.cfoHz = cfoHz + mixer.hz;
         t.header = state == 0 ? -1 : (int)hdr;
         t.phaseRotates = rotates;
         t.siOk = siOk; t.siIndex = siOk ? siIndex : 0;
         t.siScore = siOk ? body[carriers == 1 ? 1 : 0].tracker.score : std::max(body[0].tracker.score, body[1].tracker.score);
-        t.carriers = state == 0 ? 0 : siOk ? carriers : (hdr == Header::Pn595 ? 0 : 3780);
+        t.carriers = siOk ? carriers : 0;
         if (siOk) { t.mapping = (int)profile.map; t.rate = (int)profile.rate; t.interleaver = profile.mode2 ? 2 : 1; t.netMbps = (float)(netBitrate(hdr, profile, symRate) / 1e6); }
         t.snrPnDb = state == 0 ? 0.f : (float)snrPn;
         t.snrDb = siOk && merAvg > 8.0 && merAvg < snrPn ? (float)merAvg : t.snrPnDb;
@@ -837,13 +872,14 @@ struct DtmbReceiver::Impl {
             t.packets = st.packets;
             t.onGpu = st.onGpu; t.gpuWords = st.gpuWords;
             t.cwDropped = st.cwDropped; t.cwSkipped = st.cwSkipped; t.bchCorrected = st.bchCorrected;
-            t.tsLock = produced() - lastGoodAt < (long)(symRate * 0.7);
+            t.tsLock = produced() - lastGoodAt < (int64_t)(symRate * 0.7);
             t.dataValid = t.tsLock;
             statsKeep = st;
         } else {
             t.blocksOk = statsKeep.cwOk; t.blocksBad = statsKeep.cwBad; t.packets = statsKeep.packets;
         }
         t.rateOk = rateOk;
+        t.autoWidthMhz = autoW.load() ? widthFound : 0;
         t.computeMode = computeMode.load(); t.gpuAvailable = FecChain::gpuUsable();
         std::lock_guard<std::mutex> lk(mu);
         t.seq = ++seq;
@@ -875,6 +911,7 @@ DtmbReceiver::~DtmbReceiver() {
 void DtmbReceiver::configure(double inputRateHz, double bwMhz) {
     Impl& s = *p_;
     s.inRate = inputRateHz;
+    s.curBw = bwMhz;
     s.symRate = symbolRateFor(bwMhz);
     s.acq.symRate = s.symRate;
     s.rateOk = s.front.configure(inputRateHz, s.symRate);
@@ -888,10 +925,54 @@ bool DtmbReceiver::ready() const { return p_->rateOk; }
 
 void DtmbReceiver::reset() { p_->resetReq = true; }
 
+// Average spectrum of the input, the edges of the band above the noise: 7.56 Msym/s is 8 MHz, 5.67 is 6. Only while nothing is locked; a capture too narrow to show
+// an 8 MHz channel (under 8.5 Msps) keeps the width that was set.
+void DtmbReceiver::Impl::widthTick(const cf32* x, size_t n) {
+    constexpr int kN = 4096, kFrames = 16;
+    if (inRate < 8.5e6 || state != 0) return;
+    if (widthPow.empty()) { widthPow.assign(kN, 0.0); widthBuf.reserve(kN); }
+    (void)0;
+    for (size_t i = 0; i < n; i++) {
+        widthBuf.push_back(x[i]);
+        if (widthBuf.size() < (size_t)kN) continue;
+        Fft f(kN);
+        for (int k = 0; k < kN; k++) widthBuf[(size_t)k] *= (float)(0.5 - 0.5 * std::cos(2 * kPi * k / kN));
+        f.forward(widthBuf.data());
+        for (int k = 0; k < kN; k++) widthPow[(size_t)k] += std::norm(widthBuf[(size_t)k]);
+        widthBuf.clear();
+        if (++widthFrames < kFrames) continue;
+        widthFrames = 0;
+        std::vector<double> s(widthPow);   // centred, then a floor and a threshold halfway (in dB) between the floor and the plateau
+        std::rotate(s.begin(), s.begin() + kN / 2, s.end());
+        std::vector<double> sorted(s);
+        std::sort(sorted.begin(), sorted.end());
+        const double fl = std::max(1e-30, sorted[kN / 10]), top = sorted[kN * 9 / 10];
+        std::fill(widthPow.begin(), widthPow.end(), 0.0);
+        if (top < fl * 8) { widthVotes = 0; continue; }   // nothing stands 9 dB out of the floor
+        const double thr = std::sqrt(fl * top);
+        int lo = -1, hi = -1;
+        for (int k = 0; k < kN; k++) if (s[(size_t)k] > thr) { if (lo < 0) lo = k; hi = k; }
+        if (lo < 0) continue;
+        const double wMhz = (hi - lo + 1) * inRate / kN / 1e6;
+        const int v = wMhz > 6.8 ? 8 : 6;
+        if (v == widthVoted) widthVotes++; else { widthVoted = v; widthVotes = 1; }
+        if (widthVotes >= 3) {
+            widthFound = v;
+            if ((double)v != curBw) { const bool ok = rateOk; (void)ok; widthRequest = v; }
+        }
+    }
+}
+
+void DtmbReceiver::setAutoWidth(bool on) { p_->autoW = on; if (!on) p_->widthRequest = 0; }
+
 void DtmbReceiver::feed(const cf32* x, size_t n) {
     Impl& s = *p_;
     if (!s.rateOk || !n) return;
     if (s.resetReq.exchange(false)) s.doReset();
+    if (s.autoW.load()) {
+        s.widthTick(x, n);
+        if (s.widthRequest) { const int v = s.widthRequest; s.widthRequest = 0; configure(s.inRate, v); s.widthVotes = 0; }
+    }
     // input level
     {
         Prof::Scope pl(s.prof, 10);

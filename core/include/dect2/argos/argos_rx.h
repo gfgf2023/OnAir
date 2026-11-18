@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Argos receiver (see argos_proto.h for what is public and what is not). Two links in one mode, picked from the dial or by hand:
 //   uplink, 401.650 MHz: burst finder (the 160 ms unmodulated carrier), PTT-A2 Manchester phase demodulator (+-1.1 rad, 400 bit/s) with a
 //     search over bit timing and rate, message fields (28 bit ID, user data), and a per-platform list of the burst frequencies (the Doppler
@@ -27,7 +30,8 @@ namespace argos {
 constexpr double kFs = 32000.0;   // the uplink burst demodulator's rate
 struct DemodResult { int kind = 0; float carrierMs = 0, quality = 0; std::vector<uint8_t> bits; };
 // The A2 demodulator on its own: x holds a burst at kFs with its carrier near 0 Hz, starting a little before the carrier
-bool demodUplinkBurst(const std::vector<cf32>& x, DemodResult& out);
+// hintStart: where the burst starts in x when the line detector knows (used only where the power gate cannot see the burst), -1 none
+bool demodUplinkBurst(const std::vector<cf32>& x, DemodResult& out, long hintStart = -1, bool legacy = false);
 }
 
 class ArgosReceiver {
@@ -39,6 +43,7 @@ public:
     void setSignalOffset(double hz);
     void setDialHz(double hz);       // the link follows the dial when the setting is automatic (0: unknown, a file: uplink)
     void setLink(int link);          // 0 automatic, 1 uplink, 2 downlink
+    void setWeakSignalPath(bool on); // 4.0 weak-signal uplink path (default on); off = the 3.9 receiver, for before / after measurements
     bool ready() const;
     void reset();
     void clearResults();

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! OnAir DVB service information text and the DVB data decoders: broadcast character sets to UTF-8 (ETSI EN 300 468 Annex A, ETSI TS 101 756 Annex C), the DVB
 //! text field with its character table prefix, teletext (ETSI EN 300 706 / EN 300 472: Hamming codes, G0 national option subsets, data unit decoding, page
 //! renderer) and DVB subtitles (ETSI EN 300 743: PES header, segment walk and parsers, run-length pixel decoding, colour tables, region blending). Page and
@@ -8,6 +11,7 @@
 #![allow(clippy::needless_range_loop)] // table code is clearer with explicit indices, as in the specification
 
 pub mod charset;
+mod iso8859;
 pub mod subpix;
 pub mod subs;
 pub mod tables;

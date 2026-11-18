@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // D-STAR receiver telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -33,6 +36,7 @@ struct DstarCall {
     bool active = false;
     bool headerOk = false;       // the radio header passed its CRC
     bool headerFromSlow = false; // the header came from the slow data resend (the radio header was missed or damaged)
+    bool headerRepaired = false; // the header's CRC failed; a heard callsign put back made it pass (dstar_repair.h)
     bool lateEntry = false;      // found from the data sync in the middle of the call
     bool endSeen = false;        // the end-of-transmission pattern ended it (else the signal was lost)
     uint8_t flag[3] = {0, 0, 0};
@@ -65,7 +69,7 @@ struct DstarTelemetry {
     float deviationHz = 0;       // as measured on the bit sync (alternating bits; about 0.7 of the 1200 Hz peak deviation)
     bool inverted = false;       // the frequency comes upside down (mirrored spectrum or a receiver that inverts)
     float berPct = 0;
-    uint64_t headersOk = 0, headersBad = 0, lateEntries = 0, slowHeaders = 0, endPatterns = 0, gpsLines = 0, gpsBad = 0;
+    uint64_t headersOk = 0, headersBad = 0, headersRepaired = 0, lateEntries = 0, slowHeaders = 0, endPatterns = 0, gpsLines = 0, gpsBad = 0;
     uint64_t voiceFrames = 0;    // AMBE frames received
     uint64_t voiceDecoded = 0;   // AMBE frames decoded to sound (mbelib)
     bool ambe = false;           // mbelib found

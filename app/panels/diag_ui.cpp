@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Radio problems where the user looks: the listing error, a failed start, a frequency the radio cannot tune and the USB hints, all under the
 // radio picker, plus a "Copy diagnostics" button that puts what a bug report needs on the clipboard.
 #include "dect2/common/u8file.h"
+#include "dect2/source/gain.h"
 #include "dect2/audio/audio_rec.h"
 #include "dect2/audio/audio_monitor.h"
 #include "dect2/audio/audioout.h"
@@ -15,8 +19,11 @@
 #include "dect2/hfdig/hfdig_freedv.h"
 #include "fixit.h"
 #include "dect2/engine/crash_report.h"
+#include "bugreport_logic.h"
 #include "dect2/voicekeys/key_guard.h"
 #include "../ui/panel_layout.h"
+#include "../ui/next_step_logic.h"
+#include "../ui/ease_logic.h"
 #include <fstream>
 #include <iterator>
 #include <cstring>
@@ -186,8 +193,8 @@ void recordUi(App& a, int part = 0) {
         const bool can = a.engine.running() && !isFile;
         ImGui::BeginDisabled(!can);
         if (panel::dotButton(tr("Record IQ"), can)) {
-            const FileFormat f = a.recFormat >= 1 ? FileFormat::CF32 : FileFormat::CS8;
-            const std::string path = plat::dataDir() + "/recordings/" + (a.recFormat == 2 ? blueRecordingName(a.engine.recordingName(f)) : a.engine.recordingName(f));
+            const FileFormat f = (FileFormat)recFileFormatOf(a.recFormat);
+            const std::string path = recordingsDir() + "/" + (a.recFormat == 2 ? blueRecordingName(a.engine.recordingName(f)) : a.engine.recordingName(f));
             std::string err;
             if (a.engine.startRecording(path, f, err)) a.recDonePath.clear();
             else a.engine.log("recording failed: " + err);
@@ -199,8 +206,9 @@ void recordUi(App& a, int part = 0) {
     toRecordCol(rowX0);
     ImGui::BeginDisabled(rs.active);
     ImGui::SetNextItemWidth(std::min(ImGui::CalcTextSize("X-Midas BLUE").x + ImGui::GetFrameHeight() + 2 * ImGui::GetStyle().FramePadding.x + 4 * gUi, std::max(60.f * gUi, ImGui::GetContentRegionAvail().x)));   // never wider than the panel
-    if (ImGui::BeginCombo("##recfmt", a.recFormat == 2 ? "X-Midas BLUE" : a.recFormat == 1 ? "float" : "8-bit")) {
+    if (ImGui::BeginCombo("##recfmt", a.recFormat == 2 ? "X-Midas BLUE" : a.recFormat == 1 ? "float" : a.recFormat == 3 ? tr("16-bit") : "8-bit")) {
         if (ImGui::Selectable("8-bit", a.recFormat == 0)) { a.recFormat = 0; plat::prefs().setI("recFormat", 0); }
+        if (ImGui::Selectable(tr("16-bit"), a.recFormat == 3)) { a.recFormat = 3; plat::prefs().setI("recFormat", 3); }
         if (ImGui::Selectable("float", a.recFormat == 1)) { a.recFormat = 1; plat::prefs().setI("recFormat", 1); }
         if (ImGui::Selectable("X-Midas BLUE (.tmp)", a.recFormat == 2)) { a.recFormat = 2; plat::prefs().setI("recFormat", 2); }
         ImGui::EndCombo();
@@ -260,7 +268,7 @@ void audioRecordUi(App& a, int part = 0) {
             const double hz = a.freqMhz * 1e6;
             char tag[96]; snprintf(tag, sizeof tag, "OnAir %s %.3f MHz", dect2::recordingModeId(m).c_str(), a.freqMhz);
             o.tag = tag;
-            const std::string path = plat::dataDir() + "/recordings/" + dect2::AudioRecorder::fileName(dect2::recordingModeId(m), hz, o.format);
+            const std::string path = recordingsDir() + "/" + dect2::AudioRecorder::fileName(dect2::recordingModeId(m), hz, o.format);
             std::string err;
             if (rec.start(path, o, err)) { tx::captionsRecordStart(); a.audioRecDonePath.clear(); a.audioRecMode = m; a.audioRecFreq = a.freqMhz; }
             else a.engine.log("audio recording failed: " + err);
@@ -584,6 +592,107 @@ void fixitUi(App& a, const fixit::Entry* e, const char* idKey) {
     ImGui::PopID();
 }
 
+// 4.0, the app top bar: IQ recording as one flat control. Stopped: a red dot and "rec" (greyed while the receiver is stopped or the source is a
+// file); recording: a square, the time and the size, a click stops it. The same start and stop as Record IQ in the side panel, with its format.
+void recordCompact(App& a) {
+    const RecordingStats rs = a.engine.recordingStats();
+    const bool isFile = a.devIdx >= 0 && a.devIdx < (int)a.devices.size() && a.devices[a.devIdx].kind == DeviceInfo::File;
+    const bool can = rs.active || (a.engine.running() && !isFile && a.devIdx >= 0);
+    char b[96];
+    if (rs.active) { const int t = (int)rs.seconds; snprintf(b, sizeof b, "%d:%02d  %s", t / 60, t % 60, sizeText(rs.bytes).c_str()); }
+    else snprintf(b, sizeof b, "%s", tr("rec"));
+    const float h = ImGui::GetFrameHeight(), mark = 12 * gUi;
+    const ImVec2 ts = ImGui::CalcTextSize(b);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::BeginDisabled(!can);
+    const bool hit = ImGui::InvisibleButton("##rectopbtn", ImVec2(mark + ts.x + 8 * gUi, h));
+    const bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    ImGui::EndDisabled();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hov && can) dl->AddRectFilled(p, ImVec2(p.x + mark + ts.x + 8 * gUi, p.y + h), ImGui::GetColorU32(ImGuiCol_FrameBgHovered, 0.6f));
+    const ImVec2 c(p.x + 4 * gUi + 4 * gUi, p.y + h * 0.5f);
+    const ImU32 red = ImGui::GetColorU32(can ? pal::badRed() : pal::grey());
+    if (rs.active) dl->AddRectFilled(ImVec2(c.x - 3.5f * gUi, c.y - 3.5f * gUi), ImVec2(c.x + 3.5f * gUi, c.y + 3.5f * gUi), red);
+    else dl->AddCircleFilled(c, 4 * gUi, red);
+    dl->AddText(ImVec2(p.x + mark + 4 * gUi, p.y + (h - ts.y) * 0.5f), ImGui::GetColorU32(rs.active ? pal::badRed() : can ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)), b);
+    if (hit && can) {
+        if (rs.active) a.engine.stopRecording();
+        else {
+            const FileFormat f = (FileFormat)recFileFormatOf(a.recFormat);
+            const std::string path = recordingsDir() + "/" + (a.recFormat == 2 ? blueRecordingName(a.engine.recordingName(f)) : a.engine.recordingName(f));
+            std::string err;
+            if (a.engine.startRecording(path, f, err)) a.recDonePath.clear();
+            else a.engine.log("recording failed: " + err);
+        }
+    }
+    if (hov) ImGui::SetTooltip("%s", rs.active ? tr("Recording the radio's raw samples: click to stop") : isFile ? tr("Recordings of a file are not needed") : !can ? tr("Start the radio first") : tr("Record the radio's raw samples (IQ) to a file, in the format chosen under Record IQ in the side panel"));
+}
+
+// "What do I do next": one plain line about how the reception is going and, when a click helps, the one fix (app/ui/next_step_logic.h).
+// maxW > 0 (4.0, the one action row above the tabs): a coloured dot, the line on one row cut to fit with the whole of it in the tooltip, then
+// the fix button on the same row. maxW 0: the line wraps and the button goes under it, as before. Returns false when there is nothing to say.
+bool nextStepLine(App& a, float maxW) {
+    static double startedAt = -1;
+    const double now = ImGui::GetTime();
+    const bool run = a.engine.running();
+    if (run && startedAt < 0) startedAt = now;
+    if (!run) startedAt = -1;
+    nextstep::In in;
+    in.running = run;
+    in.hasRadio = !a.devices.empty();
+    in.radioHasGain = a.devIdx >= 0 && a.devIdx < (int)a.devices.size() && a.devices[a.devIdx].isRadio();
+    in.autoGain = a.agcOn;
+    in.levelCompensated = adcLevelCompensated();
+    in.runSec = run ? now - startedAt : 0;
+    const SampleLoss sl = a.engine.sampleLoss();
+    in.network = sl.network;
+    in.radioLoss = sl.live && (sl.rateLow || (sl.sinceSourceLostSec >= 0 && sl.sinceSourceLostSec < 5));   // a network radio's link was down
+    const bool overflow = sl.live && sl.sinceCpuSec >= 0 && sl.sinceCpuSec < 5;   // which kind (overflow_cause.h): one at a start or retune is the start's own
+    in.cpuLoss = overflow && sl.cpuCause == OverflowCause::Cpu;
+    in.heldUp = overflow && (sl.cpuCause == OverflowCause::Waiting || sl.cpuCause == OverflowCause::Stalled);
+    in.rmsDbfs = a.spec.stats.rmsDbfs;
+    in.clipFraction = a.spec.stats.clipFraction;
+    // the lock state is known for the modes whose telemetry the app reads here; the others get only the measured hints
+    if (run && a.fmMode && a.rx.standard == 6) { in.lockKnown = true; in.locked = a.rx.fm.state == 2; in.snrDb = a.rx.fm.carrier ? a.rx.fm.snrDb : NAN; }
+    else if (run && a.dabMode && a.rx.standard == 3) { in.lockKnown = true; in.locked = a.rx.dab.state == 2; in.snrDb = a.rx.dab.snrDb; }
+    else if (run && !a.fmMode && !a.dabMode && a.rx.standard >= 0 && a.rx.standard <= 1) { in.lockKnown = true; in.locked = a.rx.state == 2; in.snrDb = a.rx.dataValid ? a.rx.dataSnrDb : NAN; }
+    const nextstep::Out o = nextstep::advise(in);
+    if (!o.text[0]) return false;
+    // E10: where a quiet screen is normal the mode says so, instead of "no signal" or a general note
+    std::string text = tr(o.text);
+    if (const char* note = ease::quietNote(curModeName(a)); note && run && in.runSec >= nextstep::kSearchSec && (o.state == nextstep::State::Unknown || o.state == nextstep::State::NoSignal)) text = ease::quietLine(tr(note), in.runSec);
+    // always one line, in the same place in every mode: grey while nothing needs doing, green when it works, amber when a step helps
+    const ImVec4 col = o.needsAttention() ? ImVec4(0.95f, 0.78f, 0.25f, 1) : o.state == nextstep::State::Good ? pal::okGreen() : ImVec4(0.62f, 0.66f, 0.72f, 1);
+    if (maxW > 0) {
+        const float dot = 10 * gUi;
+        const float fixW = o.fix != nextstep::Fix::None ? ImGui::CalcTextSize(tr(o.fixLabel)).x + 2 * ImGui::GetStyle().FramePadding.x + ImGui::GetStyle().ItemSpacing.x : 0.f;
+        const std::string shown = ellipsize(text, std::max(40 * gUi, maxW - dot - fixW));
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float h = ImGui::GetFrameHeight();
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 3.5f * gUi, p.y + h * 0.5f), 3.5f * gUi, ImGui::GetColorU32(col));
+        ImGui::SetCursorScreenPos(ImVec2(p.x + dot, p.y));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(col, "%s", shown.c_str());
+        if (shown != text && ImGui::IsItemHovered()) { ImGui::BeginTooltip(); ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30); ImGui::TextUnformatted(text.c_str()); ImGui::PopTextWrapPos(); ImGui::EndTooltip(); }
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, col);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+    }
+    if (o.fix != nextstep::Fix::None) {
+        ImGui::PushID("nextstep");
+        if (maxW > 0) ImGui::SameLine();
+        if (ImGui::SmallButton(tr(o.fixLabel))) {
+            if (o.fix == nextstep::Fix::AutoGain) autogainRun(a, 1);
+            else if (o.fix == nextstep::Fix::Start) startReceiver(a);
+        }
+        ImGui::PopID();
+    }
+    return true;
+}
+
 void radioMessagesUi(App& a, bool vertical) {
     pollStartError(a);
     const auto msgs = radioMessages(a);
@@ -631,7 +740,11 @@ void radioMessagesUi(App& a, bool vertical) {
             f.push_back({"diagnostics.txt", diagnosticsText(a)});
             for (const char* n : {"onair.log", "onair-prev.log", "crash.txt"}) {
                 std::error_code ec;
-                if (std::filesystem::exists(d / n, ec)) f.push_back({n, slurp(d / n)});
+                if (!std::filesystem::exists(d / n, ec)) continue;
+                std::string body = slurp(d / n);
+                // an old crash report from another version keeps its own name, so it is not read as this version's crash
+                const std::string name = std::strcmp(n, "crash.txt") == 0 ? bugreport::crashFileName(body, ONAIR_VERSION) : std::string(n);
+                f.push_back({name, std::move(body)});
             }
             a.diagCopiedAt = writeZip(path, f) ? ImGui::GetTime() : -10.0;
         }
@@ -639,6 +752,13 @@ void radioMessagesUi(App& a, bool vertical) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Saves one zip file with the diagnostics, the log and the last crash report: attach it to a GitHub issue"));
     // the three groups of the Source panel: Radio (above, with its status), Record, Listen; one left edge, a second column for the formats
     panel::subHeading(tr("Record"));
+    recordGroupUi(a);
+    panel::subHeading(tr("Listen"));
+    listenGroupUi(a);
+}
+
+// the Record group of the Source panel, also the Workspace layout's Recorder block (app/canvas)
+void recordGroupUi(App& a) {
     recordUi(a, 1);              // [dot] Record IQ     [8-bit]
     flowEnd();
     recordUi(a, 2);              // SigMF  Rewind  Library
@@ -653,6 +773,9 @@ void radioMessagesUi(App& a, bool vertical) {
     flowEnd();
     audioRecordUi(a, 2);         // Skip silence  Split  Keep recording: they belong to the audio recording
     flowEnd();
-    panel::subHeading(tr("Listen"));
+}
+
+// the Listen group (the monitor: Hear this channel, its demodulator and volume, the output devices), also the Audio output block
+void listenGroupUi(App& a) {
     audioMonitorUi(a);           // Hear this channel  [demod]  volume  Outputs...
 }

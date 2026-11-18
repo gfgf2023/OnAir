@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ham.js - pure helpers for the "Ham contacts" section: band from frequency, parsing the contact hints a ham track may carry in
 // its `extra` (JSON text or object: {m: mode, f: Hz, b: band, to: callsign, tlat, tlon}), building contacts (station -> peer),
 // filtering by band / mode / age, colour by mode. No DOM, no ingest changes: tracks that carry no hints simply give no contact.
@@ -46,7 +49,9 @@ export function hamHints(t) {
 }
 
 /** Contacts from ham tracks. `peerPos(callsign)` may supply a position for a peer that is itself a known track. */
-export function buildContacts(tracks, nowMs = Date.now(), peerPos = null) {
+export function buildContacts(tracksIn, nowMs = Date.now(), peerPos = null) {
+  // the page passes Map.values(): an iterator, which is spent after one pass (this used to leave every contact list empty)
+  const tracks = Array.isArray(tracksIn) ? tracksIn : [...tracksIn];
   const byCall = new Map();
   for (const t of tracks) if (t.kind === "ham" && t.label) byCall.set(String(t.label).toUpperCase(), t);
   const out = [];
@@ -54,13 +59,15 @@ export function buildContacts(tracks, nowMs = Date.now(), peerPos = null) {
     if (t.kind !== "ham") continue;
     const h = hamHints(t);
     if (!h) continue;
+    // the hub stamps a track with its arrival time and keeps the report's age beside it: a contact was heard `age` seconds before that
+    const heardMs = t.t - (Number(t.age) > 0 ? Number(t.age) * 1000 : 0);
     let pos = h.pos;
     if (!pos && h.to) {
       const p = byCall.get(h.to);
       if (p && Number.isFinite(p.lon) && Number.isFinite(p.lat)) pos = [p.lon, p.lat];
       else if (peerPos) pos = peerPos(h.to) || null;
     }
-    out.push({ id: t.id, from: String(t.label || t.id), to: h.to, a: [t.lon, t.lat], b: pos, mode: h.mode, band: h.band, freq: h.freq, t: t.t, ageMin: Math.max(0, (nowMs - t.t) / 60000) });
+    out.push({ id: t.id, from: String(t.label || t.id), to: h.to, a: [t.lon, t.lat], b: pos, mode: h.mode, band: h.band, freq: h.freq, t: heardMs, ageMin: Math.max(0, (nowMs - heardMs) / 60000) });
   }
   out.sort((x, y) => x.ageMin - y.ageMin);
   return out;

@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // LoRaWAN (all channels) screens: the frame table (time, channel, SF, type, DevAddr, FCnt, FPort, level, SNR, MAC commands, payload bytes), the device list,
 // the channel list of the plan with its counters, the plan and options. LoRaWAN FSK frames (DR7, lorawan_fsk.h) are in the same table, marked "FSK DR7". Receive only and keyless: the payloads are encrypted with the devices' session keys
 // and are shown as bytes, no key is handled, nothing is decrypted, no MIC is checked, nothing is sent. "Level" is dB below full scale, not calibrated to dBm.
 #include "app.h"
+#include "ui/kit/export.h"
 #include "dect2/automation/rules.h"
 #include "dect2/common/u8file.h"
 #include "dect2/lorawan/lorawan_plan.h"
@@ -210,6 +214,14 @@ void framesView(App& a) {
 void devicesView(App& a) {
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver first"); return; }
     const dect2::LorawanTelemetry& t = a.rx.lorawan;
+    {
+        static std::string note;
+        resexp::Table x; x.cols = {"device", "frames", "uplinks", "downlinks", "joins", "missed", "fcnt", "fport", "sf", "last_type"};
+        for (const auto& d : t.devices)
+            x.add({d.id, std::to_string(d.packets), std::to_string(d.uplinks), std::to_string(d.downlinks), std::to_string(d.joins), std::to_string(d.missed),
+                   d.fcnt >= 0 ? std::to_string(d.fcnt) : "", d.lastFport >= 0 ? std::to_string(d.lastFport) : "", d.fsk ? "FSK" : std::to_string(d.sf), d.lastType});
+        kit::exportBar(x, "lorawan_devices", note, "lwxd");
+    }
     if (!ImGui::BeginTable("##lwdev", 10, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     for (const char* h : {"Device", "Frames", "Up", "Down", "Joins", "Missed", "FCnt", "FPort", "SF", "Last"}) ImGui::TableSetupColumn(h);

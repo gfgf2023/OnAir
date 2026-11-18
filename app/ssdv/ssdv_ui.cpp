@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // SSDV screens: the band presets, the picture being received (built up as packets arrive, grey where packets are missing), the other pictures
 // of the session, the packets heard, and under Advanced a fixed speed. The receiver writes every picture to <Save pictures to>/SSDV as a JPEG when it is
 // complete (or after 20 s without a new packet); "Save PNG" writes a PNG copy through the shared picture folder. See docs/ssdv.md.
@@ -77,6 +80,7 @@ void showPicture(App& a, const dect2::SsdvImage& im) {
     if (im.jpeg && (S.texKey != key || S.texRev != im.rev)) {
         dect2::ssdv::Rgb rgb;
         if (dect2::ssdv::decodeJpeg(im.jpeg->data(), im.jpeg->size(), rgb) && rgb.w > 0 && gGfx) {
+            if (!im.gaps.empty()) dect2::ssdv::fillGaps(rgb, im.gaps);
             if (!S.tex || S.texW != rgb.w || S.texH != rgb.h) { delete S.tex; S.tex = gGfx->createImage(rgb.w, rgb.h, 0xFF000000u); S.texW = rgb.w; S.texH = rgb.h; }
             std::vector<uint32_t> px((size_t)rgb.w * rgb.h);
             for (size_t i = 0; i < px.size(); i++) px[i] = 0xFF000000u | ((uint32_t)rgb.rgb[i * 3 + 2] << 16) | ((uint32_t)rgb.rgb[i * 3 + 1] << 8) | rgb.rgb[i * 3];
@@ -162,6 +166,9 @@ void tick(App& a) {
 
 void tuner(App&, bool&) {
     load();
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", tr("From a sound recording: choose File as the source, press Open and pick the WAV (any sample rate, mono or stereo, 8 - 32 bit). It must hold the audio of an FM receiver with the FSK waveform (9600 baud or other speeds), not AFSK tones."));
+    ImGui::PopTextWrapPos();
     if (ImGui::CollapsingHeader(trw("Advanced##ssdv"))) {
         ImGui::TextDisabled("%s", tr("Speed"));
         ImGui::SameLine();
@@ -209,6 +216,15 @@ void receiver(App& a) {
     const dect2::SsdvTelemetry& t = a.rx.ssdv;
     auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", k); kvColumn(130 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::Text(fmt, v...); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
     kv(tr("state"), "%s", dect2::ssdvSummary(t).c_str());
+    if (t.wenetGps.valid) {
+        const dect2::WenetGps& g = t.wenetGps;
+        kv(tr("position"), "%.5f, %.5f  %.0f m  %d sats", g.lat, g.lon, g.alt, g.numSv);
+        kv(tr("motion"), "%.1f m/s, heading %.0f, climb %+.1f m/s", g.speed, g.heading, g.ascent);
+        if (g.haveSys) kv(tr("radio / CPU"), "%.1f C / %.1f C", g.radioTemp, g.cpuTemp);
+        if (g.havePower) kv(tr("battery"), "%.2f V, %d mA", g.battV, g.battI);
+    }
+    if (t.wenetOrient.valid) kv(tr("attitude"), "heading %.1f, roll %.1f, pitch %.1f", t.wenetOrient.heading, t.wenetOrient.roll, t.wenetOrient.pitch);
+    if (!t.wenetTexts.empty()) kv(tr("message"), "%s", t.wenetTexts.back().text.c_str());
     if (t.baud) kv(tr("speed"), "%d baud%s", t.baud, t.wenet ? tr(", Wenet (LDPC)") : t.async ? tr(", RTTY-framed bytes") : "");
     if (t.wenetOther || t.wenetIdle) kv(tr("Wenet other"), "%llu telemetry / text, %llu idle", (unsigned long long)t.wenetOther, (unsigned long long)t.wenetIdle);
     kv(tr("packets"), "%llu OK, %llu %s, %llu %s", (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad, tr("failed"), (unsigned long long)t.corrected, tr("corrected"));

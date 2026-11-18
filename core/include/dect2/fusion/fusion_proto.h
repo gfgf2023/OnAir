@@ -1,12 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Yaesu System Fusion (C4FM) air interface: frame layout and error coding, written from Yaesu's public "Amateur Radio Digital
 // Specs" (revision 1.01), sections 3 and 4 and appendices A and B. No speech codec is here: voice goes to a user-installed plug-in.
 //
 // A frame is 100 ms = 960 bits = 480 dibits at 4800 symbols/s: frame sync (40 bit, D471C9634D), the FICH (200 bit) and a 720 bit payload.
 // Dibit to symbol (Table 3-1): 00 = +1 (+900 Hz), 01 = +3 (+2700 Hz), 10 = -1 (-900 Hz), 11 = -3 (-2700 Hz).
 //
-// Not in the public specification and therefore not here: the bit order inside a 72 bit half-rate voice sub-frame and inside a 144 bit
-// full-rate one (their de-interleaving), the format of the GPS data, and the Golay generator that the spec prints (the standard
-// (24,12,8) code with generator polynomial 0xC75 is used, see golay24()). Voice sub-frames are handed on as the bits were sent.
+// Not in the public specification: the bit order inside a 72 bit half-rate voice sub-frame (it is the AMBE+2 frame of DMR and NXDN: the positions agree with
+// MMDVMHost's AMBEFEC tables, see fusion_rx.cpp) and inside a 144 bit full-rate one, the format of the GPS data, and the Golay generator that the spec prints
+// (the standard (24,12,8) code with generator polynomial 0xC75 is used, see golay24()). Voice sub-frames are handed on as the bits were sent.
+// The frame layout (FICH, DCH, Golay, convolution, interleave, whitening, CRC) is bit-identical to what MMDVMHost writes (tests/fusion/test_fusion_interop.cpp).
 #pragma once
 #include <cstddef>
 #include <cstdint>

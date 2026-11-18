@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The "How to fix" table (app/panels/fixit.cpp): every pattern resolves to its own entry, ids and patterns are unique, every entry explains
 // itself and has steps on every OS, and the buttons are complete.
 #include "panels/fixit.h"
@@ -38,6 +41,11 @@ int main() {
     CHECK(fixit::lookup("Could not start the radio: open: HackRF not found") == fixit::byId("hackrf_not_found"), "hackrf not found");
     CHECK(fixit::lookup("Could not start the radio: rtl_tcp: 1.2.3.4:1234 is not an rtl_tcp server") == fixit::byId("rtltcp"), "rtl_tcp");
     CHECK(fixit::lookup("Could not start the radio: something new") == fixit::byId("start_failed"), "generic start failure");
+    CHECK(fixit::lookup("Could not start the radio: libusb: LIBUSB_ERROR_BUSY") == fixit::byId("radio_busy"), "busy (libusb)");
+    CHECK(fixit::lookup("open failed: Device or resource busy") == fixit::byId("radio_busy2"), "busy (os)");
+    CHECK(fixit::lookup("Could not start the radio: LIBUSB_ERROR_ACCESS") == fixit::byId("radio_access"), "access denied");
+    CHECK(fixit::lookup("Could not start the radio: LIBUSB_ERROR_NOT_SUPPORTED") == fixit::byId("radio_driver"), "wrong driver");
+    CHECK(fixit::lookup("Could not start the radio: Aaronia RTSA-Suite PRO is not installed: the SPECTRAN V6 needs ...") == fixit::byId("spectran_missing"), "spectran");
     CHECK(fixit::lookup("everything is fine") == nullptr, "no match");
     if (!failures) std::printf("fixit: %d entries OK\n", n);
     return failures ? 1 : 0;

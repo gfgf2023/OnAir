@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The touch interface's core: metrics, the per-frame gesture feed, long press = right click, tooltips on hold, kinetic scrolling and the
 // window hook that makes popups bottom sheets and floating windows full screen on a narrow display. See touch.h for the map.
 #include "touch.h"
@@ -20,9 +23,13 @@ void kineticScrollWindow(ImGuiWindow* w);
 namespace {
 bool gOn = false;
 float gDpi = 1.f;
+float gSize = 1.f;                   // Settings > Touch control size (touch_logic.h touchSizeFactor)
 Gestures gRec;
 GestureFrame gFrame;
 bool gPressOnItem = false;
+// drag to tune: a long press on a plot that claims it (claimLongPress) is held for tuning instead of becoming a right click
+ImVec2 gClaimMin(1, 1), gClaimMax(0, 0), gClaimNextMin(1, 1), gClaimNextMax(0, 0);
+bool gLongHeld = false;
 double gHintUntil = 0;               // tooltips may show until then (a hold of 0.4 s starts it)
 std::vector<Pointer> gFed;           // fingers a backend reported this frame
 std::vector<std::pair<std::string, bool>> gTabsNow, gTabsLast;
@@ -64,6 +71,8 @@ void placeWindow(ImGuiWindow* w) {
 bool on() { return gOn; }
 float dpi() { return gDpi; }
 void setDisplayScale(float d) { gDpi = std::max(0.5f, d); }
+void setSizeFactor(float f) { gSize = std::max(0.5f, std::min(2.f, f)); }
+float sizeFactor() { return gSize; }
 const GestureFrame& gesture() { return gFrame; }
 bool pressedOnItem() { return gPressOnItem; }
 
@@ -78,7 +87,7 @@ void setOn(bool v) {
 
 void applyMetrics(ImGuiStyle& st) {
     if (!gOn) return;
-    const float d = gDpi, tgt = 48.f * d, fs = ImGui::GetFontSize();
+    const float d = gDpi * gSize, tgt = target(), fs = ImGui::GetFontSize();   // paddings follow the control size; Small never under 32 px targets
     auto up = [](float& v, float m) { v = std::max(v, m); };
     up(st.FramePadding.x, 12 * d); up(st.FramePadding.y, std::max(0.f, (tgt - fs) * 0.5f));   // a frame (button, input, combo, checkbox square) is >= 48 px tall
     up(st.ItemSpacing.x, 10 * d); up(st.ItemSpacing.y, 8 * d); up(st.ItemInnerSpacing.x, 8 * d);
@@ -111,7 +120,11 @@ void frame() {
     gFrame = gRec.update(now, p.data(), (int)p.size());
     // a finger resting still shows the tooltip of what is under it for a moment (the replacement of hover)
     if (io.MouseDown[0] && io.MouseDownDuration[0] >= 0.4f && io.MouseDragMaxDistanceSqr[0] < 100.f) gHintUntil = std::max(gHintUntil, now + 1.6);
-    if (gFrame.longPress && !io.WantTextInput) {   // long press = right click: the left press is cancelled (moved off the screen first so the release is no click)
+    gClaimMin = gClaimNextMin; gClaimMax = gClaimNextMax; gClaimNextMin = ImVec2(1, 1); gClaimNextMax = ImVec2(0, 0);   // what the plots claimed last frame
+    if (!io.MouseDown[0]) gLongHeld = false;
+    const bool claimed = gFrame.longPress && io.MousePos.x >= gClaimMin.x && io.MousePos.x <= gClaimMax.x && io.MousePos.y >= gClaimMin.y && io.MousePos.y <= gClaimMax.y;
+    if (claimed) gLongHeld = true;   // the plot tunes with the finger; it opens its own menu when the finger lets go without moving
+    else if (gFrame.longPress && !io.WantTextInput) {   // long press = right click: the left press is cancelled (moved off the screen first so the release is no click)
         const ImVec2 pos = io.MousePos;
         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
         io.AddMouseButtonEvent(0, false);
@@ -120,6 +133,13 @@ void frame() {
         io.AddMouseButtonEvent(1, false);
     }
 }
+
+void claimLongPress(ImVec2 mn, ImVec2 mx) {
+    if (gClaimNextMin.x > gClaimNextMax.x) { gClaimNextMin = mn; gClaimNextMax = mx; return; }
+    gClaimNextMin = ImVec2(std::min(gClaimNextMin.x, mn.x), std::min(gClaimNextMin.y, mn.y));
+    gClaimNextMax = ImVec2(std::max(gClaimNextMax.x, mx.x), std::max(gClaimNextMax.y, mx.y));
+}
+bool longPressHeld() { return gOn && gLongHeld && ImGui::GetIO().MouseDown[0]; }
 
 void endFrame() {
     if (gOn && ImGui::IsMouseClicked(0)) gPressOnItem = ImGui::IsAnyItemActive();

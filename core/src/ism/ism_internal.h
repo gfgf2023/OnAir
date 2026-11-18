@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Private to the ISM sensor decoders: the bit buffer, the pulse-slicer types and the prototypes of the slicers and device decoders
 // shared by ism_proto.cpp, ism_slice.cpp and ism_dec_*.cpp. Not part of the API. Written from rtl_433 (GPL-2.0), see ism_proto.cpp.
 #pragma once
@@ -187,6 +190,10 @@ uint8_t dec3of6(uint8_t v);
 bool mbusCrc(const uint8_t* b, unsigned off);
 const char* mbusType(uint8_t t);
 void decMbus(Bits& B, Out& out);
+void decKnxRf(Bits& B, Out& out);
+void decHomeMatic(Bits& B, Out& out);
+void decEnOcean(Bits& B, Out& out);
+void decDash7(Bits& B, Out& out, bool lo);
 const char* zwClassName(uint8_t c);
 std::string zwCommand(uint8_t c, uint8_t k);
 double zwValue(const uint8_t* p, int size, bool& ok);
@@ -209,6 +216,16 @@ void decSolightTe44(Bits& B, Out& out);
 void decHoneywell(Bits& B, Out& out);
 void decKerui(Bits& B, Out& out);
 void decSpringfield(Bits& B, Out& out);
+// 3.9 (ism_dec_39.cpp)
+void decX10Rf(Bits& B, Out& out);
+void decInsteon(Bits& B, Out& out);
+void decInfactory(Bits& B, Out& out);
+void decWh31e(Bits& B, Out& out);
+void decNissan(Bits& B, Out& out);
+void decGmTpms(Bits& B, Out& out);
+void decEfergyOptical(Bits& B, Out& out);
+void decEmt7110(Bits& B, Out& out);
+void decScmPlus(Bits& B, Out& out);
 
 } // namespace ism_detail
 using namespace ism_detail;

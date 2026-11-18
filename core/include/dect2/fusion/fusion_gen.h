@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Yaesu System Fusion test signal: whole transmissions (header, communication frames, terminator) as bits, and the C4FM modulator.
 // Voice sub-frames are pseudo-random bytes (there is no speech codec here); tests compare them with what the receiver hands the plug-in.
 #pragma once
@@ -28,6 +31,6 @@ bool genTransmissionBits(const GenParams& p, std::vector<uint8_t>& bits, std::ve
 
 // C4FM: dibits (two bits each) -> raised-cosine shaped 4-level FSK at +-900 / +-2700 Hz, as complex baseband at `fs`
 // (shift moves it by cfoHz). idleSymbols of silence-level carrier go before and after.
-std::vector<std::complex<float>> modulateC4fm(const std::vector<uint8_t>& bits, double fs, double cfoHz = 0, float amp = 1.f, int idleSymbols = 40);
+std::vector<std::complex<float>> modulateC4fm(const std::vector<uint8_t>& bits, double fs, double cfoHz = 0, float amp = 1.f, int idleSymbols = 40, double devScale = 1.0, double rateScale = 1.0);   // devScale: deviation error, rateScale: symbol clock error
 
 } // namespace dect2::fusion

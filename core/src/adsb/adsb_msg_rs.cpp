@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The ADS-B / Mode S message layer on top of the Rust crate rust/onair_adsb: the same functions as adsb_msg.cpp, which keeps getBits,
 // setBits and toHex (helpers that take no length).
 #include "dect2/adsb/adsb_msg.h"
@@ -225,6 +228,9 @@ bool decodeMsg(const uint8_t* bytes, int nbits, Msg& m) {
     m.sil = r.sil;
     m.gva = r.gva;
     m.nicBaro = r.nic_baro;
+    m.nacv = r.nacv; m.capAcas = r.cap_acas; m.cap1090In = r.cap_1090in; m.capUatIn = r.cap_uatin;
+    m.raActive = r.ra_active; m.identOn = r.ident_on; m.atcSvc = r.atc_svc; m.lengthCode = r.length_code;
+    m.hasRaBcast = r.has_ra_bcast != 0; m.raAra = r.ra_ara; m.raRac = r.ra_rac; m.raTerm = r.ra_term != 0; m.raMte = r.ra_mte != 0; m.raTti = r.ra_tti; m.raThreat = r.ra_threat;
     m.catSet = (char)r.cat_set;
     m.callsign.assign((const char*)r.callsign, r.callsign_len);
     m.commb = toCommB(r.commb);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Shared by main.cpp, main_window.cpp, main_start.cpp and the main-window layout in ui/ (draw_ui.cpp, main_tabs.cpp):
 // the developer-flag state, the few globals and the helpers that were one file before.
 // Nothing in it changes behaviour: it only lets main.cpp be smaller.
@@ -16,6 +19,7 @@ struct DevOpts {
     double fileVfoMhz = 0;     // dev: --vfo MHz, a recording: put the tune box there once the receiver runs (what a click or drag on the spectrum does)
     int shotFrame = 0;
     bool memSelfTest = false; int memFrame = 0;   // dev: --memory-selftest: apply memories to this receiver, check, exit
+    bool dragSelfTest = false;   // dev: --drag-selftest: injected mouse drags on the spectrum (drag to tune, pan), checked, exit (plots.cpp)
 };
 
 extern std::string gCrashNote;   // main.cpp: set when the last run crashed or the startup guard acted: shown once in a small window

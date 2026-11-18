@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/source/usb_fd.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -33,22 +37,38 @@ std::vector<UsbFdRadio> usbFdList(const std::string& kind) {
 }
 
 std::string usbFdKindForId(int vid, int pid) {
-    // RTL2832U: the Realtek ids (generic sticks, RTL-SDR Blog V3 / V4, NESDR) and the DVB-T sticks of librtlsdr's list of known devices
-    static const int rtl[][2] = {
-        {0x0bda, 0x2832}, {0x0bda, 0x2838},
-        {0x0ccd, 0x00a9}, {0x0ccd, 0x00b3}, {0x0ccd, 0x00d3}, {0x0ccd, 0x00e0},   // Terratec
-        {0x185b, 0x0620}, {0x185b, 0x0650},                                       // Compro
-        {0x1f4d, 0xb803}, {0x1f4d, 0xc803},                                       // GTek
-        {0x1b80, 0xd3a4},                                                         // Twintech
-        {0x1d19, 0x1101}, {0x1d19, 0x1102}, {0x1d19, 0x1103},                     // Dexatek
-        {0x0458, 0x707f},                                                         // Genius
-        {0x15f4, 0x0131}, {0x15f4, 0x0133},                                       // HanfTek
+    // One table, in the order of android/.../usb/UsbCatalog.kt and res/xml/usb_device_filter.xml (UsbIdsAgreementTest reads this table).
+    // RTL2832U: every id of librtlsdr's known_devices list (osmocom rtl-sdr, src/librtlsdr.c): generic sticks, RTL-SDR Blog V3 / V4 / V4L,
+    // NooElec NESDR, and the DVB-T / DAB sticks sold under other names
+    struct IdKind { int vid, pid; const char* kind; };
+    static const IdKind ids[] = {
+        {0x0bda, 0x2832, "rtlsdr"}, {0x0bda, 0x2838, "rtlsdr"},                                        // Realtek generic
+        {0x0413, 0x6680, "rtlsdr"}, {0x0413, 0x6f0f, "rtlsdr"},                                        // DigitalNow, Leadtek
+        {0x0458, 0x707f, "rtlsdr"},                                                                    // Genius
+        {0x0ccd, 0x00a9, "rtlsdr"}, {0x0ccd, 0x00b3, "rtlsdr"}, {0x0ccd, 0x00b4, "rtlsdr"}, {0x0ccd, 0x00b5, "rtlsdr"},
+        {0x0ccd, 0x00b7, "rtlsdr"}, {0x0ccd, 0x00b8, "rtlsdr"}, {0x0ccd, 0x00b9, "rtlsdr"}, {0x0ccd, 0x00c0, "rtlsdr"},
+        {0x0ccd, 0x00c6, "rtlsdr"}, {0x0ccd, 0x00d3, "rtlsdr"}, {0x0ccd, 0x00d7, "rtlsdr"}, {0x0ccd, 0x00e0, "rtlsdr"},   // Terratec
+        {0x1554, 0x5020, "rtlsdr"},                                                                    // PixelView
+        {0x15f4, 0x0131, "rtlsdr"}, {0x15f4, 0x0133, "rtlsdr"},                                        // Astrometa, HanfTek
+        {0x185b, 0x0620, "rtlsdr"}, {0x185b, 0x0650, "rtlsdr"}, {0x185b, 0x0680, "rtlsdr"},            // Compro
+        {0x1b80, 0xd393, "rtlsdr"}, {0x1b80, 0xd394, "rtlsdr"}, {0x1b80, 0xd395, "rtlsdr"}, {0x1b80, 0xd397, "rtlsdr"},
+        {0x1b80, 0xd398, "rtlsdr"}, {0x1b80, 0xd39d, "rtlsdr"}, {0x1b80, 0xd3a4, "rtlsdr"}, {0x1b80, 0xd3a8, "rtlsdr"},
+        {0x1b80, 0xd3af, "rtlsdr"}, {0x1b80, 0xd3b0, "rtlsdr"},                                        // GIGABYTE, DIKOM, Peak, KWorld, Zaapa, SVEON, Twintech, ASUS
+        {0x1d19, 0x1101, "rtlsdr"}, {0x1d19, 0x1102, "rtlsdr"}, {0x1d19, 0x1103, "rtlsdr"}, {0x1d19, 0x1104, "rtlsdr"},   // Dexatek, MSI
+        {0x1f4d, 0xa803, "rtlsdr"}, {0x1f4d, 0xb803, "rtlsdr"}, {0x1f4d, 0xc803, "rtlsdr"}, {0x1f4d, 0xd286, "rtlsdr"},
+        {0x1f4d, 0xd803, "rtlsdr"},                                                                    // Sweex, GTek, Lifeview, MyGica, PROlectrix
+        {0x1d50, 0x6089, "hackrf"},      // HackRF One and HackRF Pro (the board id tells them apart)
+        {0x1d50, 0x604b, "hackrf"},      // Jawbreaker
+        {0x1d50, 0xcc15, "hackrf"},      // rad1o
+        {0x1d50, 0x60a1, "airspy"},      // Airspy R2 and Mini
+        {0x03eb, 0x800c, "airspyhf"},    // Airspy HF+ (Dual, Discovery)
+        {0x1df7, 0x2500, "mirics"},      // SDRplay RSP1 and its clones (Mirics MSi2500 + MSi001; OnAir's own driver, mirics_usb.cpp)
+        {0x2040, 0xd300, "mirics"},      // Hauppauge WinTV 133559 LF (MSi2500 + MSi001)
+        {0x07ca, 0x8591, "mirics"},      // AverMedia A859 Pure DVBT
+        {0x04bb, 0x0537, "mirics"},      // IO-DATA GV-TV100
+        {0x0511, 0x0037, "mirics"},      // Logitec LDT-1S310U/J
     };
-    for (const auto& p : rtl) if (vid == p[0] && pid == p[1]) return "rtlsdr";
-    if (vid == 0x1d50 && pid == 0x6089) return "hackrf";                      // HackRF One and HackRF Pro (the board id tells them apart)
-    if (vid == 0x1d50 && (pid == 0xcc15 || pid == 0x604b)) return "hackrf";   // rad1o, Jawbreaker
-    if (vid == 0x1d50 && pid == 0x60a1) return "airspy";                      // Airspy R2 and Mini
-    if (vid == 0x03eb && pid == 0x800c) return "airspyhf";                    // Airspy HF+ (Dual, Discovery)
+    for (const auto& e : ids) if (vid == e.vid && pid == e.pid) return e.kind;
     return "";
 }
 
@@ -63,9 +83,10 @@ bool usbFdPlatform() {
 
 bool usbFdPick(const std::string& kind, const std::string& serialWish, UsbFdRadio& out, std::string& err) {
     const auto v = usbFdList(kind);
-    const std::string what = kind == "hackrf" ? "HackRF" : kind == "airspy" ? "Airspy" : kind == "airspyhf" ? "Airspy HF+" : kind == "rtlsdr" ? "RTL-SDR" : "radio";
+    const std::string what = kind == "hackrf" ? "HackRF" : kind == "airspy" ? "Airspy" : kind == "airspyhf" ? "Airspy HF+" : kind == "rtlsdr" ? "RTL-SDR" : kind == "mirics" ? "SDRplay RSP1 / Mirics" : "radio";
     if (v.empty()) {
-        err = "No " + what + " is connected, or Android has not given OnAir permission for it yet: plug it in (through an OTG adapter) and tap Allow";
+         DIAG_ERROR(135969, "No %s is connected or Android has not given OnAir permission for it, so it cannot be opened.", what.c_str());
+         err = "No " + what + " is connected, or Android has not given OnAir permission for it yet: plug it in (through an OTG adapter) and tap Allow";
         return false;
     }
     if (serialWish.empty()) { out = v[0]; return true; }
@@ -73,7 +94,8 @@ bool usbFdPick(const std::string& kind, const std::string& serialWish, UsbFdRadi
         const std::string& sn = r.serial;
         if (sn.size() >= serialWish.size() && sn.compare(sn.size() - serialWish.size(), serialWish.size(), serialWish) == 0) { out = r; return true; }
     }
-    err = "The " + what + " with serial number " + serialWish + " is not connected (" + std::to_string(v.size()) + " other one" + (v.size() == 1 ? "" : "s") + " are)";
+     DIAG_ERROR(361209, "The %s with serial number %s is not connected, so it cannot be opened.", what.c_str(), serialWish.c_str());
+     err = "The " + what + " with serial number " + serialWish + " is not connected (" + std::to_string(v.size()) + " other one" + (v.size() == 1 ? "" : "s") + " are)";
     return false;
 }
 

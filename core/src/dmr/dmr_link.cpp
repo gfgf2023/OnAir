@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DMR link layer of the receiver, see dmr_link.h.
+#include "dect2/dmr/dmr_vendor.h"
 #include "dmr_link.h"
 #include "dect2/dmr/dmr_dsp.h"
 #include "dect2/dmr/dmr_lrrp.h"
 #include "dect2/dmr/dmr_nmea.h"
+#include "dect2/dmr/dmr_repair.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -247,6 +252,7 @@ void Link::onCandidate(const Cand& c) {
         if (t->cal.valid) { t->cal.off += 0.4 * (cal.off - t->cal.off); t->cal.unit += 0.4 * (cal.unit - t->cal.unit); }
         else t->cal = cal;
         t->family = fam;
+        t->lastSync = sync;
         if (syncIsDirect(sync)) t->slot = syncDirectSlot(sync);
         return;
     }
@@ -277,6 +283,7 @@ void Link::onCandidate(const Cand& c) {
     if (nt) {
         nt->lastAnchor = t0;
         nt->birthRho = ar;
+        nt->lastSync = sync;
         if (syncIsDirect(sync)) nt->slot = syncDirectSlot(sync);
     }
 }
@@ -425,13 +432,40 @@ void Link::decodeBurst(Track& t) {
     Outcome out;
     int sync = matchSync(burstCentre(burst), t.confirmed ? 5 : 3, nullptr);
     if (sync >= 0 && t.confirmed && t.family >= 0 && familyOf(sync) != t.family && sync != kSyncRc) sync = -1;
+    // echo / simulcast: with a closed eye the symbol equaliser (trained on the sync word, kept per transmission) tries to open it; used only when
+    // it measurably does (voice/sym_eq.h)
+    if (symeq::enabled()) {
+        float ref[24];
+        bool haveRef = false;
+        const int rs = sync >= 0 ? sync : (t.lastAnchor >= 0 && std::fabs(t0 - t.lastAnchor) < 1.0 ? t.lastSync : -1);
+        if (rs >= 0) {
+            int8_t s8[24];
+            syncSymbols(rs, s8);
+            for (int j = 0; j < 24; j++) ref[j] = (float)s8[j];
+            haveRef = true;
+        }
+        float y[132];
+        if (t.eq.run(z, 132, 54, haveRef ? ref : nullptr, 24, y)) {
+            eqBursts_++;
+            memcpy(z, y, sizeof(z));
+            burst.clear();
+            for (int j = 0; j < 132; j++) {
+                h[j] = (int8_t)(z[j] >= 2.f ? 3 : z[j] >= 0.f ? 1 : z[j] >= -2.f ? -1 : -3);
+                putBits(burst, symbolToDibit(h[j]), 2);
+            }
+            sync = matchSync(burstCentre(burst), t.confirmed ? 5 : 3, nullptr);
+            if (sync >= 0 && t.confirmed && t.family >= 0 && familyOf(sync) != t.family && sync != kSyncRc) sync = -1;
+        }
+    }
     int cc = t.cc;
+    // a mobile / direct-mode burst with its sync: reported for the timing of inbound bursts (the slot sync tests measure OnAir's own uplink)
+    if (sync >= 0 && t.family > 0 && onBurstTiming) onBurstTiming((t0 + 655.0) / 48000.0, t.family, 0, -1);
 
     // CACH in front of the burst (base station)
     if (t.family == 0 && (sync < 0 || syncIsBs(sync))) {
         float zc[12];
         for (int i = 0; i < 12; i++) zc[i] = (float)((interp(t0 - 120.0 + 10.0 * i) - c.off) / c.unit);
-        handleCach(t, zc);
+        handleCach(t, zc, t0);
     }
 
     bool structure = false, payloadOk = false;
@@ -485,7 +519,7 @@ void Link::decodeBurst(Track& t) {
     } else if (sync >= 0 && syncIsVoice(sync)) {
         // burst A: the voice sync; no field protects the burst, but a locked track expects it
         structure = true; payloadOk = true;
-        voiceBurst(t, 0, burst, 0, Bits(), true);
+        voiceBurst(t, 0, burst, 0, Bits(), true, z);
         if (t.slot == 0 && syncIsDirect(sync)) t.slot = syncDirectSlot(sync);
     } else {
         const EmbInfo emb = burstEmb(burst);
@@ -498,7 +532,7 @@ void Link::decodeBurst(Track& t) {
             noteFec(t, emb.errors, 16);
             int pos = t.vpos >= 0 ? (t.vpos + 1) % 6 : -1;
             if (pos < 0) pos = emb.lcss == 1 ? 1 : emb.lcss == 2 ? 4 : emb.lcss == 0 ? 5 : 2;
-            voiceBurst(t, pos, burst, emb.lcss, emb.emb32, false);
+            voiceBurst(t, pos, burst, emb.lcss, emb.emb32, false, z);
         } else if (t.confirmed) {
             // silence after the end of a transmission is not an error of the channel; a burst missing inside a call is
             tel_.unknownBursts++;
@@ -611,6 +645,7 @@ void Link::decodeBurst(Track& t) {
 
 // ---------------------------------------------------------------------------------------------------- data bursts
 
+
 Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int sync, int cc, int dt) {
     Outcome o;
     o.data = true;
@@ -638,7 +673,13 @@ Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int 
     case kDtTerminatorLc: {
         const bool term = dt == kDtTerminatorLc;
         Validator val{term ? 3 : 2};
-        const int cor = bptcAssisted(burst, z, val, info, fixedByAssist);
+        int cor = bptcAssisted(burst, z, val, info, fixedByAssist);
+        bool idsFixed = false;
+        if (cor < 0 && heard_.size() > 0) {   // the check failed: the heard IDs may complete it
+            Bits pay, raw, fx;
+            burstDataPayload(burst, pay);
+            if (bptc196Decode(pay, raw) >= 0 && lcRepairHeard(raw, term, heard_, fx)) { info = fx; cor = 0; idsFixed = true; tel_.idsRepaired++; }
+        }
         countBptc(cor);
         t.state = 1;
         if (cor < 0) { t.lastBurst += " (lost)"; break; }
@@ -648,11 +689,14 @@ Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int 
         FullLc f;
         parseFullLc(lc, f);
         o.valid = true;
+        if (!idsFixed && rs == 0 && (f.flco == kFlcoGroupVoice || f.flco == kFlcoUnitVoice)) { heard_.note(f.src); heard_.note(f.dst); }
         int kind = f.flco == kFlcoUnitVoice ? 1 : (f.dst >= 0xFFFFF0 ? 2 : 0);
+        if (xptParseCall(f, now, tel_.xpt)) { t.lastBurst += " (XPT call set-up)"; break; }
         if (f.flco != kFlcoGroupVoice && f.flco != kFlcoUnitVoice) { t.lastBurst += " (other LC)"; break; }
         if (!term) {
             if (t.inCall && t.call.idsKnown && t.call.src == f.src && t.call.dst == f.dst) { /* repeated header */ }
             else startCall(t, kind, f.src, f.dst, f.svc, false, true);
+            if (idsFixed && t.inCall) t.call.idsRepaired = true;
             t.vpos = -1;
             t.sinceVoice = 0;
         } else {
@@ -686,6 +730,7 @@ Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int 
             tel_.crcOk++;
             o.valid = true;
             endVoiceByData();
+            if (xptParseCsbk(c, now, tel_.xpt)) { t.lastBurst = "CSBK Hytera XPT"; break; }
             const uint64_t key = (uint64_t)c.opcode << 56 | (uint64_t)c.fid << 48 | (uint64_t)be24(c.data + 2) << 24 | be24(c.data + 5);
             if (!(key == t.lastCsbkKey && now - t.lastCsbkSec < 3.0)) {
                 DmrCall e;
@@ -693,7 +738,11 @@ Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int 
                 e.dst = be24(c.data + 2); e.src = be24(c.data + 5);
                 e.idsKnown = c.opcode == 0x3D || c.opcode == 0x04 || c.opcode == 0x38 || c.opcode == 0x05;
                 char nb[96];
-                snprintf(nb, sizeof nb, "%s (opcode %02X%s)", csbkName(c.opcode, c.fid), c.opcode, c.fid ? ", manufacturer" : "");
+                const char* vendor = dmr::vendorCsbkName(c.fid, c.opcode);
+                dmr::ConPlus con;
+                if ((c.fid == 0x06) && c.opcode == 0x03 && dmr::conPlusParse(c.opcode, c.data + 2, con)) { e.src = con.src; e.dst = con.dst; e.idsKnown = true; snprintf(nb, sizeof nb, "%s, channel %d slot %d", vendor, con.lcn, con.slot + 1); }
+                else if (*vendor) snprintf(nb, sizeof nb, "%s", vendor);
+                else snprintf(nb, sizeof nb, "%s (opcode %02X%s)", csbkName(c.opcode, c.fid), c.opcode, c.fid ? ", manufacturer" : "");
                 e.note = nb;
                 e.terminated = true;
                 addLog(e);
@@ -749,6 +798,13 @@ Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int 
             o.valid = true;
             endVoiceByData();
             Assembler& m = t.msg;
+            if (hd.dpf == kDpfProprietary && m.active && m.got == 0 && m.prop.empty()) {   // #335: the second header of a packet (Motorola's
+                m.prop.assign(d, d + 10);                // compressed IP/UDP header): one of the blocks to follow, the packet goes on
+                m.got++;
+                t.lastBurst = std::string("Data header: ") + dpfName(hd.dpf);
+                if (m.got >= m.hdr.blocks) finishMessage(t);
+                break;
+            }
             m = Assembler();
             m.hdr = hd;
             m.startSec = now;
@@ -802,7 +858,7 @@ Link::Outcome Link::decodeData(Track& t, const Bits& burst, const float* z, int 
         if (!okBlock) break;
         Assembler& m = t.msg;
         if (!m.active) { o.valid = true; break; }        // a block without its header: counted, nothing to attach it to
-        if (m.got == 0) m.dt = dt;
+        if (m.dt == 0) m.dt = dt;   // the first data block (a proprietary header before it is counted in got, #335)
         if (dt != m.dt) { m.active = false; break; }
         DataBlock blk;
         dataBlockParse(dt, oct, m.confirmed, blk);
@@ -871,16 +927,29 @@ void Link::finishMessage(Track& t) {
         break;
     }
     }
+    DmrLocation loc;
+    bool haveLoc = false, nmea = false;
     if (crcOk || (m.crcAllOk && total >= 32 && dmrIpv4HeaderOk(data.data(), data.size()))) {   // a wrong packet CRC but a right IPv4 header checksum (#335)
-        DmrLocation loc;
+        dmr::IpService svc;
+        if (dmr::ipService(data.data(), data.size(), svc)) {
+            if (svc.port == 4005) { msg.format = "ARS: radio on the system"; msg.text = svc.text.empty() ? "registration" : svc.text; }
+            else if (svc.port == 4007) { msg.format = svc.ack ? "Text message acknowledgment" : "Text message (TMS)"; msg.text = svc.text; }
+        }
         bool have = parseDmrLrrp(data.data(), data.size(), loc);
-        bool nmea = false;
         if (!have) {   // a plain-text NMEA sentence (e.g. $GNRMC) carried in a short-data / UDT message
             nmea = parseDmrNmea(msg.text.data(), msg.text.size(), loc) ||
                    parseDmrNmea((const char*)data.data(), data.size(), loc);
             have = nmea;
         }
-        if (have) {
+        if (have) haveLoc = true;
+    }
+    if (!haveLoc && m.prop.size() == 10 && m.crcAllOk) {   // #335: a position behind a compressed header; the document's own length is the check
+        std::vector<uint8_t> v(m.prop.begin() + 2, m.prop.end());
+        v.insert(v.end(), data.begin(), data.end());
+        haveLoc = parseDmrLrrpCompressed(v.data(), v.size(), loc);
+    }
+    if (haveLoc) {
+        {
             loc.sec = now; loc.slot = slotOf(t); loc.src = m.hdr.src; loc.dst = m.hdr.dst;
             loc.unixSec = (double)std::time(nullptr);
             if (tel_.locations.size() >= 512) tel_.locations.erase(tel_.locations.begin());
@@ -909,7 +978,7 @@ void Link::finishMessage(Track& t) {
 
 // ---------------------------------------------------------------------------------------------------- voice
 
-void Link::voiceBurst(Track& t, int pos, const Bits& burst, int lcss, const Bits& emb32, bool hadSync) {
+void Link::voiceBurst(Track& t, int pos, const Bits& burst, int lcss, const Bits& emb32, bool hadSync, const float* z) {
     tel_.voiceBursts++;
     t.state = 1;
     t.lastVoiceSample = n_;
@@ -926,6 +995,12 @@ void Link::voiceBurst(Track& t, int pos, const Bits& burst, int lcss, const Bits
     if (onVoiceBurst) {
         Bits vs;
         burstVoicePayload(burst, vs);
+        // reliability of the 216 voice bits: dibits 0..53 and 78..131 of the burst (the middle 24 dibits are the sync or the embedded field)
+        for (int i = 0; i < 216; i++) {
+            const int bit = i < 108 ? i : i + 48;   // the bit position in the burst (156 follows 108)
+            const float r = z ? std::min(1.2f, bitRel(z[bit / 2], bit & 1)) : 1.f;
+            voiceRel_[i] = (uint8_t)(r / 1.2f * 255.f);
+        }
         onVoiceBurst(slotOf(t), pos, vs);
     }
     if (hadSync) { t.lcHave = 0; return; }
@@ -948,13 +1023,24 @@ void Link::voiceBurst(Track& t, int pos, const Bits& burst, int lcss, const Bits
             parseFullLc(lc, f);
             if (f.flco == kFlcoGroupVoice || f.flco == kFlcoUnitVoice) {
                 const int kind = f.flco == kFlcoUnitVoice ? 1 : (f.dst >= 0xFFFFF0 ? 2 : 0);
-                if (!t.inCall) startCall(t, kind, f.src, f.dst, f.svc, true, true);
+                // The embedded LC is protected by a 5-bit checksum only: one that passes by chance must not mark a clear call "encrypted" (its voice is
+                // then skipped) or swap its IDs. Privacy and an ID change are believed when two embedded LCs in a row agree; clear and unchanged are taken at once.
+                const uint64_t key = (uint64_t)f.src << 32 | (uint64_t)f.dst << 8 | f.svc;
+                const bool agreed = t.embPendKey == key && t.embPendSet;
+                t.embPendKey = key; t.embPendSet = true;
+                const bool idChange = t.inCall && t.call.idsKnown && (t.call.src != f.src || t.call.dst != f.dst);
+                const bool risky = (f.svc & 0x40) || idChange;
+                if (risky && !agreed) {
+                    // wait for the next copy
+                } else if (!t.inCall) startCall(t, kind, f.src, f.dst, f.svc, true, true);
                 else if (!t.call.idsKnown) {
                     t.call.src = f.src; t.call.dst = f.dst; t.call.kind = kind; t.call.idsKnown = true;
                     t.call.emergency = f.svc & 0x80; t.call.privacy = f.svc & 0x40;
                     say("slot " + std::to_string(slotOf(t)) + ": call from " + idText(f.src) + " to " + idText(f.dst));
-                } else if (t.call.src != f.src || t.call.dst != f.dst) {
+                } else if (idChange) {
                     startCall(t, kind, f.src, f.dst, f.svc, true, true);
+                } else if ((f.svc & 0x40) && !t.call.privacy) {
+                    t.call.privacy = true;     // confirmed twice
                 }
             } else if (f.flco >= kFlcoTalkerAliasHeader && f.flco <= kFlcoTalkerAliasBlock3) {
                 t.ta.add(f);
@@ -1023,7 +1109,7 @@ void Link::addMessage(const DmrMessage& m) {
 
 // ---------------------------------------------------------------------------------------------------- CACH
 
-void Link::handleCach(Track& t, const float* zc) {
+void Link::handleCach(Track& t, const float* zc, double t0) {
     Bits bits;
     for (int i = 0; i < 12; i++) {
         const int hd = zc[i] >= 2.f ? 3 : zc[i] >= 0.f ? 1 : zc[i] >= -2.f ? -1 : -3;
@@ -1040,6 +1126,8 @@ void Link::handleCach(Track& t, const float* zc) {
         if (t.slot == 0) t.slot = tc + 1;
         if (t.tcVote[0] + t.tcVote[1] >= 2 && t.tcVote[0] != t.tcVote[1]) t.slot = t.tcVote[1] > t.tcVote[0] ? 2 : 1;
     }
+    // the centre of the burst after this CACH is 65.5 symbols (655 samples at 48 kHz) after its symbol 0
+    if (t.family == 0 && tactErr == 0 && onBurstTiming) onBurstTiming((t0 + 655.0) / 48000.0, 0, tc + 1, at);
     Bits p;
     putBits(p, pay, 17);
     if (lcss == 1) { shortLcPiece_[0] = p; shortLcHave_ = 1; }

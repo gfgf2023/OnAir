@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Time signal receiver: DCF77, MSF, WWVB, JJY (LF), WWV / WWVH and CHU (HF). It finds the seconds, reads the minute frames (time_proto.h),
 // and compares the received time, after the path delay from the receiver position, with the computer's clock.
 //
@@ -36,6 +39,9 @@ public:
     void setClockScale(double k);
     void setAudioInput(bool on, double toneHz = 0);
     void setPref60(int s);                      // which station 60 kHz means with the station from the dial
+    // 4.0 (default on): after one decoded minute, a minute whose parity fails counts when it matches the expected minute's time code (54 of 60 symbols,
+    // clearly better than the neighbouring minutes). It confirms the time; it reads nothing new from the signal.
+    void setPredictedMinutes(bool on);
     // 0: no clock to compare (a file); 1: the computer clock as the samples arrive (a radio, the test signal);
     // 2: sample 0 was taken at UTC epoch originSec (tests)
     void setClockMode(int mode, double originSec = 0);

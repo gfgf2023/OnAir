@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GOES / Meteosat DCS receiver for the engine: IQ in, platform reports out.
 // A data collection platform sends a short report (a few seconds at 100 or 300 bps, a fraction of that at 1200 bps) on its own 1.5 kHz channel of the
 // 401.7 - 402.1 MHz uplink band: unmodulated carrier, bit preamble, frame sync, a BCH-protected platform address and the sensor data in ASCII or
@@ -27,6 +30,7 @@ public:
     void configure(double inputRateHz);
     void setSignalOffset(double hz);            // not used: the whole captured band is searched
     void setCenterHz(double hz);                // the radio's centre (0 unknown: no channel numbers)
+    void setPlan(int plan);                     // channel numbers: -1 Auto (from the centre), 0 GOES, 1 Meteosat, 2 Himawari (dcs::Plan)
     bool ready() const;
     void reset();                               // the filters and the carriers; the lists stay
     void clearResults();                        // empties the report list and the platform table

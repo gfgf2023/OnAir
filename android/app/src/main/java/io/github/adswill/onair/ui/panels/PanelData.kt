@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui.panels
 
 import io.github.adswill.onair.model.FmInfo
@@ -27,6 +30,8 @@ object Std {
     const val HFDL = 36
     const val JS8 = 38
     const val SAME = 77
+    /** CDR (China Digital Radio): its own Sound panel (CdrPanel); the Results panel keeps the cards and tables. */
+    const val CDR = 23
 
     /** Standards whose message-like table (time, header fields, free text) reads best as a list. */
     val messageLists = setOf(ACARS, INMARSAT, AERO, IRIDIUM, MESH, PAGER, VDL2, HFDL, DSTAR, SAME, HFDIG, JS8, PACKET)
@@ -159,10 +164,11 @@ object MessageParser {
 }
 
 /** The FM panel's RDS view. */
-data class RdsView(val ps: String, val radioText: String, val pi: String, val pty: String, val synced: Boolean, val stereo: Boolean) {
+data class RdsView(val ps: String, val radioText: String, val pi: String, val pty: String, val synced: Boolean, val stereo: Boolean,
+                   val rows: List<Pair<String, String>> = emptyList()) {
     companion object {
         fun of(f: FmInfo?) = f?.let {
-            RdsView(it.ps.trim().ifEmpty { "--------" }, it.rt.trim(), if (it.pi != 0) "%04X".format(it.pi) else "", it.pty, it.rdsSync, it.stereo)
+            RdsView(it.ps.trim().ifEmpty { "--------" }, it.rt.trim(), if (it.pi != 0) "%04X".format(it.pi) else "", it.pty, it.rdsSync, it.stereo, it.rdsRows)
         }
     }
 }

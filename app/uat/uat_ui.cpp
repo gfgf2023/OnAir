@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // UAT (978 MHz): aircraft table, FIS-B weather text, message log.
 #include "../panels/photo_links_ui.h"
 #include "../ui/typography.h"
@@ -75,6 +78,10 @@ void aircraftTable(const dect2::UatTelemetry& t) {
 
 void tab(App& a) {
     const dect2::UatTelemetry& t = a.rx.uat;
+    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? tr("starting") : tr("Start the receiver.")); }
+    else if (t.aircraft.empty() && t.fisb.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", tr("No UAT message yet. UAT is on 978 MHz and is used in the United States; aircraft and FIS-B ground stations appear here as they are heard.")); ImGui::PopTextWrapPos(); }
+    // Its own tab bar: the items used to land in the main tab bar of the window (Overview, UAT, Receiver ...), where clicks did nothing
+    if (!ImGui::BeginTabBar("uat_views")) return;
     if (typo::beginTabItem("Aircraft")) { aircraftTable(t); ImGui::EndTabItem(); }
     if (typo::beginTabItem("FIS-B")) {
         for (const auto& p : t.fisb) {
@@ -86,6 +93,27 @@ void tab(App& a) {
         }
         ImGui::EndTabItem();
     }
+    if (typo::beginTabItem(tr("Radar"))) {
+        // FIS-B NEXRAD: the bins with an echo, plotted on latitude and longitude
+        const auto& c = t.nexrad;
+        if (c.empty()) ImGui::TextDisabled("%s", tr("No weather radar blocks received yet (FIS-B products 63 and 64, US ground stations)."));
+        else {
+            float laMin = 90, laMax = -90, loMin = 360, loMax = -360;
+            for (const auto& k : c) { laMin = std::min(laMin, k.lat - k.dLat); laMax = std::max(laMax, k.lat); loMin = std::min(loMin, k.lon); loMax = std::max(loMax, k.lon + k.dLon); }
+            const float w = ImGui::GetContentRegionAvail().x, h = std::max(160.f, ImGui::GetContentRegionAvail().y - 24.f);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float sx = w / std::max(0.01f, loMax - loMin), sy = h / std::max(0.01f, laMax - laMin);
+            static const ImU32 lev[8] = {0, 0xFF1F7F1F, 0xFF20C030, 0xFF20E0E0, 0xFF2090FF, 0xFF2040FF, 0xFF4020C0, 0xFFD040D0};
+            for (const auto& k : c) {
+                const float x0 = p.x + (k.lon - loMin) * sx, y0 = p.y + (laMax - k.lat) * sy;
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + std::max(1.f, k.dLon * sx), y0 + std::max(1.f, k.dLat * sy)), lev[k.value & 7]);
+            }
+            ImGui::Dummy(ImVec2(w, h));
+            ImGui::TextDisabled("%s: %.2f to %.2f, %s: %.2f to %.2f (%s)", tr("latitude"), laMin, laMax, tr("longitude"), loMin > 180 ? loMin - 360 : loMin, loMax > 180 ? loMax - 360 : loMax, tr("levels 2 to 7, last 15 minutes"));
+        }
+        ImGui::EndTabItem();
+    }
     if (typo::beginTabItem("Log")) {
         for (auto it = t.framesLog.rbegin(); it != t.framesLog.rend(); ++it) {
             ImGui::TextDisabled("%.1f  %s", it->timeSec, it->kind.c_str());
@@ -93,11 +121,15 @@ void tab(App& a) {
         }
         ImGui::EndTabItem();
     }
+    ImGui::EndTabBar();
 }
 
-void receiver(App& a) {
-    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
-    tab(a);
+void receiver(App& a) {   // the Receiver tab: the receiver's own state; the aircraft, FIS-B, radar and log views are on the UAT tab
+    const dect2::UatTelemetry& t = a.rx.uat;
+    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? tr("starting") : tr("stopped")); return; }
+    ImGui::PushFont(a.mono, 0);
+    ImGui::TextUnformatted(dect2::uatSummary(t).c_str());
+    ImGui::PopFont();
 }
 
 void list(App& a) {

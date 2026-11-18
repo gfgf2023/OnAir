@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "fixit.h"
 #include "../i18n/i18n.h"
 #include <cctype>
@@ -10,6 +13,8 @@ constexpr const char* kSdrplay = "https://sdrplay.com/hardware-api/";
 constexpr const char* kHackrfFw = "https://hackrf.readthedocs.io/en/latest/updating_firmware.html";
 constexpr const char* kCodecs = "https://github.com/adswill/OnAir/blob/main/docs/CODECS.md";
 constexpr const char* kDevices = "https://github.com/adswill/OnAir/blob/main/DEVICES.md";
+constexpr const char* kAaronia = "https://aaronia.com/downloads";
+constexpr const char* kSpectranDoc = "https://github.com/adswill/OnAir/blob/main/docs/SPECTRAN-V6.md";
 constexpr const char* kSddcReleases = "https://github.com/renardspark/SDDC_Driver/releases";
 constexpr const char* kUhdImages = "https://files.ettus.com/manual/page_images.html";
 constexpr const char* kUdevCmd = "sudo ./install-udev-rules.sh   # in the OnAir folder; then unplug and replug the radio";
@@ -34,6 +39,13 @@ const Entry kTable[] = {
      {N_("Download the current SDRplay API from sdrplay.com and install it."), N_("Restart OnAir."), nullptr},
      NONE, NONE, NONE,
      {{Act::OpenUrl, N_("Open driver page"), kSdrplay, OsAll}}},
+    {"spectran_missing", "RTSA-Suite PRO is not installed", N_("Install the Aaronia RTSA-Suite PRO"),
+     N_("OnAir drives the SPECTRAN V6 and V6 ECO through Aaronia's RTSA API library, which comes with the RTSA-Suite PRO. OnAir cannot include it."),
+     NONE,
+     {N_("Aaronia offers the RTSA-Suite PRO for Windows and Linux. On a Mac, use the SPECTRAN from a Windows or Linux computer."), nullptr},
+     {N_("Download the RTSA-Suite PRO for Windows from aaronia.com/downloads and install it (with its SPECTRAN V6 driver)."), N_("Restart OnAir."), N_("Press the refresh button next to the radio list."), nullptr},
+     {N_("Download the RTSA-Suite PRO for Linux from aaronia.com/downloads and install it (to /opt/aaronia-rtsa-suite)."), N_("Add Aaronia's udev rule as its installer explains, then unplug and replug the SPECTRAN."), N_("Restart OnAir and press the refresh button next to the radio list."), nullptr},
+     {{Act::OpenUrl, N_("Open Aaronia downloads"), kAaronia, OsWin | OsLinux}, {Act::OpenUrl, N_("SPECTRAN notes"), kSpectranDoc, OsAll}, {Act::OpenDiagnostics, nullptr, "", 0}}},
     {"kernel_driver", "msi2500", N_("Linux grabbed the SDRplay radio"),
      N_("A Linux driver for TV sticks took the radio before the SDRplay software could."),
      {N_("This is a Linux problem. On this system, unplug the radio, plug it in again and press the refresh button."), nullptr}, NONE, NONE,
@@ -117,6 +129,30 @@ const Entry kTable[] = {
      {N_("Close the other program (a second OnAir, SDR software, hackrf_info)."), N_("Press the refresh button next to the radio list."), nullptr},
      NONE, NONE, NONE,
      {{Act::OpenDiagnostics, N_("Copy diagnostics"), "", OsAll}}},
+    {"radio_busy", "error_busy", N_("The radio is busy"),
+     N_("Another program, or another receiver in OnAir, is using this radio. Only one can use it at a time."),
+     {N_("Close the other program (another SDR program, a second OnAir, a command line tool)."), N_("Unplug the radio, plug it in again and press the refresh button next to the radio list."), nullptr},
+     NONE, NONE, NONE,
+     {{Act::OpenDiagnostics, N_("Copy diagnostics"), "", OsAll}}},
+    {"radio_busy2", "resource busy", N_("The radio is busy"),
+     N_("Another program, or another receiver in OnAir, is using this radio. Only one can use it at a time."),
+     {N_("Close the other program (another SDR program, a second OnAir, a command line tool)."), N_("Unplug the radio, plug it in again and press the refresh button next to the radio list."), nullptr},
+     NONE, NONE, NONE,
+     {{Act::OpenDiagnostics, N_("Copy diagnostics"), "", OsAll}}},
+    {"radio_access", "error_access", N_("This account may not use the radio"),
+     N_("The radio is plugged in, but the system does not let your account open it."),
+     NONE,
+     {N_("Unplug the radio and plug it in again, then press the refresh button."), N_("If it still fails, close other SDR programs."), nullptr},
+     {N_("Install the WinUSB driver once with Zadig (zadig.akeo.ie): choose the radio, then the driver WinUSB, then Install."), N_("Press the refresh button next to the radio list."), nullptr},
+     {N_("Install the udev rules: run install-udev-rules.sh from the OnAir folder (the .deb package does it for you)."), N_("Unplug the radio and plug it in again."), N_("Press the refresh button next to the radio list."), nullptr},
+     {{Act::CopyText, N_("Copy the udev command"), kUdevCmd, OsLinux}, {Act::OpenUrl, N_("Open driver page"), kZadig, OsWin}}},
+    {"radio_driver", "error_not_supported", N_("The radio has the wrong driver"),
+     N_("The system gave the radio a driver OnAir cannot use."),
+     NONE,
+     {N_("Unplug the radio, plug it in again and press the refresh button."), N_("Close other SDR programs that may have taken the radio."), nullptr},
+     {N_("Install the WinUSB driver once with Zadig (zadig.akeo.ie): choose the radio, then the driver WinUSB, then Install."), N_("Press the refresh button next to the radio list."), nullptr},
+     {N_("Install the udev rules (install-udev-rules.sh), then unplug and replug the radio."), N_("Press the refresh button next to the radio list."), nullptr},
+     {{Act::OpenUrl, N_("Open driver page"), kZadig, OsWin}, {Act::OpenDiagnostics, N_("Copy diagnostics"), "", OsAll}}},
     {"hackrf_not_found", "HackRF not found", N_("The HackRF is not found"),
      N_("OnAir cannot see a HackRF on the USB ports."),
      {N_("Check the USB cable and port, then press the refresh button."), nullptr},

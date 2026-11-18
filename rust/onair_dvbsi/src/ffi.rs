@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! C ABI of `onair_dvbsi` (core/include/dect2/rs/dvbsi.h). Every export is `onair_dvbsi_*`; pointers come as (pointer, length) pairs and the caller owns all
 //! buffers. Text functions write UTF-8 into a caller buffer and return the length, `usize::MAX` when it is too small (sizes are documented in the header).
 //! Record arrays are (pointer, capacity); parsers count entries past the capacity without storing them. A null pointer where a buffer is needed makes a
@@ -114,7 +117,12 @@ pub unsafe extern "C" fn onair_dvbsi_clean(p: *const u8, n: usize, out: *mut u8,
 /// A DVB text field to clean UTF-8 (needs 4 * n + 16 bytes).
 #[no_mangle]
 pub unsafe extern "C" fn onair_dvbsi_dvb_text(p: *const u8, n: usize, gb_default: u32, out: *mut u8, cap: usize) -> usize {
-    let gb_default = gb_default != 0;
+    onair_dvbsi_dvb_text_with_encoding(p, n, if gb_default != 0 { 1 } else { 0 }, out, cap)
+}
+
+/// A DVB field with a generic unprefixed fallback (see charset::Encoding).
+#[no_mangle]
+pub unsafe extern "C" fn onair_dvbsi_dvb_text_with_encoding(p: *const u8, n: usize, encoding: u32, out: *mut u8, cap: usize) -> usize {
     let conv = |name: &[u8], src: &[u8], dst: &mut [u8]| -> Option<usize> {
         let f = CONVERT.load(Ordering::SeqCst);
         if f == 0 {
@@ -132,7 +140,7 @@ pub unsafe extern "C" fn onair_dvbsi_dvb_text(p: *const u8, n: usize, gb_default
             Some(r.min(dst.len()))
         }
     };
-    charset::dvb_text(rd(p, n), gb_default, Some(&conv), wr(out, cap))
+    charset::dvb_text(rd(p, n), charset::Encoding::from_code(encoding), Some(&conv), wr(out, cap))
 }
 
 /// Hamming 8/4 decode: nibble or -1.

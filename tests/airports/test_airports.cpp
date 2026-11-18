@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Airport table: the built-in data, frequency normalisation, search, near, the airband channels of an airport, grouping into captures,
 // and the OurAirports CSV import with damaged input.
 #include "dect2/airports/airports.h"
@@ -176,6 +179,13 @@ int main() {
         AirportDb f;
         const auto r3 = f.parseTsv(d.toTsv());
         CHECK(r3.airports == 3 && r3.freqs == r.freqs, "import -> text -> load");
+    }
+    {   // #411: a row found by the IATA code says so; the ICAO label does not contain it
+        Airport t; t.icao = "HHAS"; t.iata = "ASM";
+        CHECK(airportRowName(t, "HHAS Tower", "asm") == "HHAS Tower (ASM)", "IATA search names the code");
+        CHECK(airportRowName(t, "HHAS Tower", "HHAS") == "HHAS Tower", "ICAO search keeps the label");
+        Airport n; n.icao = "EYXX";
+        CHECK(airportRowName(n, "EYXX Tower", "ASM") == "EYXX Tower", "no IATA code: the label");
     }
     return testSummary("airports");
 }

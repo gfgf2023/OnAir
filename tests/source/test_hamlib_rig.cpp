@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Hamlib rig control against Hamlib's own dummy rig (model 1), in process and through rigctld (model 2, netrigctl): open and close, both
 // directions of frequency and mode, polling, a rig that disappears and comes back, repeated and concurrent start/stop, mode names, and a
 // check that receiving never keys the transmitter. rigctld missing: the network tests are skipped with a note.
+#include "dect2/audio/audioin.h"
 #include "dect2/source/hamlib_link.h"
 #include "dect2/source/hamlib_rig.h"
+#include "dect2/source/rig_setup.h"
 #include "dect2/common/ring.h"
 #include "dect2/source/source.h"
 #include <atomic>
@@ -357,9 +362,41 @@ static void testTxIsSeparate(const std::string& tmp) {
 
 #endif // DECT2_HAVE_HAMLIB
 
+// #358: the rig's sound card typed as its name ("USB Audio CODEC", "Sound card: USB Audio CODEC", "Default input") finds the device id
+static void testSoundCardName() {
+    const std::vector<AudioInputDevice> devs = {{"", "Default input"}, {"ca:AppleUSBAudioEngine:Burr-Brown:USB Audio CODEC:1", "USB Audio CODEC"}, {"ca:BlackHole2ch_UID", "BlackHole 2ch"}};
+    std::string id = "x";
+    CHECK(resolveAudioInputId("USB Audio CODEC", devs, id) && id == devs[1].id, "name");
+    id = "x"; CHECK(resolveAudioInputId("  sound card: usb audio codec ", devs, id) && id == devs[1].id, "source-list name");
+    id = "x"; CHECK(resolveAudioInputId("Default input", devs, id) && id.empty(), "default input");
+    id = "x"; CHECK(resolveAudioInputId("default", devs, id) && id.empty(), "default");
+    id = "x"; CHECK(resolveAudioInputId("ca:BlackHole2ch_UID", devs, id) && id == "ca:BlackHole2ch_UID", "an id stays");
+    id = "keep"; CHECK(!resolveAudioInputId("Scarlett 2i2", devs, id) && id == "keep", "an unknown card is not replaced");
+}
+
 int main() {
     testPure();
+    testSoundCardName();
 #ifdef DECT2_HAVE_HAMLIB
+#ifdef DECT2_HAMLIB_DYNAMIC
+    {   // #495: the library is loaded at run time (the Windows packages); without it the rig entry still shows and says what is missing
+        CHECK(hamlibSupported(), "a run-time Hamlib build offers the Hamlib rig entry");
+        std::string why;
+        if (!hamlibLibraryReady(&why)) {
+            CHECK(why.find("libhamlib") != std::string::npos, "the missing library is named");
+            HamlibLink l;
+            HamlibConn c; c.model = 1;
+            std::string err;
+            CHECK(!l.open(c, err) && err.find("libhamlib") != std::string::npos, "open without the library fails with that reason");
+            CHECK(hamlibModelList().empty() && !hamlibModeKnown("USB"), "no models, no modes, no crash");
+            printf("note: %s; the dummy rig tests are skipped\n", why.c_str());
+            if (!fails) printf("hamlib rig: all ok\n");
+            return fails ? 1 : 0;
+        }
+        printf("Hamlib loaded at run time\n");
+        CHECK(hamlibModelList().size() > 100, "the model list through the loaded library");
+    }
+#endif
     testModes();
     testDummy();
     testSourceDummy();

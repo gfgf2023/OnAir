@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // What the engine hands out after decoding: the per-frame PLP callback (onPlp, with its lock-timing counters), the EPG and
 // BB statistics getters, and the latest receiver telemetry and spectrum frame.
 #include "dect2/engine/engine.h"
+#include "dect2/common/diag.h"
 #include "engine_internal.h"
 #include "dect2/source/converter.h"
 #include "dect2/net/share.h"
@@ -47,6 +51,13 @@ void Engine::onPlp(const PlpResult& r) {
     std::lock_guard<std::mutex> lk(tsMu_);
     gPlpWaitUs += usSince(tWait0);
     struct HoldTimer { std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(); ~HoldTimer() { gPlpHoldUs += usSince(t0); gPlpFrames++; } } holdTimer;
+    if (r.commonPlp) {   // the common PLP of the group: its frame waits for the data PLP's frame of the same T2 frame (annex D)
+        commonFrame_.clear();
+        commonUnpack_.setSink([this](const uint8_t* p) { commonFrame_.insert(commonFrame_.end(), p, p + 188); });
+        for (const auto& f : r.frames) { if (f.bits.empty()) commonUnpack_.lost(); else commonUnpack_.push(f.bits, f.header); }
+        plpMerge_.commonFrame(commonFrame_);
+        return;
+    }
     frameBuf_.clear();
     // FRAME_IDX restarts at 0 every super-frame (NUM_T2_FRAMES frames), and a PLP with FRAME_INTERVAL > 1 skips frames: compare the
     // index with the one expected, not with last + 1, or every super-frame boundary (every second frame on a 2-frame super-frame) looks
@@ -73,12 +84,14 @@ void Engine::onPlp(const PlpResult& r) {
 std::string Engine::setT2Export(const T2ExportConfig& c) {
     std::lock_guard<std::mutex> lk(t2ExportMu_);
     if (!t2Export_) t2Export_ = std::make_unique<T2Export>();
-    return t2Export_->configure(c) ? std::string() : t2Export_->error();
+    if (t2Export_->configure(c)) return std::string();
+    DIAG(423365, "The DVB-T2 export could not be configured (%s), so no export is written.", t2Export_->error().c_str());
+    return t2Export_->error();
 }
 
 void Engine::setPacketTap(std::function<void(const uint8_t*, size_t, const TsSnapshot*, double)> f) { std::lock_guard<std::mutex> lk(tsMu_); tap_ = std::move(f); }
 void Engine::setRecorderTap(std::function<void(const uint8_t*, size_t, const TsSnapshot*, double)> f) { std::lock_guard<std::mutex> lk(tsMu_); rtap_ = std::move(f); }
-void Engine::clearServices() { std::lock_guard<std::mutex> lk(tsMu_); demux_.reset(); tsSnap_ = TsSnapshot(); }
+void Engine::clearServices() { std::lock_guard<std::mutex> lk(tsMu_); demux_.reset(); mpe_.reset(); tsSnap_ = TsSnapshot(); }
 TsSnapshot Engine::tsSnapshot() { std::lock_guard<std::mutex> lk(tsMu_); return tsSnap_; }
 std::map<int, std::vector<EpgEvent>> Engine::epg() {
     if (mtvActive_.load()) { if (auto m = mtvGet()) return m->epg(m->selected()); }
@@ -96,6 +109,25 @@ bool Engine::latestRx(RxTelemetry& out, uint64_t lastSeq) {
     std::lock_guard<std::mutex> lk(rxMu_);
     if (rxTel_.seq <= lastSeq) return false;
     out = rxTel_;
+    return true;
+}
+
+void Engine::setSpectrumZoom(double offsetHz, double spanHz, int px, size_t maxBins) {
+    const double fs = rate_.load();
+    std::lock_guard<std::mutex> lk(zoomMu_);
+    const zoomfft::Plan p = spanHz > 0 ? zoomfft::update(zoomPlan_, fs, analyzer_.fftSize(), offsetHz, spanHz, px, maxBins) : zoomfft::Plan();
+    if (p.on == zoomPlan_.on && (!p.on || p.id == zoomPlan_.id)) return;   // the plan holds: nothing restarts
+    zoomPlan_ = p;
+    if (!p.on) zoomPlan_.id = std::max(zoomPlan_.id, p.id);
+    zoom_.configure(zoomPlan_, fs);
+}
+
+zoomfft::Plan Engine::spectrumZoomPlan() const { std::lock_guard<std::mutex> lk(zoomMu_); return zoomPlan_; }
+
+bool Engine::latestZoomSpectrum(ZoomFrame& out, uint64_t lastSeq) {
+    std::lock_guard<std::mutex> lk(zoomMu_);
+    if (!zoomPlan_.on || zoomFrame_.seq <= lastSeq || zoomFrame_.dbfs.empty() || zoomFrame_.plan.id != zoomPlan_.id) return false;
+    out = zoomFrame_;
     return true;
 }
 

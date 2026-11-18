@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The out-of-process runner. A helper executable (onair-plugin-host) loads the library; the app sends it IQ, events, settings and ticks over a pipe and
 // reads results back. Messages are [u32 length][u8 type][body] (results.h, Wire). The helper acknowledges every call; a call that is not acknowledged
 // within the watchdog limit gets the helper killed (SIGKILL), and a crash of the plugin only ends the helper. Nothing but plain data crosses the pipe.
@@ -198,7 +201,8 @@ public:
             case Wire::Audio: {
                 WireReader r(b.data(), b.size());
                 const double rate = r.f64(); const uint32_t n = r.u32();
-                if (r.ok && (o.granted & PermAudioOut) && n <= (1u << 20) && r.pos + (size_t)n * 4 <= b.size() && o.services.audioOut) {
+                // the same limits as cAudio (loader.cpp): the helper runs the plugin's code, so its messages are not trusted
+                if (r.ok && (o.granted & PermAudioOut) && n > 0 && n <= (1u << 20) && rate >= 1000 && rate <= 400000 && r.pos + (size_t)n * 4 <= b.size() && o.services.audioOut) {
                     std::vector<float> pcm(n);
                     if (n) memcpy(pcm.data(), b.data() + r.pos, (size_t)n * 4);
                     o.services.audioOut(pcm.data(), n, rate);

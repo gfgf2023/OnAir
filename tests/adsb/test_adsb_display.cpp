@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B display options: altitude colours, the drop time and the pref keys (dect2/adsb/adsb_display.h).
 #include "dect2/adsb/adsb_display.h"
 #include "dect2/adsb/adsb_demod.h"
@@ -28,6 +31,7 @@ int main() {
     CHECK(!expired(60, 60) && expired(60.1, 60) && !expired(10, 60), "60 s");
     CHECK(clampDropSec(0) == 0 && clampDropSec(-5) == 0 && clampDropSec(1) == kMinDropSec && clampDropSec(99999) == kMaxDropSec && clampDropSec(90) == 90, "drop clamp");
     CHECK(clampTrackWidth(0) == 1 && clampTrackWidth(9) == 6 && clampTrackWidth(3) == 3, "width clamp");
+    CHECK(clampLabelScale(10) == 70 && clampLabelScale(900) == 250 && clampLabelScale(130) == 130 && kAllLabelFields == 7, "label scale clamp");
     CHECK(trackerDropSec(0) > 1e8 && trackerDropSec(45) == 45, "tracker drop");
     // defaults keep the old behaviour
     Options o;
@@ -47,6 +51,16 @@ int main() {
         CHECK(std::fabs(d.timeSec() - t1 - 30) < 1e-3, "clock kept through a rate change: %.4f", d.timeSec() - t1);
     }
     CHECK(!strcmp(kPrefAltColour, "adsbAltColour") && !strcmp(kPrefTrackWidth, "adsbTrackWidth") && !strcmp(kPrefDropSec, "adsbDropSec"), "pref keys");
+    {   // #235: the selected aircraft is dropped by the tracker: the selection (and its readout panel) goes after the grace time
+        double ms = -1;
+        CHECK(!selectionGone(true, true, 0.0, ms), "present: kept");
+        CHECK(!selectionGone(true, false, 1.0, ms), "missing: grace starts");
+        CHECK(!selectionGone(true, false, 1.5, ms), "missing 0.5 s: still in grace");
+        CHECK(!selectionGone(true, true, 1.8, ms) && ms < 0, "back in the list: grace reset");
+        CHECK(!selectionGone(true, false, 2.0, ms), "missing again: grace restarts");
+        CHECK(selectionGone(true, false, 3.1, ms), "missing 1.1 s: cleared");
+        CHECK(!selectionGone(false, false, 9.0, ms), "nothing selected: nothing to clear");
+    }
     printf(fails ? "FAILED\n" : "adsb display ok\n");
     return fails ? 1 : 0;
 }

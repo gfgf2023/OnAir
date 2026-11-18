@@ -1,4 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "web_policy.h"
+#include "dect2/mesh/mesh_crypto.h"
+#include <cstring>
+#include <cstdlib>
 #include "server_config.h"
 #include <cctype>
 #include <random>
@@ -27,6 +33,8 @@ const std::vector<DecoderInfo>& decoderCatalogue() {
         {"p25", DecoderClass::Voice, "P25"},
         {"nxdn", DecoderClass::Voice, "NXDN"},
         {"tetra", DecoderClass::Voice, "TETRA"},
+        {"smartnet", DecoderClass::Voice, "Motorola Type II"},
+        {"tetradmo", DecoderClass::Voice, "TETRA DMO"},
         {"dpmr", DecoderClass::Voice, "dPMR"},
         {"dstar", DecoderClass::Voice, "D-STAR"},
         {"ysf", DecoderClass::Voice, "Yaesu System Fusion"},
@@ -51,7 +59,7 @@ const std::set<std::string>& webSafeKinds() {
     return s;
 }
 const std::set<std::string>& voiceKinds() {
-    static const std::set<std::string> s = {"dmr", "p25", "nxdn", "tetra", "dpmr", "dstar", "d-star", "ysf", "fusion", "yaesu", "m17", "dmr_wide",
+    static const std::set<std::string> s = {"dmr", "p25", "nxdn", "tetra", "smartnet", "tetradmo", "dpmr", "dstar", "d-star", "ysf", "fusion", "yaesu", "m17", "dmr_wide",
                                             "p25_wide", "nxdn_wide", "edacs", "tetrapol", "mpt1327", "ltr", "trunk", "trunking", "p25p2", "marinevhf"};
     return s;
 }
@@ -62,24 +70,40 @@ const std::set<std::string>& pagerKinds() {
 // Every other mode id of the receiver registry, listed so that a new mode that nobody classified is noticed by the test. They are all blocked.
 const std::set<std::string>& restrictedKnownKinds() {
     static const std::set<std::string> s = {
-    "aero", "ale", "ant", "ardop", "astro", "atsc", "atsc3", "atv", "ble", "bletracker", "cdr", "cell", "codar", "contestia", "cquam",
-    "cubesat", "cw", "dab", "datawell", "dect", "dgps", "dji", "dme", "dominoex", "drm", "dsc", "dtmb", "dvb", "dvbc", "dvbs", "eczas",
-    "eloran", "flarm", "fpv", "freedv", "fsq", "fst4", "ft2", "globalstar", "gnss", "goesdcs", "gsmr", "halow", "hamdrm", "hdr", "hell",
-    "hfbeacon", "hfdig", "hfdl", "ifkp", "ils", "inmc", "iono", "iridium", "isdbt", "ism", "js8", "jt4", "jt65", "jt9", "kaal", "kaft",
+    "aero", "ale", "ant", "ardop", "astro", "atsc", "atsc3", "atv", "ble", "bletracker", "btc", "cdr", "cell", "codar", "contestia", "cquam",
+    "cubesat", "ax100m5", "ax100m6", "usp", "ngham", "u482c", "beesat", "cw", "dab", "datawell", "dect", "dgps", "dji", "dme", "dominoex", "drm", "dsc", "dtmb", "dvb", "dvbc", "dvbc2", "dvbs", "eczas",
+    "adsl", "cv2x", "dsrc", "eot", "ermes", "fanet", "its", "ogn", "eloran", "flarm", "fpv", "freedv", "fsq", "fst4", "ft2", "globalstar", "gnss", "goesdcs", "hrdcp", "gsmr", "halow", "hamdrm", "hdr", "hell",
+    "hfbeacon", "hfdig", "hfdl", "ifkp", "ils", "inmc", "iono", "iridium", "isdbt", "isdbtsb", "dvbsh", "ism", "js8", "jt4", "jt65", "jt9", "kaal", "kaft",
     "kait", "kapp", "kavb", "kaws", "klw", "lbj", "loraaprs", "loraraw", "lorawan", "mac", "marine", "mesh", "meshcom", "meshcore",
     "meshtastic", "mfsk", "milhf", "modeac", "mscatter", "msk144", "mt63", "multitone", "navtex", "nbiot", "ndb", "nr", "olivia",
-    "orbcomm", "pager", "psk", "q65", "qo100", "rid", "rtty", "same", "sarsat", "satbeacon", "sonde", "t", "t2", "tdcs", "thor", "time",
+    "orbcomm", "pager", "psk", "q65", "qo100", "rid", "rtty", "same", "sarsat", "satbeacon", "sonde", "t", "t2", "tdcs", "thor", "thread", "time",
     "tones", "uplink", "vdes", "vdl4", "vor", "vorils", "wifi", "wisun", "wmbus", "zigbee", "zwave",
     // 3.0 modes: blocked until the owner approves them for web listeners
-    "argos", "asterix", "horus", "isdbs", "lorasat", "lorawanwide", "nfc", "sbas", "sigfox",
+    "argos", "asterix", "horus", "navic", "isdbs", "lorasat", "lorawanwide", "nfc", "sbas", "sigfox",
     // 3.1 modes: blocked likewise
     "pactor", "pskd",
     // 3.2 modes: blocked likewise
-    "roshf", "ssdv", "ebicab", "esubghz", "inmsat", "nrf24",
+    "mioty", "dectnrp",   // merged in integ-38
+    "xlink", "wfbng", "npr", "winmor",   // merged in integ-38
+    "rclink", "reticulum", "elrs", "mavlink", "frsky", "flysky", "sfhss", "spektrum", "roshf", "ssdv", "ebicab", "esubghz", "inmsat", "bgan", "nrf24", "sensors", "sferics",
+    // 3.8 ham science modes: blocked likewise
+    "qrss", "dfcw", "fsk441", "iscat", "pi4", "throb", "supersid", "riometer", "pulsar",
+    "xlinknb",
     // 3.4 modes: blocked likewise
-    "iptv", "atis",   // (esubghz was never classified: web_safety failed on integ-32)
+    "umts", "cdma2000", "tdscdma",   // merged in integ-38
+    "vdl3",   // 3.9
+    "fbr",   // 3.9: Fleet Broadcast (UHF SATCOM); blocked until the owner approves it
+    "ltpos",   // 3.9: Lightning position has a network key and a server role
+    "cp16",   // 3.9
+    "iptv", "atis", "selcal", "gk2alrit", "gk2ahrit", "opensky",   // (esubghz was never classified: web_safety failed on integ-32)
     // 3.5 modes: blocked likewise (shortwave is a broadcast receiver like "general", but the web allow-list is the owner's call)
     "shortwave",
+    // 3.6 modes: blocked likewise
+    "fy4lrit", "fy4ahrit", "fy2svissr",
+    "fy3ahrpt", "fy3mpt", "noaaapt", "noaahrpt", "noaagac", "noaadsb", "meteorhrpt", "elektrordas", "arktikardas", "arktikaggak", "awsl", "xb_npp", "xb_jpss2", "xb_aqua", "xb_terra", "xb_metopd", "xb_metopsg", "xb_landsatx", "xb_landsats", "xb_probas", "xb_probav", "xb_gcomw", "xb_gcomc", "xb_stereo", "xb_oceansat2", "xb_oceansat3", "xb_saral", "xb_oceansat3x", "xb_saralx", "xb_kanopus", "xb_dmsp",
+    "sitor", "pactor2", "pactor3", "pactor4",
+    "espnow",   // 4.1: ESP-NOW; blocked until the owner approves it for web listeners
+    "rpr",      // 4.1: Robust Packet (physical layer, needs a recording); blocked until the owner approves it for web listeners
     };
     return s;
 }
@@ -205,12 +229,54 @@ AuthResult authenticate(const AuthConfig& a, const std::string& password, const 
     switch (a.mode) {
     case AuthMode::Open: r.ok = true; r.cls = UserClass::Public; return r;
     case AuthMode::Password:
-        if (a.password.size() >= 8 && ctEq(password, a.password)) { r.ok = true; r.cls = UserClass::Member; return r; }
+        if (!a.passwordHash.empty() ? passwordMatchesHash(password, a.passwordHash) : (a.password.size() >= 8 && ctEq(password, a.password))) { r.ok = true; r.cls = UserClass::Member; return r; }
         r.why = password.empty() ? "password required" : "wrong password";
         return r;
     case AuthMode::Invite: r.why = "invite required"; return r;
     }
     return r;
+}
+
+namespace {
+void pbkdf2Sha256(const std::string& pw, const std::vector<uint8_t>& salt, int iterations, uint8_t out[32]) {
+    std::vector<uint8_t> msg(salt);
+    msg.insert(msg.end(), {0, 0, 0, 1});
+    uint8_t u[32];
+    dect2::meshcrypto::hmacSha256(reinterpret_cast<const uint8_t*>(pw.data()), pw.size(), msg.data(), msg.size(), u);
+    memcpy(out, u, 32);
+    for (int i = 1; i < iterations; i++) {
+        uint8_t next[32];
+        dect2::meshcrypto::hmacSha256(reinterpret_cast<const uint8_t*>(pw.data()), pw.size(), u, 32, next);
+        memcpy(u, next, 32);
+        for (int k = 0; k < 32; k++) out[k] ^= u[k];
+    }
+}
+std::string toHexStr(const uint8_t* p, size_t n) { static const char* hx = "0123456789abcdef"; std::string s; for (size_t i = 0; i < n; i++) { s += hx[p[i] >> 4]; s += hx[p[i] & 15]; } return s; }
+bool fromHexStr(const std::string& h, std::vector<uint8_t>& out) {
+    if (h.size() % 2 || h.empty()) return false;
+    out.clear();
+    auto nib = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; };
+    for (size_t i = 0; i < h.size(); i += 2) { const int a = nib(h[i]), b = nib(h[i + 1]); if (a < 0 || b < 0) return false; out.push_back((uint8_t)(a * 16 + b)); }
+    return true;
+}
+} // namespace
+
+std::string hashPassword(const std::string& password, const std::string& saltHex, int iterations) {
+    const std::string salt = saltHex.empty() ? newToken(16) : saltHex;
+    std::vector<uint8_t> s;
+    if (!fromHexStr(salt, s) || iterations < 1000) return {};
+    uint8_t h[32];
+    pbkdf2Sha256(password, s, iterations, h);
+    return "pbkdf2$" + std::to_string(iterations) + "$" + salt + "$" + toHexStr(h, 32);
+}
+
+bool passwordMatchesHash(const std::string& password, const std::string& hash) {
+    size_t a = hash.find('$'), b = a == std::string::npos ? a : hash.find('$', a + 1), c = b == std::string::npos ? b : hash.find('$', b + 1);
+    if (c == std::string::npos || hash.compare(0, a, "pbkdf2") != 0 || password.size() > 256) return false;
+    const int iters = atoi(hash.substr(a + 1, b - a - 1).c_str());
+    if (iters < 1000 || iters > 10000000) return false;
+    const std::string mine = hashPassword(password, hash.substr(b + 1, c - b - 1), iters);
+    return !mine.empty() && mine.size() == hash.size() && ctEq(mine, hash);
 }
 
 std::string newToken(int bytes) {

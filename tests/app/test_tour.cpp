@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The first-run tour (app/ui/tour_logic.h): the step list, the anchor registry, skipping steps whose part is not on screen, and when it starts.
 #include "../../app/ui/tour_logic.h"
 #include <cstdio>
@@ -60,6 +63,12 @@ int main() {
     CHECK(!tour::autoStart(true, true, false), "not again once seen (also after an update)");
     CHECK(!tour::autoStart(false, false, false), "not with command-line arguments");
     CHECK(!tour::autoStart(true, false, true), "after the setup");
+    // #491: one guide at a time; the tour is in front of "Get me listening", which comes once the tour is skipped
+    CHECK(tour::guideInFront(false, true, true, false) == tour::Guide::Tour, "the tour is in front of Get me listening");
+    CHECK(tour::guideInFront(false, false, true, false) == tour::Guide::Listen, "Get me listening after the tour was skipped");
+    CHECK(tour::guideInFront(true, true, true, true) == tour::Guide::Setup, "the setup first");
+    CHECK(tour::guideInFront(false, false, true, true) == tour::Guide::Listen, "a lesson card waits for Get me listening");
+    CHECK(tour::guideInFront(false, false, false, true) == tour::Guide::Lesson && tour::guideInFront(false, false, false, false) == tour::Guide::None, "the lesson card, then none");
 
     // the guided tours of the Help menu: four of them, each step points at a reported part and reads like the first-run tour
     int nt = 0;

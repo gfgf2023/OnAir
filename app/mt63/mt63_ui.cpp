@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // MT63 screens: the calling-frequency presets (80 to 10 m), the bandwidth (automatic, 500 / 1000 / 2000 Hz) and the interleave
 // (automatic, short, long), the waterfall of the audio passband with the block the receiver found marked on it, the level of each of the
 // 64 carriers, and the text in big letters beside its chat log, callsigns highlighted.
@@ -12,6 +15,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "../ui/font_size.h"
 
 namespace {
 
@@ -226,7 +230,7 @@ void textView(App& a) {
         ImGui::SameLine();
     }
     if (ImGui::BeginChild("##mt63big", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
-        ImGui::PushFont(a.mono, ImGui::GetFontSize() * 1.6f);
+        ImGui::PushFont(a.mono, fontBase() * 1.6f);
         richText(t.text, ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x);
         if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.0f);
         ImGui::PopFont();

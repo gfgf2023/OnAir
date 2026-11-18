@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GLONASS L1OF: the ranging code, the Hamming check of the strings and the orbit integration checked against the ICD; then the simulated sky on
 // its own tune (1602 MHz, 10 Msps): the fourteen frequency channels cut out of the band, the strings found by their time mark, the ephemeris compared
 // with what was sent, the orbit integrated from tb, the position fixed with GLONASS alone; the outermost channels k = -7 and +6 among those in view;
@@ -10,6 +13,7 @@
 #include "dect2/engine/test_parallel.h"
 #include "gnss_faults.h"
 #include <cmath>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -195,7 +199,11 @@ int main() {
         {"GPS + GLONASS at 1590.4 MHz, 40 Msps", {}, true, 75, true},
     };
     if (getenv("GNSS_CASE")) { CaseOut out; runCase(cases[atoi(getenv("GNSS_CASE"))], out); fputs(out.text.c_str(), stdout); return out.fails ? 1 : 0; }
-    const int fails = dect2::testpar::runCases(6, [&](size_t i, CaseOut& out) { runCase(cases[i], out); }, {5, 4, 3, 0, 1, 2});
+    // GNSS_PART=0 / 1: half of the cases each (ctest gnss_glonass and gnss_glonass_b, so a shared runner gives each half its own time limit);
+    // unset: all six, the longest first
+    std::vector<size_t> idx = {5, 4, 3, 0, 1, 2};
+    if (const char* pt = getenv("GNSS_PART")) idx = atoi(pt) == 1 ? std::vector<size_t>{4, 3, 2} : std::vector<size_t>{5, 0, 1};
+    const int fails = dect2::testpar::runCases(idx.size(), [&](size_t i, CaseOut& out) { runCase(cases[idx[i]], out); });
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("gnss glonass: ok\n");
     return 0;

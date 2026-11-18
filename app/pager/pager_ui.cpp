@@ -1,10 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Pagers screens: lamps for the signal, the sync and the two protocols; the message list with a filter; the statistics per speed.
+#include "../d40/d40_ui.h"
+#include "dect2/common/diag.h"
 #include "dect2/common/time_fmt.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/session_list.h"
 #include "ui/kit/mode_frame.h"
 #include "app.h"
+#include "dect2/ease/ease.h"
+#include "dect2/channels/freq_db.h"
+#include <memory>
 #include "pager_filter.h"
 #include "pager_alias.h"
+#include "pager_keywords.h"
+#include "../panels/automation_internal.h"
 #include "../ui/msglog_ui.h"
 #include "dect2/pager/pager_rx.h"
 #include "dect2/pager/pager_tel.h"
@@ -14,6 +25,7 @@
 #include <cstdio>
 #include <fstream>
 #include <cmath>
+#include <deque>
 #include <ctime>
 #include <map>
 #include <sstream>
@@ -33,7 +45,9 @@ struct State {
     size_t ignoredHidden = 0;            // pages the ignore list hid in the last pass over the table
     bool watchOnly = false;              // the Messages view shows only watched addresses (saved as pagerWatchOnly)
     bool pocsag = true, flex = true;
+    bool both = false;                   // decode POCSAG and FLEX together on this channel, from either mode entry (saved as pagerBoth)
     bool decodedOnly = false;            // hide tone-only and empty pages from the table, Copy and the list (saved as pagerDecodedOnly)
+    bool hideAuto = false;               // hide the pages of capcodes the insight analyser found automatic or test pages (pagerHideAuto; insight/pager_patterns.h)
     bool baud512 = true, baud1200 = true, baud2400 = true;
     int pushedBaud = -1;
     int pushedNarrow = -1;
@@ -46,9 +60,23 @@ struct State {
     bool aliasDirty = false;                 // names edited in the table, written to the file when the field is left
     bool combine = true;                     // multi-copy combining (#20), saved as pagerCombine
     int pushedCombine = -1;
+    bool smartRepair = true, smartInsight = true, smartMedical = false;   // the smart layer (pager_intel.h), saved as pagerSmartRepair / pagerSmartInsight / pagerSmartMedical
+    int pushedSmart = -1;
+    bool pushedPlaces = false;
+    bool selcall = false;                // also decode five-tone selective calls on the channel audio (saved as pagerSelcall)
+    int pushedSelcall = -1;
+    dect2::PagerKeywords kw;                 // keyword alerts: matched against the text and the capcode name, saved as pagerKeywords
+    char kwText[2000] = "";                  // the list as typed, one keyword per line, "re:" starts a regular expression
+    int kwBad = 0;                           // lines of the list that could not be used
+    bool kwNotify = false, kwSound = false;  // desktop notification / beeps on a match (both off by default; saved as pagerKwNotify, pagerKwSound)
+    struct KwHit { int64_t wall = 0; std::string kw, addr, text; };
+    std::deque<KwHit> kwHits;                // the live ticker: the newest matches, newest last
+    std::map<int, uint64_t> kwSeen;          // carrier -> highest serial looked at (serials restart per carrier)
+    bool kwPrimed = false;                   // pages that were there when the list was set are not alerts
     std::map<uint32_t, int> byAddress;       // POCSAG address -> kPocsagReadAlpha or kPocsagReadNumeric, saved as "pocsagReadAddr" ("ric:a ric:n ...")
 };
 State S;
+void saveKeywords();
 
 int baudMask() {
     int m = 0;
@@ -76,7 +104,21 @@ void loadRead() {
     S.readMode = m >= 0 && m < dect2::kPocsagReadModes ? (int)m : dect2::kPocsagReadAuto;
     { const long cs = d.getI("pagerCharset", 0); S.charset = cs >= 0 && cs < dect2::kPagerCharsets ? (int)cs : 0; }
     S.decodedOnly = d.getI("pagerDecodedOnly", 0) != 0;
+    S.hideAuto = d.getI("pagerHideAuto", 0) != 0;
     S.combine = d.getI("pagerCombine", 1) != 0;
+    S.smartRepair = d.getI("pagerSmartRepair", 1) != 0;
+    S.smartInsight = d.getI("pagerSmartInsight", 1) != 0;
+    S.smartMedical = d.getI("pagerSmartMedical", 0) != 0;
+    S.selcall = d.getI("pagerSelcall", 0) != 0;
+    S.both = d.getI("pagerBoth", 0) != 0;
+    {
+        std::string k = d.getS("pagerKeywords", "");
+        for (auto& c : k) if (c == '\x1e') c = '\n';
+        snprintf(S.kwText, sizeof S.kwText, "%s", k.c_str());
+        S.kwBad = S.kw.parse(S.kwText);
+        S.kwNotify = d.getI("pagerKwNotify", 0) != 0;
+        S.kwSound = d.getI("pagerKwSound", 0) != 0;
+    }
     {
         std::ifstream f(aliasPath(), std::ios::binary);
         if (f) { std::string t((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); S.aliases.importCsv(t); }
@@ -149,6 +191,7 @@ std::string oneLine(const std::string& s) {
 }
 
 bool passes(const dect2::PagerMessage& m) {   // m: resolved
+    if (m.selcall) return !S.filter[0] || lower(m.text + " " + m.selStd).find(lower(S.filter)) != std::string::npos;   // no address: the ignore and watch lists do not apply
     if (m.flex ? !S.flex : !S.pocsag) return false;
     if (!S.ignored.empty() && S.ignored.has(m.address) && !S.showIgnored) { S.ignoredHidden++; return false; }
     if (S.watchOnly && !S.watched.empty() && !S.watched.has(m.address)) return false;
@@ -165,6 +208,7 @@ bool passes(const dect2::PagerMessage& m) {   // m: resolved
 bool shows(const dect2::PagerMessage& m, size_t* hidden = nullptr) {
     if (!passes(m)) return false;
     if (S.decodedOnly && !dect2::pagerIsDecoded(m)) { if (hidden) (*hidden)++; return false; }
+    if (S.hideAuto && !m.selcall && insightPagerAutomatic(m.flex ? "FLEX" : "POCSAG", m.address)) { if (hidden) (*hidden)++; return false; }
     return true;
 }
 
@@ -183,7 +227,7 @@ void lampRow(const App& a) {
     lamp("Signal", !on ? 0 : t.signal ? 1 : 0); flowNext(12 * gUi);
     lamp("Sync", !on ? 0 : t.sync ? 1 : t.state == 1 ? 2 : 0); flowNext(12 * gUi);
     const SubMode* sm = curSub(a);   // a protocol entry (POCSAG or FLEX) decodes only its own
-    const int m = sm ? sm->decoders : 3;
+    const int m = S.both || !sm ? 3 : sm->decoders;
     if (m & 1) { lamp("POCSAG", !on ? 0 : t.timeSec - t.lastPocsagSec < 60 ? 1 : t.lastPocsagSec > 0 ? 2 : 0); flowNext(12 * gUi); }
     if (m & 2) lamp("FLEX", !on ? 0 : t.timeSec - t.lastFlexSec < 60 ? 1 : t.lastFlexSec > 0 ? 2 : 0);
     flowEnd();
@@ -195,6 +239,16 @@ void messageView(App& a) {
     const dect2::PagerTelemetry& t = a.rx.pager;
     const bool on = live(a);
     const std::vector<dect2::PagerMessage>& all = messagesOf(t);
+    if (!S.kw.empty()) {   // the live keyword ticker: the last three matches
+        if (S.kwHits.empty()) ImGui::TextDisabled("%s", tr("Keywords on: no match yet"));
+        const size_t from = S.kwHits.size() > 3 ? S.kwHits.size() - 3 : 0;
+        for (size_t i = from; i < S.kwHits.size(); i++) {
+            const auto& h = S.kwHits[i];
+            ImGui::TextColored(pal::warnAmber(), "%s", h.kw.c_str()); ImGui::SameLine(0, 8 * gUi);
+            ImGui::TextDisabled("%s", clock(h.wall).c_str()); ImGui::SameLine(0, 8 * gUi);
+            ImGui::TextUnformatted((h.addr + "  " + h.text.substr(0, 120)).c_str());
+        }
+    }
     ImGui::TextDisabled("Filter"); ImGui::SameLine(0, 5 * gUi);
     ImGui::SetNextItemWidth(150 * gUi);
     ImGui::InputText("##pgf", S.filter, sizeof S.filter);
@@ -205,16 +259,36 @@ void messageView(App& a) {
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tr("Show only the capcodes of the watch list (set it in the Capcodes view)"));
     flowNext(12 * gUi);
+    if (ImGui::Checkbox(tr("POCSAG + FLEX (both)"), &S.both)) { plat::prefs().setI("pagerBoth", S.both ? 1 : 0); savePrefs(a); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Decode POCSAG and FLEX at the same time on this channel, whichever mode entry is selected. They share one demodulator; only the channel you are tuned to is heard, so use it when a network or neighbouring channels carry both."));
+    flowNext(12 * gUi);
     ImGui::Checkbox("POCSAG", &S.pocsag);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("POCSAG is the ITU-R M.584 / CCIR Radiopaging Code No. 1 (RPC1): the same signal, so CCIR paging on the pager bands is decoded here at 512, 1200 and 2400 baud. The CCIR 5-tone selective calls are in the Tones mode."));
     flowNext(10 * gUi);
     ImGui::Checkbox("FLEX", &S.flex);
+    flowNext(10 * gUi);
+    if (ImGui::Checkbox(tr("Selective call tones (CCIR / ZVEI / EEA / EIA / DZVEI...)"), &S.selcall)) { plat::prefs().setI("pagerSelcall", S.selcall ? 1 : 0); savePrefs(a); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Also decode five-tone sequential calls (CCIR, ZVEI1/2, EEA, EIA, DZVEI) on the same channel audio, alongside POCSAG and FLEX. They appear in the table with the standard in the Protocol column and the digits as the message."));
     flowNext(12 * gUi);
     if (ImGui::Checkbox(tr("Decoded only"), &S.decodedOnly)) { plat::prefs().setI("pagerDecodedOnly", S.decodedOnly ? 1 : 0); savePrefs(a); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Hides tone-only pages and pages whose text could not be decoded."));
     flowNext(12 * gUi);
+    if (ImGui::Checkbox(tr("Hide automatic pages"), &S.hideAuto)) { plat::prefs().setI("pagerHideAuto", S.hideAuto ? 1 : 0); savePrefs(a); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Hides the capcodes that send the same text at a steady pace (test and keep-alive pages), as found in View > Insights > Pagers."));
+    flowNext(12 * gUi);
     if (ImGui::Checkbox(tr("Combine repeats"), &S.combine)) { plat::prefs().setI("pagerCombine", S.combine ? 1 : 0); savePrefs(a); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Networks send a page more than once. When a copy has code words the error correction cannot repair, the same words from an earlier copy of the same page are used, so the message comes out complete. Pages made this way are marked."));
+    flowNext(12 * gUi);
+    if (ImGui::Checkbox(tr("Repair text"), &S.smartRepair)) { plat::prefs().setI("pagerSmartRepair", S.smartRepair ? 1 : 0); plat::prefs().flush(); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("When a code word is lost, the missing characters are filled in from words this address sent before, but only when one reading clearly beats the others. Guessed characters are shown in colour and listed in the tooltip; characters that cannot be guessed stay as ?."));
+    flowNext(12 * gUi);
+    if (ImGui::Checkbox(tr("Read positions and fields"), &S.smartInsight)) { plat::prefs().setI("pagerSmartInsight", S.smartInsight ? 1 : 0); plat::prefs().flush(); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Finds coordinates (decimal, degrees and minutes, UTM, MGRS) and place names from pager_places.csv (name,lat,lon per line) in the data folder, names the parts each address always sends, and groups pages of several addresses about one event. All of it stays on this computer."));
+    if (S.smartInsight) {
+        flowNext(12 * gUi);
+        if (ImGui::Checkbox(tr("Include medical pages"), &S.smartMedical)) { plat::prefs().setI("pagerSmartMedical", S.smartMedical ? 1 : 0); plat::prefs().flush(); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Off by default for privacy: pages that look medical are not analysed, grouped or learned from."));
+    }
     flowNext(12 * gUi);
     ImGui::TextDisabled("%s", tr("Channel")); ImGui::SameLine(0, 5 * gUi);
     ImGui::SetNextItemWidth(80 * gUi);
@@ -272,7 +346,7 @@ void messageView(App& a) {
             const dect2::PagerMessage m = resolved(raw);
             if (!shows(m)) continue;
             if (wide && m.carrierId > 0) { char fb[24]; snprintf(fb, sizeof fb, "%.4f\t", radioCenterMhz(a) + m.carrierHz / 1e6); txt += fb; }
-            txt += clock(m.wallTime) + "\t" + dect2::pagerSpeedName(m.speed) + "\t" + std::to_string(m.address) + "\t" + aliasOf(m) + "\t" + fnText(m) + "\t" + typeText(m) + "\t" + oneLine(m.text) + "\n";
+            txt += clock(m.wallTime) + "\t" + dect2::pagerProtoName(m) + "\t" + std::to_string(m.address) + "\t" + aliasOf(m) + "\t" + fnText(m) + "\t" + typeText(m) + "\t" + oneLine(m.text) + "\n";
         }
         ImGui::SetClipboardText(txt.c_str());
     }
@@ -283,7 +357,7 @@ void messageView(App& a) {
             if (!shows(m)) continue;
             dect2::msglog::Row r;
             r.epoch = m.wallTime;
-            r.mode = dect2::pagerSpeedName(m.speed);
+            r.mode = dect2::pagerProtoName(m);
             r.freqHz = (m.carrierId > 0 ? radioCenterMhz(a) + m.carrierHz / 1e6 : a.freqMhz) * 1e6;
             r.address = std::to_string(m.address);
             if (const std::string nm = aliasOf(m); !nm.empty()) r.address += " " + nm;
@@ -311,13 +385,14 @@ void messageView(App& a) {
                 if (shown >= kShown) continue;
                 shown++;
                 ImGui::TableNextRow();
+                if (!S.kw.empty() && S.kw.match(m.text, aliasOf(m))) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(150, 110, 20, 90));   // a keyword match
                 if (wide) { ImGui::TableNextColumn(); wideCarrierCell(a, m.carrierId, m.carrierHz); }
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(clock(m.wallTime).c_str());
-                ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, pal::accent()); ImGui::TextUnformatted(dect2::pagerSpeedName(m.speed)); ImGui::PopStyleColor();
+                ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, pal::accent()); ImGui::TextUnformatted(dect2::pagerProtoName(m).c_str()); ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
                 ImGui::PushID((int)(m.serial * 31u + (unsigned)(int)std::lround(m.carrierHz / 100.0)));   // serials restart per carrier
-                ImGui::Text("%u", (unsigned)m.address);
-                if (ImGui::BeginPopupContextItem("##pgadr", ImGuiPopupFlags_MouseButtonRight)) {
+                if (m.selcall) ImGui::TextDisabled("-"); else ImGui::Text("%u", (unsigned)m.address);
+                if (!m.selcall && ImGui::BeginPopupContextItem("##pgadr", ImGuiPopupFlags_MouseButtonRight)) {
                     ImGui::TextDisabled("Address %u", (unsigned)m.address);
                     {   // a name for this capcode (#5): Enter keeps it, empty removes it
                         if (ImGui::IsWindowAppearing()) { snprintf(S.nameEdit, sizeof S.nameEdit, "%s", aliasOf(m).c_str()); }
@@ -361,7 +436,31 @@ void messageView(App& a) {
                 ImGui::TableNextColumn();
                 ImGui::PushFont(a.mono, 0);
                 if (m.type == dect2::kPagerTone) ImGui::TextDisabled("(tone only)");
+                else if (!m.repairedText.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, pal::accent());
+                    ImGui::TextWrapped("%s  [repaired]", m.repairedText.c_str());
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) {
+                        std::string marked;
+                        bool in = false;
+                        for (size_t k = 0; k < m.repairedText.size(); k++) {
+                            const bool g = k < m.guessMask.size() && m.guessMask[k] == 1;
+                            if (g && !in) marked += '[';
+                            if (!g && in) marked += ']';
+                            in = g;
+                            marked += m.repairedText[k];
+                        }
+                        if (in) marked += ']';
+                        ImGui::SetTooltip(tr("Characters in [ ] were guessed from earlier pages of this address; ? could not be recovered.\n\n%s"), marked.c_str());
+                    }
+                }
                 else ImGui::TextWrapped("%s%s%s", m.text.c_str(), m.damaged ? "  [incomplete]" : "", m.combined ? "  [combined]" : "");
+                if (!m.fields.empty() || m.hasPos || m.incident) {
+                    std::string info;
+                    for (const dect2::PagerField& f : m.fields) info += f.key + ": " + f.value + "   ";
+                    if (m.hasPos) { char b[96]; snprintf(b, sizeof b, "%.5f, %.5f (%s%s)", m.lat, m.lon, m.place.c_str(), m.posApprox ? ", approximate" : ""); info += b; }
+                    if (!info.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", info.c_str()); ImGui::PopTextWrapPos(); }
+                }
                 if (m.combined && ImGui::IsItemHovered()) ImGui::SetTooltip(tr("Repaired from %d copies of this page: code words lost in this copy were taken from an earlier one."), m.copies);
                 ImGui::PopFont();
                 if (!m.flex && !m.numText.empty() && ImGui::IsItemHovered()) {
@@ -394,6 +493,10 @@ void statsView(App& a) {
     if (!live(a)) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to see the counters"); ImGui::PopTextWrapPos(); return; }
     auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", k); kvColumn(130 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::Text(fmt, v...); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
     kv("last sync", "%s", t.lastSpeed >= 0 ? dect2::pagerSpeedName(t.lastSpeed) : "none yet");
+    for (size_t i = 0; i < t.incidents.size() && i < 8; i++) {
+        const dect2::PagerIncident& n = t.incidents[i];
+        kv(i == 0 ? tr("incidents") : "", "%d pages, %zu addresses: %.40s%s", n.count, n.capcodes.size(), n.title.c_str(), n.hasPos ? "  (position)" : "");
+    }
     kv("channel", "%.0f dB over the noise, carrier %+.0f Hz off", t.snrDb, t.cfoHz);
     kv("pages", "%llu", (unsigned long long)t.messagesTotal);
     ImGui::Spacing();
@@ -426,6 +529,7 @@ void statsView(App& a) {
 void capcodeView(App& a) {
     const dect2::PagerTelemetry& t = a.rx.pager;
     if (!live(a)) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to see the capcodes"); ImGui::PopTextWrapPos(); return; }
+    d40PagerGroupsCard();   // 4.0: capcode groups (app/d40)
     const std::vector<dect2::PagerHeard> rows = dect2::pagerHeardTable(messagesOf(t));
     const bool wide = wideActive(a);
     ImGui::PushTextWrapPos(0);
@@ -446,12 +550,25 @@ void capcodeView(App& a) {
         plat::prefs().setS("pagerIgnore", S.ignore); plat::prefs().flush();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Capcodes (RICs) whose pages are hidden from Messages, separated by spaces or commas; a range like 2000-2099. Works for POCSAG and FLEX. The pages are still received."));
+    {   // keyword alerts: one keyword per line, "re:" for a regular expression
+        ImGui::TextDisabled("%s", tr("Keywords"));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputTextMultiline("##pgkw", S.kwText, sizeof S.kwText, ImVec2(0, 70 * gUi))) saveKeywords();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("One keyword per line, any case. It is looked for in the message text and in the capcode name. Start a line with re: for a regular expression, for example re:structure fire|MVA. Matching pages are highlighted in Messages and shown in the ticker."));
+        if (ImGui::Checkbox(tr("Notify on a keyword match"), &S.kwNotify)) saveKeywords();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("A desktop notification for each matching new page (off by default)"));
+        ImGui::SameLine(0, 12 * gUi);
+        ImGui::BeginDisabled(!S.kwNotify);
+        if (ImGui::Checkbox(tr("Beep"), &S.kwSound)) saveKeywords();
+        ImGui::EndDisabled();
+        if (S.kwBad) { ImGui::SameLine(0, 12 * gUi); ImGui::TextColored(pal::badRed(), "%d %s", S.kwBad, tr("lines are not valid and were skipped")); }
+    }
     {   // capcode names (#5): a CSV with the columns capcode (or a range), name, category, protocol
         if (ImGui::Button(tr("Import names..."))) {
             const std::string p = openFileDialog();
             if (!p.empty()) {
                 std::ifstream f(p, std::ios::binary);
-                if (!f) S.aliasNote = tr("Could not read the file");
+                if (!f) { DIAG_DEBUG(650544, "The pager alias file %s could not be opened, so no aliases were imported.", p.c_str()); S.aliasNote = tr("Could not read the file"); }
                 else {
                     const std::string t((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
                     const dect2::PagerAliasImport r = S.aliases.importCsv(t);
@@ -466,7 +583,7 @@ void capcodeView(App& a) {
             const std::string p = saveFileDialog("pager-capcodes.csv");
             if (!p.empty()) {
                 std::ofstream f(p, std::ios::binary | std::ios::trunc);
-                if (f) { f << S.aliases.exportCsv(); S.aliasNote = std::string(tr("Saved")) + ": " + p; } else S.aliasNote = tr("Could not write the file");
+                if (f) { f << S.aliases.exportCsv(); S.aliasNote = std::string(tr("Saved")) + ": " + p; } else { DIAG(383284, "Writing the pager alias file %s failed (the folder may be read-only), so the aliases were not exported.", p.c_str()); S.aliasNote = tr("Could not write the file"); }
             }
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Save the capcode names as a CSV file (opens in a spreadsheet)."));
@@ -533,11 +650,70 @@ void capcodeView(App& a) {
 
 // ---------------------------------------------------------------- hooks
 
+void saveKeywords() {
+    S.kwBad = S.kw.parse(S.kwText);
+    std::string k = S.kwText;
+    for (auto& c : k) if (c == '\n') c = '\x1e';
+    plat::prefs().setS("pagerKeywords", k);
+    plat::prefs().setI("pagerKwNotify", S.kwNotify ? 1 : 0);
+    plat::prefs().setI("pagerKwSound", S.kwSound ? 1 : 0);
+    plat::prefs().flush();
+    S.kwPrimed = false;   // what is on the screen now is not new
+}
+
+// New pages that match a keyword: the ticker, and a notification when asked. At most three alerts a pass (a flood of pages is one more line).
+void keywordScan(App& a) {
+    if (S.kw.empty() || !live(a)) return;
+    const std::vector<dect2::PagerMessage>& all = messagesOf(a.rx.pager);
+    int alerts = 0, extra = 0;
+    for (const auto& raw : all) {
+        uint64_t& seen = S.kwSeen[raw.carrierId];
+        if (raw.serial <= seen) continue;
+        seen = raw.serial;
+        if (!S.kwPrimed) continue;
+        const dect2::PagerMessage m = resolved(raw);
+        const std::string nm = aliasOf(m);
+        const std::string* k = S.kw.match(m.text, nm);
+        if (!k) continue;
+        State::KwHit h; h.wall = m.wallTime; h.kw = *k; h.addr = std::to_string(m.address) + (nm.empty() ? "" : " " + nm); h.text = oneLine(m.text);
+        S.kwHits.push_back(h);
+        while (S.kwHits.size() > 50) S.kwHits.pop_front();
+        if (S.kwNotify) {
+            if (alerts < 3) { alerts++; automationapp::alertNow(a, std::string(tr("Pager keyword")) + ": " + h.kw, h.addr + "  " + h.text.substr(0, 160), S.kwSound && alerts == 1); }
+            else extra++;
+        }
+    }
+    S.kwPrimed = true;
+    if (extra) automationapp::alertNow(a, tr("Pager keyword"), std::to_string(extra) + " " + tr("more matching pages"), false);
+}
+
 void tick(App& a) {
     loadRead();
+    keywordScan(a);
     const int m = baudMask();
+    {   // both protocols from either entry; otherwise the entry's own (a mode switch resets the engine to the entry)
+        const SubMode* sm = curSub(a);
+        const int want = S.both || !sm ? 3 : sm->decoders;
+        if (a.engine.pager().protocols() != want) a.engine.pager().setProtocols(want);
+    }
     if ((int)a.pagerNarrow != S.pushedNarrow) { a.engine.pager().setNarrowChannel(a.pagerNarrow); S.pushedNarrow = a.pagerNarrow; }
     if (m != S.pushedBaud) { a.engine.pager().setPocsagBauds(m); S.pushedBaud = m; }
+    if ((int)S.selcall != S.pushedSelcall) { a.engine.pager().setSelcall(S.selcall); S.pushedSelcall = S.selcall; }
+    if (S.pushedPlaces != a.engine.running()) {   // the place list is read each time the receiver starts
+        S.pushedPlaces = a.engine.running();
+        if (S.pushedPlaces) {
+            std::ifstream f(plat::dataDir() + "/pager_places.csv");
+            std::stringstream ss; ss << f.rdbuf();
+            a.engine.pager().setPlaces(ss.str());
+        }
+    }
+    {
+        const int sm = (S.smartRepair ? 1 : 0) | (S.smartInsight ? 2 : 0) | (S.smartMedical ? 4 : 0);
+        if (sm != S.pushedSmart) {
+            a.engine.pager().setSmartRepair(S.smartRepair); a.engine.pager().setSmartInsight(S.smartInsight); a.engine.pager().setAnalyseMedical(S.smartMedical);
+            S.pushedSmart = sm;
+        }
+    }
     if ((int)S.combine != S.pushedCombine) { a.engine.pager().setCombineCopies(S.combine); S.pushedCombine = S.combine; }
 }
 
@@ -577,7 +753,96 @@ void list(App& a) {
     ImGui::EndTable();
 }
 
+// "Find pagers": the known pager frequencies of the region in turn, 20 s each, until a page is decoded. Tuning by hand ends it.
+struct FindPagers { std::unique_ptr<dect2::ease::FreqHunt> h; double lastMhz = 0, backMhz = 0; std::string note; double noDecodeSince = -1; uint64_t seen = 0; };
+FindPagers F;
+
+void findPagersRow(App& a) {
+    uint64_t msgs = 0;
+    for (const auto& m : messagesOf(a.rx.pager)) msgs = std::max(msgs, m.serial);   // the serial grows per message and never restarts
+    if (!F.h) {
+        if (ImGui::SmallButton(tr("Find pagers"))) {
+            std::vector<double> mhz;
+            const std::string c = plat::prefs().getS("locCountry", "");
+            for (const auto& e : dect2::builtinFrequencies()) if ((e.mode == "pocsag" || e.mode == "flex") && dect2::ease::freqRegionApplies(e.region, c)) mhz.push_back((double)e.hz / 1e6);
+            if (mhz.empty()) F.note = tr("No known pager frequencies for your region.");
+            else {
+                F.backMhz = a.freqMhz; F.lastMhz = 0; F.note.clear();
+                F.h = std::make_unique<dect2::ease::FreqHunt>(mhz, 20.0);
+                if (!a.engine.running()) startReceiver(a);
+            }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Listens 20 s on each known pager frequency of your region and stops where a page is decoded."));
+        if (!F.note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", F.note.c_str()); }
+    } else {
+        bool stop = ImGui::SmallButton(tr("Stop finding"));
+        if (F.lastMhz > 0 && std::fabs(a.freqMhz - F.lastMhz) > 0.0001) { stop = true; F.note = tr("Stopped: you tuned by hand."); F.backMhz = 0; }
+        else if (!a.engine.running() && F.lastMhz > 0) { stop = true; F.note = tr("Stopped: the receiver was stopped."); F.backMhz = 0; }
+        if (!stop && a.engine.running()) {
+            const int i = F.h->update(ImGui::GetTime(), msgs);
+            const double m = F.h->mhz(i);
+            if (F.h->found()) { F.note = tr("Found pages here."); F.h.reset(); F.backMhz = 0; }
+            else if (F.h->finished()) { F.note = tr("No pages heard on the known frequencies."); F.h.reset(); stop = true; }
+            else { if (std::fabs(a.freqMhz - m) > 0.0001) tuneFreq(a, m); F.lastMhz = a.freqMhz; ImGui::SameLine(); ImGui::TextDisabled(tr("Listening on %.4f MHz (%d of %d)."), m, i + 1, F.h->size()); }
+        }
+        if (stop) { F.h.reset(); if (F.backMhz > 0) tuneFreq(a, F.backMhz); F.backMhz = 0; }
+    }
+    // the first time a wide radio has heard nothing for half a minute: offer Whole span, once
+    plat::Prefs& p = plat::prefs();
+    const bool wideRadio = a.devIdx >= 0 && a.devIdx < (int)a.devices.size() && a.devices[a.devIdx].isRadio() && a.devices[a.devIdx].maxRateHz >= 8e6;
+    if (msgs != F.seen || !live(a)) { F.seen = msgs; F.noDecodeSince = ImGui::GetTime(); }
+    if (F.noDecodeSince < 0) F.noDecodeSince = ImGui::GetTime();
+    if (wideRadio && !wideActive(a) && modeSupportsWide(a.family) && !F.h && !p.has("pagerWideOffered") && ImGui::GetTime() - F.noDecodeSince > 30.0 && msgs == 0) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Nothing heard yet. Your radio is wide enough to decode every pager carrier in its band at once."));
+        ImGui::PopTextWrapPos();
+        if (ImGui::SmallButton(tr("Turn on Whole span"))) { a.wideDecode = true; setWideFam(a, a.family, true); savePrefs(a); p.setB("pagerWideOffered", true); }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("No thanks##pgwide"))) p.setB("pagerWideOffered", true);
+    }
+}
+
+// "Scan the span" (issue #269): lists the pager carriers of the whole capture with the speed they send and how many pages each gave; click to tune.
+void spanScanRows(App& a) {
+    if (!a.engine.running() || a.rx.standard != a.family + 1) return;
+    const bool wide = a.rx.pager.inputRate >= 400e3;
+    if (!wide && !a.engine.pagerFindOn()) return;   // a narrow radio sees one channel: nothing to scan
+    const bool on = a.engine.pagerFindOn();
+    if (!on) {
+        if (ImGui::SmallButton(tr("Scan the span for pagers"))) a.engine.setPagerFind(true);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Looks at every 25 kHz channel of the capture for a minute and a half and lists those that send POCSAG or FLEX with their speed and page count. Click a row to tune to it."));
+        return;
+    }
+    const bool done = a.engine.pagerFindDone();
+    if (ImGui::SmallButton(done ? tr("Scan again##pgscan") : tr("Stop scanning##pgscan"))) { a.engine.setPagerFind(done); return; }   // finished: scan again; running: stop
+    ImGui::SameLine();
+    ImGui::TextDisabled(done ? tr("Scan finished (%.0f s of signal).") : tr("Scanning the span: %.0f s of signal. Pages come in bursts, so give it a minute."), a.engine.pagerFindSeconds());
+    const auto rows = a.engine.pagerFindRows();
+    if (rows.empty()) return;
+    if (!ImGui::BeginTable("##pgscan", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY, ImVec2(0, std::min<float>(200.f, 26.f + 20.f * (float)rows.size()) * gUi))) return;
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn(tr("Frequency MHz")); ImGui::TableSetupColumn(tr("Speed")); ImGui::TableSetupColumn(tr("Pages")); ImGui::TableSetupColumn("SNR dB"); ImGui::TableSetupColumn("");
+    ImGui::TableHeadersRow();
+    for (const auto& c : rows) {
+        const double mhz = c.absHz > 0 ? c.absHz / 1e6 : radioCenterMhz(a) + c.hz / 1e6;
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        char b[40]; snprintf(b, sizeof b, "%.4f##pgs%.0f", mhz, c.hz);
+        if (ImGui::Selectable(b, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) { a.engine.setPagerFind(false); tuneFreq(a, mhz); }   // the radio moves: the list would restart, so the scan ends here
+        ImGui::TableNextColumn(); if (c.speed >= 0) ImGui::TextUnformatted(dect2::pagerSpeedName(c.speed)); else ImGui::TextDisabled("%s", tr("no pages yet"));
+        ImGui::TableNextColumn(); if (c.pages) ImGui::Text("%llu", (unsigned long long)c.pages); else ImGui::TextDisabled("0");
+        ImGui::TableNextColumn(); ImGui::Text("%.0f", c.snrDb);
+        ImGui::TableNextColumn();
+        ImGui::PushID((int)c.hz);
+        if (ImGui::SmallButton(tr("Tune"))) { a.engine.setPagerFind(false); tuneFreq(a, mhz); }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
 void receiver(App& a) {
+    findPagersRow(a);
+    spanScanRows(a);
     wideCarriersTable(a, 0);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     const dect2::PagerTelemetry& t = a.rx.pager;
@@ -628,6 +893,17 @@ void summary(const App& a, std::string& l1, std::string& l2) {
 
 } // namespace
 
+// Simple view: the messages, the capcodes and the statistics side by side
+static void command(App& a) {
+    loadRead();
+    lampRow(a);
+    ImGui::Spacing();
+    kit::modeHeader({23, "Pagers", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##pgmsgs", tr("Messages"), [&a] { messageView(a); }, 1.8f, 260.f},
+                      {"##pgcap", tr("Capcodes"), [&a] { capcodeView(a); }, 1.f, 220.f},
+                      {"##pgstat", tr("Statistics"), [&a] { statsView(a); }, 0.8f, 200.f}}, 320.f);
+}
+
 extern const ModeUi kPagerUi;
 const ModeUi kPagerUi = {
     .sideTitle = "MESSAGES",
@@ -639,4 +915,5 @@ const ModeUi kPagerUi = {
     .status = status,
     .summary = summary,
     .tick = tick,
+    .command = command,
 };

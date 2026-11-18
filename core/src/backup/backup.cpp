@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/backup/backup.h"
 #include "dect2/common/u8file.h"
 #include "dect2/mesh/mesh_crypto.h"
@@ -146,18 +149,19 @@ std::vector<PrefItem> selectPrefs(const std::vector<PrefItem>& in, Mode mode, co
 // not known at all is treated like a confirm key. Update this table when a setting is added (the test checks that every key of the
 // table is classified and that unknown keys are never silently applied).
 static const char* const kRestoreSafe[] = {
-    "ac.adv", "acarsChans", "acarsThr", "acarsZoom", "adsbLat", "adsbLon", "adsbMap", "adsbSources", "adsbSpeedUnit", "adsbSrcAny", "adsbUnits",
+    "ac.adv", "adslZoom", "acarsChans", "acarsThr", "acarsZoom", "adsbLat", "adsbLon", "adsbMap", "adsbSources", "adsbSpeedUnit", "adsbSrcAny", "adsbUnits",
     "adsbWinds", "adsbZoom", "aeroSat", "aeroSnrSound", "aeroZoom", "airChans", "airHang", "airHold", "airNr", "airNrStr", "airOnlyActive",
     "airScan", "airSquelch", "aisZoom", "aleListen", "antWheelMm", "ardopListen", "astroCustom", "astroDeg", "astroFft", "astroInt", "astroLine",
-    "astroXVel", "astroY", "atvDeint", "audioRecFmt", "audioRecGate", "audioRecKeep", "audioRecSplit", "bleHop", "bleHopSec", "bletrkMin",
+    "astroXVel", "astroY", "atvAspect0", "atvAspect1", "atvAspect2", "atvAspect3", "atvDeint", "audioRecFmt", "audioRecGate", "audioRecKeep", "audioRecSplit", "bleHop", "bleHopSec", "bletrkMin",
     "bletrkNear", "capBg", "capLines", "capModes", "capOn", "capSave", "capShow", "capSize", "capSource", "capTop", "cdDwell", "cdScan", "clipAudio",
     "clipAudioSec", "clipRows", "clipWf", "clipWfMB", "clipWfMin", "cquamMode", "cquamSquelch", "ctlKeys", "ctlNotch", "ctlStep", "ctlWhSpec", "ctlWhWf", "cquamWidth", "cubesatCcsdsLen", "cubesatKiss",
     "cubesatSats", "cwPitch", "cwSidetone", "cwThreshold", "dabAnnMask", "dabAnnOn", "dabFollow", "dabRecFmt", "dabRecLog", "dabTiiCountry",
     "devName", "dfCal", "dfCompass", "dfGeo", "dfLock", "dfMethod", "dfMhz", "dfN", "dfOrient", "dfShare", "dfSpacing", "dfSrc", "dfUseCal",
-    "djiDecode", "dpmrScan", "dstarZoom", "dtmbThreads", "dvbcAnnexC", "dvbcQam", "dvbcSr", "dvbsLnbPol", "dvbsSr", "dvbsStd", "dvbsTxPol", "dwFmt",
+    "djiDecode", "dpmrScan", "dstarZoom", "dtmbThreads", "dvbcAnnexC", "dvbcQam", "dvbcSr", "dvbsLnbPol", "dvbsSr", "dvbsStd", "dvbsTxPol", "dwFmt", "espnowBadFcs", "espnowCh14", "espnowChan", "espnowDwellMs",
     "eczasAudio", "eczasTone", "elektroAutoSave", "elektroCraft", "elektroFilter", "elektroLink", "family", "faxListen", "flarmZoom", "fmSaved",
-    "fmScanFullRds", "fmScanHiMhz", "fmScanLoMhz", "fmStations", "fpvDeint", "fpvSub", "freqFav", "freqTab", "ftxLineColour", "ftxLineDone",
-    "ftxLineFade", "ftxLineLabels", "ftxLineMin", "ftxLineSel", "ftxLines", "ftxZoom", "galleryCapMb", "genAfHp", "genAfLp", "genAfNotch", "genAgc", "genAmAuto", "genAmDet", "genAmEnh", "genAmNr",
+    "fmScanFullRds", "fmScanHiMhz", "fmScanLoMhz", "fmStations", "fpvAspect", "fpvDeint", "fpvSub", "freqFav", "freqTab", "ftxLineColour", "ftxLineDone",
+    "sd3Linkgoesgrb", "sd3AutoLinkgoesgrb", "sd3Savegoesgrb", "sd3Linkgoesgvar", "sd3AutoLinkgoesgvar", "sd3Savegoesgvar", "sd3Linkgoescda", "sd3AutoLinkgoescda", "sd3Savegoescda", "sd3Linkgoesmdl", "sd3AutoLinkgoesmdl", "sd3Savegoesmdl", "sd3Linkgk2auhrit", "sd3AutoLinkgk2auhrit", "sd3Savegk2auhrit", "sd3Linkgk2acdas", "sd3AutoLinkgk2acdas", "sd3Savegk2acdas", "sd3Linksband", "sd3AutoLinksband", "sd3Savesband", "sd3Linkgeoscan", "sd3AutoLinkgeoscan", "sd3Savegeoscan", "sd3Linklucky7", "sd3AutoLinklucky7", "sd3Savelucky7", "sd3Linkspino", "sd3AutoLinkspino", "sd3Savespino", "sd3Linkerminaz", "sd3AutoLinkerminaz", "sd3Saveerminaz",
+    "wxViewnoaaapt", "wxAutoSavenoaaapt", "wxViewnoaahrpt", "wxAutoSavenoaahrpt", "wxViewnoaagac", "wxAutoSavenoaagac", "wxViewnoaadsb", "wxAutoSavenoaadsb", "wxViewmeteorhrpt", "wxAutoSavemeteorhrpt", "wxViewelektrordas", "wxAutoSaveelektrordas", "wxViewarktikardas", "wxAutoSavearktikardas", "wxViewarktikaggak", "wxAutoSavearktikaggak", "wxViewawsl", "wxAutoSaveawsl", "ftxLineFade", "ftxLineLabels", "ftxLineMin", "ftxLineSel", "ftxLines", "ftxZoom", "fy3aPre", "fy3aRs", "fy3aView", "fy3mPre", "fy3mRs", "fy3mView", "galleryCapMb", "genAfHp", "genAfLp", "genAfNotch", "genAgc", "genAmAuto", "genAmDet", "genAmEnh", "genAmNr",
     "genDeNfm", "genDeWfm", "genDemod", "genFlac", "genGain", "genMp3", "genNb", "genNbDb", "genOffset", "genPitch", "genPreRoll", "genSqAuto", "genSqDb", "genSqOn",
     "genTxHang", "genTxIq", "gnssElMask", "gnssZoom", "goesAutoSave", "goesFilter", "goesSaveCadu", "ham.audioOut", "ham.call", "ham.cwWpm",
     "ham.grid", "ham.licence", "ham.name", "ham.qth", "ham.rig", "ham.txHz", "hdrAm9k", "hdrLastAm", "hdrLastFm", "hfbClock", "hfbDwell", "hfbHop",
@@ -189,8 +193,11 @@ static const char* const kRestoreSafe[] = {
     "userAccentOn", "vdl2Chans", "vdl2Zoom", "vorDb", "vorDwell", "vorFixA", "vorFixB", "vorIdFilter", "vorScan", "vorZoom", "wbAuto", "wbBaud",
     "wbCmap", "wbDbMax", "wbDbMin", "wbFft", "wbKind", "wbOvl", "wbWin", "wfMax", "wfMin", "wfRate", "wideMaskHi", "wideMaskLo", "wifiBand",
     "wifiDomain", "wifiDwellMs", "wifiHop", "wifiPsc", "workspaces", "wsBand", "wsRegion", "zbDwell", "zbScan", "zwRegion",
+    // 4.0 Settings (docs/SETTINGS-4.0.md)
+    "startFreqMode", "startFreqMhz", "startFamily", "startSub", "autoStartRx", "confirmExit", "sessionRestore", "specDefLo", "specDefHi", "dbKeyStep", "aclDefAgc", "aclDefSq", "aclDefSqDb", "audioDevDefault", "recNamePattern", "recSplitMb", "recMinFreeMb", "notifySystem", "notifySound", "notifyBanner", "notifyBannerSec", "notifyQuiet", "notifyQuietFrom", "notifyQuietTo", "settingsProfile",
 };
 static const char* const kRestoreConfirm[] = {
+    "mapTileUrl",   // 4.0: where the map tiles are fetched from (a network address)
     "adsbGpsJam", "aleNets", "antAnyNet", "apiLan", "apiOn", "apiPort", "apiToken", "astroTsys", "automationAllowRun", "backup.auto", "backup.keep",
     "backup.last", "clockSyncSource", "displayServer", "feedAcarsHost", "feedAcarsPort", "feedAisHost", "feedAisPort", "feedAprsCall",
     "feedAprsPass", "feedAprsServer", "feedAprsServerPort", "feedBeastPort", "feedBleHost", "feedBlePort", "feedGnssHost", "feedGnssPort",

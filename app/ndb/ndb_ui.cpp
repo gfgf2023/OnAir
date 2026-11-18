@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NDB screens: the Morse ident in large type, the tone it was keyed with, the speed, and the idents read so far.
 // The listener hears the keyed tone. HF beacons stay on their own screen.
 #include "app.h"
@@ -44,6 +47,26 @@ void tick(App& a) {
     r.setListen(S.listen);
     r.setVolume(a.volume);
     r.setMuted(a.muted);
+}
+
+// Every beacon in the captured band, without retuning: the receiver runs one decoder per carrier
+void censusTable(App& a) {
+    const dect2::NdbTelemetry& t = a.rx.ndb;
+    if (t.census.empty()) return;
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", tr("Beacons in the band"));
+    if (!ImGui::BeginTable("##ndbc", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) return;
+    ImGui::TableSetupColumn(tr("kHz")); ImGui::TableSetupColumn(tr("Ident")); ImGui::TableSetupColumn(tr("Tone")); ImGui::TableSetupColumn(tr("SNR")); ImGui::TableSetupColumn(tr("WPM"));
+    ImGui::TableHeadersRow();
+    for (const auto& r : t.census) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn(); ImGui::Text("%.1f", a.freqMhz * 1000.0 + r.offsetHz / 1000.0);
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(r.ident.empty() ? "-" : r.ident.c_str());
+        ImGui::TableNextColumn(); if (r.toneHz > 0) ImGui::Text("%d", r.toneHz); else ImGui::TextDisabled(r.toneHz < 0 ? "keyed" : "-");
+        ImGui::TableNextColumn(); ImGui::Text("%.0f", r.snrDb);
+        ImGui::TableNextColumn(); if (r.wpm > 0) ImGui::Text("%.0f", r.wpm); else ImGui::TextDisabled("-");
+    }
+    ImGui::EndTable();
 }
 
 void tab(App& a) {
@@ -105,6 +128,7 @@ void tab(App& a) {
                         "A mark longer than about a second is the long dash between idents. The speed follows the same Morse timing as CW (5 to 50 WPM). "
                         "HF propagation beacons are the HF beacons mode, not this one.");
     ImGui::PopTextWrapPos();
+    if (on) censusTable(a);
 }
 
 void list(App& a) {

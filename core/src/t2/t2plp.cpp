@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/common/stage_prof.h"
 #include "dect2/common/thread_name.h"
 #include "dect2/t2/t2plp.h"
@@ -32,6 +35,7 @@ void parallelFor(int n, int threads, F fn) {
 PlpResult PlpDecoder::decodeNow(const PlpJob& job, int threads, bool useGpu, const std::atomic<int>* backlog) {
     auto t0 = std::chrono::steady_clock::now();
     PlpResult res;
+    res.commonPlp = job.commonPlp;
     res.frameNo = job.frameNo; res.t2Frame = job.t2Frame; res.numT2Frames = job.numT2Frames; res.frameInterval = job.frameInterval; res.frameSec = job.frameSec; res.plpId = job.plpId; res.fec = job.fec;
     FecDims d = fecDims(job.fec);
     if (!d.ok || job.numBlocks <= 0 || (int)job.cells.size() < job.numBlocks * d.cellsPerBlock) return res;
@@ -234,6 +238,7 @@ PlpDecoder::PlpDecoder(int threads) {
 PlpDecoder::~PlpDecoder() {
     stop_ = true;
     cv_.notify_all();
+    idle_.notify_all();   // a blocking submit() waits on it
     if (th_.joinable()) th_.join();
 }
 
@@ -241,7 +246,8 @@ bool PlpDecoder::submit(PlpJob&& job) {
     std::unique_lock<std::mutex> lk(mu_);
     static const bool bench = getenv("DECT2_NOPACE") != nullptr;   // benchmarks never drop a frame: wait for the decoder instead
     if (bench) idle_.wait(lk, [&] { return jobs_.empty() && !busy_; });
-    if (jobs_.size() >= 3) { dropped_++; return false; }   // a slow stretch is absorbed by the queue; only a real backlog drops a frame
+    else if (blocking_) idle_.wait(lk, [&] { return jobs_.size() < 6 || stop_; });
+    if (jobs_.size() >= 6) { dropped_++; return false; }   // a slow stretch is absorbed by the queue; only a real backlog drops a frame
     backlog_ = (int)jobs_.size() + 1;
     jobs_.push_back(std::move(job));
     cv_.notify_one();

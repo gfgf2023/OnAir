@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The KAWS mode (family 133, active standard 134, engine standard 135, telemetry slot 136) in the group "Kris custom modes": the mode-table row, the unique
 // family numbers, the modeui case, the receive panel, the transmit options, the engine wiring and the transmit registration are in the sources. Text checks
 // only, so it builds without the app.
@@ -40,8 +43,13 @@ int main() {
             const std::string num = line.substr(5, comma - 5);
             if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos) continue;
             const int fam = std::stoi(num);
+            {   // a protocol entry (a subId after the accent colour) shares its family on purpose: test_mode_numbers checks (family, subId)
+                const size_t acc = line.rfind("ImVec4(");
+                const size_t close = acc == std::string::npos ? acc : line.find(')', acc);
+                if (close != std::string::npos && line.compare(close + 1, 3, ", \"") == 0) continue;
+            }
             rows++;
-            if (fam >= 122 && ++seen[fam] > 1) { std::printf("FAIL: family %d appears twice in the mode table\n", fam); fails++; }
+            if (fam >= 122 && fam != 360 && ++seen[fam] > 1) { std::printf("FAIL: family %d appears twice in the mode table\n", fam); fails++; }
         }
         if (rows < 100) { std::printf("FAIL: only %d mode rows parsed\n", rows); fails++; }
     }
@@ -103,7 +111,10 @@ int main() {
     need("app/panels/tx_ui.cpp", txui, "kaws.profile");
     need("app/panels/tx_ui.cpp", txui, "makeIqFileTxSink(fc)");
     const std::string pay = readSource("app/panels/tx_payload_ui.cpp");
-    need("app/panels/tx_payload_ui.cpp", pay, "case TxPayloadKind::Kaws:");
+    const std::string txpar = readSource("core/src/tx/tx_params.cpp");
+    need("core/src/tx/tx_params.cpp", txpar, "case TxPayloadKind::Kaws:");   // 4.0: the KA* panels are custom rows of the parameter table
+    need("core/src/tx/tx_params.cpp", txpar, "custom(\"kaws.panel\"");
+    need("app/panels/tx_payload_ui.cpp", pay, "k == \"kaws.panel\") kawsPanel(s, running);");
 
     if (fails == 0) std::printf("kaws mode: registered, panel strings, wiring and transmit present\n");
     return fails == 0 ? 0 : 1;

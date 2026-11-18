@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ISM sensors receiver over the air (synthetic): the test scenes through the receiver with the faults of tests/common/impair.h and the ones of
 // the band itself. Every reading must be one of the test devices with its right values (a wrong reading is a failure in every case);
 // the clean cases must hear every device.
@@ -42,6 +45,7 @@ static Result run(const std::vector<cf32>& x) {
     for (size_t i = 0; i < x.size(); i += chunk) rx.feed(x.data() + i, std::min(chunk, x.size() - i));
     std::vector<cf32> z(65536, cf32(0, 0));   // let the last burst end
     rx.feed(z.data(), z.size());
+    rx.flush();
     rx.telemetry(r.tel, 0);
     if (getenv("ISM_RAW"))
         for (const auto& w : r.tel.raws) {

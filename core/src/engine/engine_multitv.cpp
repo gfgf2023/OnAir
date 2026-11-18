@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The engine's side of multi-channel TV (multitv.h): when it is asked for and the capture holds more than one channel of the chosen width, the
 // DVB-T / DVB-T2 receiver is replaced by one receiver per occupied channel; the selected channel's packets go the way the single receiver's did.
 #include "dect2/engine/engine.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <thread>
 
@@ -67,7 +71,7 @@ void Engine::syncMultiTv() {
     mtvKeyOn_ = on; mtvKeyStd_ = sm; mtvKeyMax_ = mx; mtvKeyGrid_ = grid; mtvKeyRate_ = rate; mtvKeyBw_ = bw;
     std::string note;
     bool want = on;
-    if (on && !multiChannelSupported(sm)) { want = false; note = "Whole span works with DVB-T2, DVB-T or DVB-S/S2 selected (not automatic detection)"; }
+    if (on && !multiChannelSupported(sm)) { want = false; note = "Whole span works with a TV standard selected (not automatic detection)"; }
     else if (on && sm == 8 && !wholeSpanFits(sm, rate, bw, grid)) { want = false; note = "the capture is too narrow for Whole span: DVB-S/S2 needs at least 3 Msps"; }
     else if (on && sm != 8 && slotsInSpan(rate, bw, grid) < 2) {
         want = false;
@@ -75,10 +79,11 @@ void Engine::syncMultiTv() {
         snprintf(b, sizeof b, "the capture (%.2f Msps) holds only one %g MHz channel: capture at least %g MHz for two %g MHz channels", rate / 1e6, bw, 2 * bw, bw);
         note = b;
     }
+    if (on && !want) DIAG(299192, "Whole span (multi-channel TV) cannot run with the current settings (%s), so only one channel is decoded.", note.c_str());
     { std::lock_guard<std::mutex> lk(mtvNoteMu_); mtvNote_ = note; }
     if (!want) {
         if (!wasActive) return;
-        mtvActive_ = false; mtvSat_ = false;
+        mtvActive_ = false; mtvSat_ = false; mtvOther_ = -1;
         { std::shared_ptr<MultiTv> m; { std::lock_guard<std::mutex> lk(mtvMu_); m.swap(mtv_); } }
         player_.select(-1);
         resetReceiver(activeStd_.load());
@@ -89,6 +94,7 @@ void Engine::syncMultiTv() {
     MultiTvOptions o;
     o.dvbt = sm == 2;
     o.sat = sm == 8;
+    o.otherStd = (sm == 3 || sm == 5 || sm == 6 || sm == 9 || sm == 42) ? sm - 1 : -1;
     if (o.sat) o.minRsHz = std::max(1e6, dvbsMinAutoSymbolRate(rate));
     o.spanRate = rate;
     o.widthMhz = bw;
@@ -96,7 +102,7 @@ void Engine::syncMultiTv() {
     o.autoGrid = grid == 0;
     o.gridOffsetHz = grid == 2 ? 0.5 * bw * 1e6 : 0;
     o.blocking = !(src_ && src_->realtimeHardware());
-    if (!m->configure(o)) { std::lock_guard<std::mutex> lk(mtvNoteMu_); mtvNote_ = "the capture is too narrow for multi-channel TV"; return; }
+    if (!m->configure(o)) { DIAG(444352, "The multi-channel TV decoder could not be set up for a %.2f Msps capture and %.4g MHz channels, so only one channel is decoded.", rate / 1e6, bw); std::lock_guard<std::mutex> lk(mtvNoteMu_); mtvNote_ = "the capture is too narrow for multi-channel TV"; return; }
     m->setSink([this](int, const uint8_t* pk, size_t n, double secs, const TsSnapshot& snap) { onMultiPackets(pk, n, secs, snap); });
     player_.select(-1);
     {
@@ -111,10 +117,49 @@ void Engine::syncMultiTv() {
     }
     old.reset();
     mtvSat_ = o.sat;
+    mtvOther_ = o.otherStd;
     mtvActive_ = true;
     char b[200];
     if (o.sat) snprintf(b, sizeof b, "whole span: DVB-S/S2 transponders, up to %d decoded at once from a %.2f Msps capture", o.maxChannels, rate / 1e6);
     else snprintf(b, sizeof b, "multi-channel TV: %s, %g MHz channels, up to %d at once from a %.2f Msps capture", o.dvbt ? "DVB-T" : "DVB-T2", bw, o.maxChannels, rate / 1e6);
+    log(b);
+}
+
+// "Decode everything in view" (setWideAll): configures the session for the capture on the analysis thread; a new rate or centre starts the search again
+void Engine::syncWideAll() {
+    const bool on = wideAllOn_.load();
+    const double rate = rate_.load(), centre = wideAllCentre_.load();
+    if (on == wideAllKeyOn_ && (!on || (rate == wideAllKeyRate_ && centre == wideAllKeyCentre_))) { if (on) wideAll_.setBudget(wideAllBudget_.load()); return; }
+    wideAllKeyOn_ = on; wideAllKeyRate_ = rate; wideAllKeyCentre_ = centre;
+    if (!on) { wideAll_.reset(); return; }
+    WsConfig c;
+    c.spanRate = rate; c.centerHz = centre; c.cpuBudget = wideAllBudget_.load();
+    c.blockingTv = !(src_ && src_->realtimeHardware());
+    wideAll_.configure(c);
+    wideAll_.setAudioSink([this](const float* st, size_t frames) {
+        if (!vfoSoundOn_.load()) return;
+        std::lock_guard<std::mutex> lk(vfoOutMu_);
+        if (!vfoOut_) { vfoOut_.reset(new AudioOut()); if (!vfoOut_->start(VfoBank::kAudioRate)) { DIAG(766332, "The sound output for the VFO channels did not open, so the VFO channels are silent."); vfoOut_.reset(); return; } }
+        vfoOut_->write(st, (int)frames);
+    });
+    char b[160];
+    snprintf(b, sizeof b, "decode everything in view: %.2f Msps capture, centre %.4f MHz", rate / 1e6, centre / 1e6);
+    log(b);
+}
+
+// Smart CubeSat: configured on the analysis thread for the capture; a new rate or centre starts the search again
+void Engine::syncSmartCube() {
+    const bool on = smartCubeOn_.load();
+    const double rate = rate_.load(), centre = wideAllCentre_.load();
+    if (on == smartKeyOn_ && (!on || (rate == smartKeyRate_ && centre == smartKeyCentre_))) return;
+    smartKeyOn_ = on; smartKeyRate_ = rate; smartKeyCentre_ = centre;
+    if (!on) { smartCube_.reset(); return; }
+    smartCube_.configure(rate);
+    smartCube_.setCenterHz(lastDev_.kind != DeviceInfo::File ? centre : 0.0);
+    smartCube_.setWallClock(lastDev_.kind != DeviceInfo::File);
+    smartCube_.setLogCallback([this](const std::string& s) { log(s); });
+    char b[160];
+    snprintf(b, sizeof b, "Smart CubeSat: %.2f Msps capture, centre %.4f MHz", rate / 1e6, centre / 1e6);
     log(b);
 }
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B receiver telemetry, shared by the receiver and the UI.
 #pragma once
 #include "dect2/common/ring.h"
@@ -44,6 +47,8 @@ struct AdsbAircraft {
     bool hasRa = false; unsigned raAra = 0, raRac = 0; bool raTerminated = false; uint32_t raThreat = 0; float raAgeSec = 0;
     int subnetVersion = -1; bool acasRa = false; uint32_t gicbMask = 0;   // 1,0 and 1,7 capability
     int adsbVersion = -1; int nacp = -1;                     // operational status
+    int nacv = -1, lengthCode = -1;                         // velocity quality (TC 19), surface length/width code (TC 31)
+    int capAcas = -1, cap1090In = -1, capUatIn = -1, raActive = -1, identOn = -1, atcSvc = -1;   // operational status: -1 unknown, 0/1
     int sil = -1; int nic = -1;                              // source integrity level (operational status); NIC from the airborne position type code (supplement bits not applied)
     uint8_t srcId = 0;               // the source that last updated this aircraft: 0 this receiver, 1.. the feeds from other receivers (AdsbTelemetry::sources)
     uint32_t messages = 0;           // messages received from this address
@@ -56,6 +61,23 @@ struct AdsbAircraft {
     bool tisb = false;               // seen in DF18 (TIS-B / ADS-R / non-transponder)
     std::vector<AdsbTrackPoint> track;   // recent positions, oldest first (for the map)
     int cprHave = 0;                 // bit 0: even CPR in the last 15 s, bit 1: odd (table Fix column when there is still no lat/lon)
+    int trust = -1;                  // adsb_trust.h: 0 - 100, under 80 doubtful, under 50 likely a ghost or a spoof; -1 too little seen
+    unsigned trustFlags = 0;
+    std::string trustWhy;            // the reasons in plain text
+};
+
+// One ACAS resolution advisory: who manoeuvred because of whom (a line on the map, a row in the conflict timeline)
+struct AdsbRaEvent {
+    double startSec = 0, lastSec = 0;
+    uint32_t icao = 0, threat = 0;   // threat 0: the advisory does not name it by address
+    std::string callsign, threatCallsign;
+    unsigned ara = 0, rac = 0;       // the last one
+    bool terminated = false, multipleThreats = false;
+    int updates = 0;
+    bool hasAlt = false; int altFt = 0;
+    bool hasThreatAlt = false; int threatAltFt = 0;
+    bool hasSeparation = false; float separationNm = 0;   // when the advisory was last heard, both positions known
+    std::string via;                 // "Comm-B", "air-air" (DF16) or "squitter" (TC 28)
 };
 
 // Range-ring statistics (per session; reset button; saved with the results). Ranges need a reference position and a confirmed (global) position.
@@ -149,6 +171,9 @@ struct AdsbTelemetry {
     float maxRangeNm = 0;                // farthest position seen (needs a reference)
     std::vector<AdsbAircraft> aircraft;  // most recently heard first
     std::vector<AdsbFrameInfo> frames;   // the last 64 good messages, newest last
+    std::vector<AdsbRaEvent> raEvents;   // resolution advisories, oldest first (the last 32)
+    bool trustCalibrated = false;        // the level check of the trust score has enough confirmed aircraft behind it
+    uint32_t trustDoubtful = 0;          // aircraft in the list with a score under 80
     AdsbRangeStats stats;
     std::vector<AdsbSourceInfo> sources; // [0] is this receiver
 };

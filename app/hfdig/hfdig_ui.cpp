@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital screens: the shell. One main tab with a view per decoder (RTTY, SSTV, FreeDV); each view is drawn by that decoder's own
 // file (hfdig_rtty_ui.cpp, hfdig_sstv_ui.cpp, hfdig_freedv_ui.cpp). The shell also keeps the sound controls in step for FreeDV's speech,
 // lists what happened (ACTIVITY, on the right) and draws the spectrum and waterfall of the 8 kHz audio at the bottom, to tune the tones by eye.
 #include "dect2/common/time_fmt.h"
 #include "app.h"
+#include "ham/ham_events_ui.h"
 #include "../hfbeacon/hfprop_ui.h"
 #include "../hfbeacon/iono_obs_ui.h"
 #include "gfx/gfx.h"
@@ -22,6 +26,7 @@ void hfdigRttyTab(App& a, const dect2::HfdigTelemetry& t);
 void hfdigSstvTab(App& a, const dect2::HfdigTelemetry& t);
 void hfdigFreedvTab(App& a, const dect2::HfdigTelemetry& t);
 void hfdigFtxTab(App& a, const dect2::HfdigTelemetry& t);
+void hfdigHopTick(App& a);   // hfdig_hop_ui.cpp: band hopping
 void hfdigHamdrmTab(App& a, const dect2::HfdigTelemetry& t);
 void hfdigKbdTab(App& a, const dect2::HfdigTelemetry& t);
 
@@ -146,6 +151,8 @@ void loadDemod(const App& a) {
 } // namespace
 
 // the SSTV band buttons pick the sideband with the frequency (80 and 40 m SSTV is on lower sideband)
+int hfdigDemod(const App& a) { loadDemod(a); return S.demod; }
+
 void hfdigSetDemod(const App& a, int d) {
     loadDemod(a);
     S.demod = d;
@@ -156,7 +163,7 @@ namespace {
 
 void tuner(App& a, bool&) {
     loadDemod(a);
-    hfDemodControl(a, S.demod, S.demodKey.c_str(), "hfdig");
+    hfDemodControl(a, S.demod, S.demodKey.c_str(), "hfdig", dect2::hfdigSidebandOnly(decMask(a)));
 }
 
 void tick(App& a) {
@@ -169,9 +176,12 @@ void tick(App& a) {
     if (!S.listenLoaded) { S.listenLoaded = true; S.listen = plat::prefs().getB("hfdigListen", false); }
     if (run && (!S.wasRunning || (int)S.listen != S.pushedListen)) { a.engine.hfdig().setListen(S.listen); S.pushedListen = S.listen; }
     loadDemod(a);
-    if (run) a.engine.hfdig().setDemod(dect2::hfDemodResolve(S.demod, a.freqMhz));   // Auto follows the dial
+    if (run) a.engine.hfdig().setDemod(dect2::hfDemodResolveFor(S.demod, a.freqMhz, dect2::hfdigSidebandOnly(decMask(a))));   // Auto follows the dial
     if (run && a.rx.standard == 26) {
         hfprop_ui::feedFtx(a, a.rx.hfdig.ftx);
+        hamFeedFtx(a, a.rx.hfdig.ftx);   // ham.decode (ham/ham_events_ui.h)
+        hfdigHopTick(a);
+        hamFeedKbd(a, a.rx.hfdig.kbd, dect2::kbdFamilyName(a.rx.hfdig.kbd.cfg.family));
         ionoobs_ui::feedFtx(a, a.rx.hfdig.ftx);
         if (!S.tapSet) {   // the 8 kHz audio for the spectrum, handed over from the receiver thread
             S.tapSet = true;

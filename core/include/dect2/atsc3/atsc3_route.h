@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ROUTE (A/331 Annex A): LCT packets over UDP carry delivery objects (files); this reads the LCT header, reassembles objects, reads the service
 // layer signaling that arrives as a MIME package (USBD, S-TSID, MPD) on TSI 0, and routes the objects of each component of a service.
 #pragma once
 #include "atsc3_ip.h"
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -44,8 +48,13 @@ public:
     // with the close object flag) have arrived. A sender that signals neither (some encoders do not) ends an object by starting the next one: an
     // object whose bytes are contiguous from 0 and form whole MP4 boxes is complete when a newer object of the same TSI begins.
     void push(const LctPacket& p, std::vector<RouteObject>& done);
-    void clear() { open_.clear(); }
+    void clear() { open_.clear(); openBytes_ = 0; }
     size_t openObjects() const { return open_.size(); }
+    size_t openBytes() const { return openBytes_; }
+    // The largest object taken (ATSC 3.0 media segments and signalling are a few MB): a packet whose offset or EXT_TOL lies beyond it is
+    // dropped, so one corrupt packet cannot make the receiver allocate gigabytes. kMaxOpenBytes bounds all the unfinished objects together.
+    static constexpr uint32_t kMaxObjectBytes = 64u << 20;
+    static constexpr size_t kMaxOpenBytes = 128u << 20;
 private:
     struct Open {
         std::vector<uint8_t> data;
@@ -58,6 +67,7 @@ private:
     };
     std::map<std::pair<uint32_t, uint32_t>, Open> open_;
     long counter_ = 0;
+    size_t openBytes_ = 0;   // sum of open_[].data.size()
 };
 
 // ---- MIME packages (unsigned package mode: multipart/related)
@@ -65,7 +75,8 @@ struct MimePart {
     std::map<std::string, std::string> headers;   // lower case names
     std::vector<uint8_t> body;
 };
-// Splits a multipart document; the first header block carries the boundary. Returns an empty list when it is not multipart.
+// Splits a multipart document; the first header block carries the boundary (a document that starts with the delimiter line itself, without
+// that header, is split too). Returns an empty list when it is not multipart.
 std::vector<MimePart> parseMultipart(const std::vector<uint8_t>& doc);
 std::vector<uint8_t> makeMultipart(const std::vector<MimePart>& parts, const std::string& boundary);
 
@@ -104,6 +115,8 @@ public:
     const std::vector<RouteComponent>& components() const { return components_; }
     const std::string& mpd() const { return mpd_; }
     const std::string& usbd() const { return usbd_; }
+    long slsObjects() const { return slsObjects_; }   // objects completed on TSI 0 of the SLS session
+    long slsTables() const { return slsTables_; }     // S-TSID, MPD and USBD documents read from them
 
     // Called for every completed object of a component (init segments have codepoints 5 to 7, media segments 8 and 9).
     std::function<void(const RouteComponent&, const RouteObject&)> onObject;
@@ -118,6 +131,7 @@ private:
     std::string mpd_, usbd_;
     std::map<std::tuple<uint32_t, int, uint32_t>, std::unique_ptr<RouteReceiver>> rx_;   // per (ip, port, tsi)
     int stsidVersion_ = -1;
+    std::atomic<long> slsObjects_{0}, slsTables_{0};
 };
 
 } // namespace atsc3

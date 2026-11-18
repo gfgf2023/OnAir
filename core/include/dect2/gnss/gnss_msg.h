@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The coded navigation messages: SBAS L1 (RTCA DO-229: 250 bit messages at 250 bps, rate 1/2 convolutional code, 500 symbols a second) and
 // Galileo I/NAV on E1-B (Galileo OS SIS ICD sections 4.1.4, 4.3 and 5.1: page parts of 120 bits, convolutional code with the second branch inverted,
 // a 30 x 8 block interleaver, a 10 symbol synchronisation pattern, 250 symbols a second; words of 128 bits protected by a CRC over the even and odd parts).
@@ -51,6 +54,22 @@ int32_t inavFieldSigned(const uint8_t* w, int first, int len);
 void inavPut(uint8_t* w, int first, int len, uint32_t v);
 
 // What the I/NAV words of one satellite give (words 1-6 and 10)
+// SAR return link message of the Galileo I/NAV SAR field (OS SIS ICD sec 4.3.8, 5.3): beacon id (60 bits, 15 hex), code, parameters, the even-parity check
+struct GalRlm { bool longRlm = false; char hex[16] = {0}; int messageCode = 0; uint32_t params16 = 0; bool parityOk = false; bool ack = false, test = false; };
+// Feed the 22 bit SAR field page by page; returns true when an RLM is complete (start bit rules of the ICD: a '1' opens a message when the next part has start bit 0)
+class GalRlmAssembler {
+public:
+    bool push(const uint8_t* sar22, GalRlm& out);
+    void reset() { n_ = 0; have_ = false; }
+private:
+    uint8_t bits_[160]; int n_ = 0; bool have_ = false, opened_ = false, longR_ = false; int parts_ = 0;
+    bool complete(GalRlm& out);
+};
+
+// OSNMA NMA header (Galileo OSNMA SIS ICD issue 1.1 section 3.1): status of the service, chain id, chain and public key status. The MAC and signature checks are not implemented.
+const char* osnmaStatusName(int nmas);
+const char* osnmaChainStatusName(int cpks);
+
 struct GalNav {
     int iod[5] = {-1, -1, -1, -1, -1};                         // IODnav of words 1..4 as received
     GpsEphemeris eph;                                          // being collected (galileo = true)

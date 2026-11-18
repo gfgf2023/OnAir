@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DTMB channel decoder: the data symbols of every signal frame in, transport stream packets out.
 // de-interleaver (symbols, or bits for 4QAM-NR) -> soft demapper (-> NR decoder) -> codeword alignment -> LDPC -> BCH -> descrambler.
 // The LDPC decoding runs on worker threads; results come back in order through poll().
@@ -76,7 +79,7 @@ private:
     int perFrame_, pkCw_, cwPerGroup_;
     double secsPerCw_;
     std::vector<uint8_t> descr_;                 // descrambler bits of one signal frame's payload
-    long frames_ = 0, primed_ = 0;
+    uint64_t frames_ = 0, primed_ = 0;
     bool aligned_ = false;
     int searchWait_ = 0;                         // frames until the next alignment attempt
     int failRun_ = 0;                            // consecutive failed codewords (receiver thread only)

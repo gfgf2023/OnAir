@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The table of modes (sig_known.h). The widths are the 99 % occupied width as this identifier measures it on the mode's signal; they
 // were checked against the spec values (docs/IDENTIFIER.md) and against the app's own generators. Fields: name, mode id, sub-mode id,
 // family, accepted modulation classes, the usual class, symbol rates (OFDM: useful symbol lengths), widths, FSK deviation, 0 either /
@@ -43,9 +46,12 @@ const Known kKnown[] = {
 {"ADS-B / Mode S", "adsb", "", "Aviation", MB(ModPulse)|MB(ModAm)|MB(ModOfdm), ModPulse, {1e6, 2e6}, {2.75e6, 2.6e6}, 0, 2, 0.12, 0, SyncNone, {1089, 1091}, "PPM pulses 1 Mbit/s, 120 us messages on 1090 MHz"},
 {"Mode S uplink", "uplink", "", "Aviation", MB(ModPulse)|MB(ModBpsk)|MB(ModQam), ModPulse, {1e6}, {96e3, 6e6}, 0, 2, 0, 0, SyncNone, {1029, 1031}, "1030 MHz interrogations"},
 {"UAT", "uat", "", "Aviation", MB(ModGmsk)|MB(ModFsk2)|MB(ModPulse), ModFsk2, {1.04e6}, {1.2e6}, 0, 2, 0, 0, SyncNone, {977, 979}, "CPFSK 1.041 MBd bursts on 978 MHz"},
+{"ADS-L", "adsl", "", "Aviation", MB(ModGmsk)|MB(ModFsk2)|MB(ModOfdm)|MB(ModPulse)|MB(ModFm), ModFsk2, {100e3, 38400, 200e3}, {360e3, 60e3, 280e3}, 0, 2, 0, 0, SyncNone, {868, 869.7f}, "GFSK / GMSK bursts on 868.2, 868.4 and 869.525 MHz"},
 {"FLARM", "flarm", "", "Aviation", MB(ModGmsk)|MB(ModFsk2)|MB(ModOfdm)|MB(ModPulse)|MB(ModFm), ModFsk2, {100e3}, {360e3}, 0, 2, 0, 0, SyncNone, {868, 869}, "GFSK 100 kBd bursts on 868 MHz"},
 {"ACARS", "acars", "", "Aviation", MB(ModAm)|MB(ModPulse)|MB(ModGmsk)|MB(ModFsk2), ModAm, {2400, 4800}, {5.3e3}, 0, 2, 0, 0, SyncNone, {129, 137}, "AM-MSK 2400 bit/s, bursts"},
 {"VDL Mode 2", "vdl2", "", "Aviation", MB(ModPsk8)|MB(ModQpsk)|MB(ModQam), ModPsk8, {10500}, {12.1e3}, 0, 2, 0, 0, SyncNone, {136.6f, 137}, "D8PSK 10.5 kBd, 25 kHz, bursts"},
+{"VDL Mode 3", "vdl3", "", "Aviation", MB(ModPsk8)|MB(ModQpsk)|MB(ModQam), ModPsk8, {10500}, {12.1e3}, 0, 2, 0, 0, SyncNone, {118, 137}, "D8PSK 10.5 kBd, 25 kHz, TDMA bursts"},
+{"CP16", "cp16", "", "Amateur digital", MB(ModPulse)|MB(ModUnknown), ModPulse, {8.5}, {300}, 0, 0, 0, 0, SyncNone, {1.8f, 30}, "16 on-off carriers 10 to 20 Hz apart: Chinese characters on a waterfall (CRAC)"},
 {"VDL Mode 4", "vdl4", "", "Aviation", MB(ModGmsk)|MB(ModFsk2)|MB(ModOfdm)|MB(ModPulse), ModGmsk, {19200}, {18.8e3}, 0, 2, 0, 0, SyncNone, {118, 137}, "GFSK 19.2 kBd, STDMA slots"},
 {"HFDL", "hfdl", "", "Aviation", MB(ModBpsk)|MB(ModQpsk)|MB(ModPsk8), ModBpsk, {1800}, {2.13e3}, 0, 0, 0, 0, SyncNone, {2.8f, 22}, "PSK 1800 Bd, 2.4 kHz SSB channel"},
 {"SSB voice", "general", "", "Analog voice", MB(ModPulse)|MB(ModAm)|MB(ModQam)|MB(ModFm)|MB(ModCarrier)|MB(ModUnknown)|MB(ModBpsk)|MB(ModFsk2)|MB(ModGmsk), ModAm, {}, {2.4e3}, 0, 0, 0, 0, SyncSsb, {1.8f, 30, 50, 54, 144, 148, 420, 450}, "single sideband speech: 2 to 3 kHz of one sideband, no carrier, syllabic envelope; the General receiver in USB / LSB"},
@@ -72,6 +78,9 @@ const Known kKnown[] = {
 {"GOES HRIT/LRIT", "goes", "", "Satellite", MB(ModBpsk)|MB(ModQpsk), ModBpsk, {927000, 293883}, {1.18e6}, 0, 1, 0, 0, SyncNone, {1691, 1695}, "BPSK 927 kBd (HRIT) or 293.9 kBd (LRIT) near 1694 MHz"},
 {"HRPT", "hrpt", "", "Satellite", MB(ModQpsk)|MB(ModBpsk), ModQpsk, {2.33e6, 665.4e3}, {3.13e6}, 0, 1, 0, 0, SyncNone, {1698, 1710}, "BPSK 665 kBd (NOAA) or QPSK 2.33 MBd (MetOp AHRPT) near 1700 MHz"},
 {"Elektro-L LRIT", "elektro", "", "Satellite", MB(ModBpsk)|MB(ModQpsk), ModBpsk, {665.4e3}, {845e3}, 0, 1, 0, 0, SyncNone, {1690, 1695}, "BPSK 665.4 kBd near 1691 MHz"},
+{"FengYun-4 LRIT", "fy4lrit", "", "Satellite", MB(ModQpsk), ModQpsk, {90e3, 120e3}, {112.5e3, 150e3}, 0, 1, 0, 0, SyncNone, {1695, 1699}, "DVB-S2 QPSK 2/5 (FY-4A, 90 kBd) or 8/9 (FY-4B, 120 kBd) near 1697 MHz"},
+{"FengYun-4A HRIT", "fy4ahrit", "", "Satellite", MB(ModQpsk), ModQpsk, {1e6}, {1.25e6}, 0, 1, 0, 0, SyncNone, {1677, 1681}, "DVB-S2 QPSK 5/6, 1 MBd near 1679 MHz"},
+{"FengYun-2 S-VISSR", "fy2svissr", "", "Satellite", MB(ModBpsk), ModBpsk, {660e3}, {990e3}, 0, 1, 0, 0, SyncNone, {1686, 1689}, "BPSK 660 kBd (NRZ-M) near 1687.5 MHz"},
 {"CubeSat telemetry", "cubesat", "", "Satellite", MB(ModFsk2)|MB(ModFsk4)|MB(ModGmsk), ModFsk2, {1200, 4800, 9600}, {9.5e3}, 0, 0, 0, 0, SyncNone, {144, 146, 435, 438}, "GFSK / AFSK 1200 to 9600 Bd amateur satellites"},
 {"QO-100", "qo100", "", "Satellite", MB(ModQam)|MB(ModQpsk)|MB(ModOfdm)|MB(ModAm)|MB(ModBpsk)|MB(ModCarrier)|MB(ModFm), ModQam, {}, {1.65e6}, 0, 1, 0, 0, SyncNone, {10489, 10499, 2400, 2401}, "narrowband transponder, SSB / digital 2.7 kHz to 2 MHz"},
 // ---- data, paging, IoT

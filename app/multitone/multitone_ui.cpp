@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Multitone paging screens: the transmissions heard (carrier, deviation, tones and spectral lines of the audio), the FSK data found in them
 // (baud rate, bit stream, 32-bit words against the POCSAG BCH check) and the steady tones heard so far.
 // Receive only. Multitone's own format is not public, so this is a detector: everything is labelled unverified and no message text is shown.
@@ -63,6 +66,13 @@ void burstDetail(const App& a, const dect2::MtBurst& b) {
     kvRow(a, "baud", "%.1f%s%s  (edge coherence %.2f)", b.baud, b.nearestStd.empty() ? "" : ", near the standard ", b.nearestStd.c_str(), b.coherence);
     kvRow(a, "bits", "%d sliced%s", b.nBits, b.manchester ? (std::string(", Manchester decoded to ") + std::to_string(b.dataBits) + " bits").c_str() : "");
     if (b.repeatBits > 0) kvRow(a, "repeats", "the bit stream repeats every %d bits", b.repeatBits);
+    if (b.dupBits > 1) kvRow(a, "bit rate", "every bit is sent %d times: %.1f baud of data", b.dupBits, b.dataBaud);
+    if (b.markerBits > 0) {
+        kvRow(a, "marker", "%d bits %s, %d times, one every %d bits", b.markerBits, b.marker.c_str(), b.markerCount, b.markerGap);
+        std::string w;
+        for (size_t i = 0; i < b.frameWords.size() && i < 12; i++) { if (i) w += "  "; w += b.frameWords[i]; }
+        kvRow(a, "words after it", "%s%s  (%d different, %d repeat the one before, %d a first byte and a value sent twice)", w.c_str(), b.frameWords.size() > 12 ? " ..." : "", b.distinctWords, b.doubledWords, b.halfEqualWords);
+    }
     kvRow(a, "BCH words", "%d valid of %d, longest run %d, bit offset %d", b.validWords, b.totalWords, b.bestRun, b.align);
     kvRow(a, "stream (hex)", "%s", b.bitsHex.c_str());
     if (!b.words.empty()) {

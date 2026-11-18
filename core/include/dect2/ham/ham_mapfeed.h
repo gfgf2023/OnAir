@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Ham contacts for the public map (opt-in, its own choice next to "Send data to map server"). Pure logic, no network and no clock of its own:
 // the app offers decoded contacts, the feed rounds the locators, deduplicates, rate limits and queues them, and a Sink takes what is due
 // (the app's sink adds them to the ingest post as "ham" tracks; tests use a mock). Sent per contact: the station's callsign, the mode, the
@@ -44,6 +47,9 @@ bool buildTrack(const Contact& c, int gridChars, double nowUtc, Track& out);
 // The posted JSON text of the extra field.
 std::string extraJson(const std::string& mode, double freqHz, const std::string& to, bool hasPos, double tlat, double tlon);
 std::string dedupeKey(const Contact& c);
+
+// How many of the other tracks of a post may stay when `hamCount` contact tracks must go in, under the hub's limit of `cap` tracks per post.
+inline size_t roomForOthers(size_t cap, size_t hamCount) { return hamCount >= cap ? 0 : cap - hamCount; }
 
 struct Sink { virtual ~Sink() = default; virtual bool post(const std::vector<Track>& tracks) = 0; };   // false: not delivered (offline); kept queued
 

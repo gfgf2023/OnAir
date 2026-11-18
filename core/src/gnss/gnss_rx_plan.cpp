@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GNSS receiver, planning the channels and the search: replan for the tuning and rate, reset, and the acquisition plans.
 #include "gnss_rx_impl.h"
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -233,6 +237,7 @@ void GnssReceiver::Impl::resetState() {
     for (auto& s : sat) s = SatNav();
     for (auto& s : gsat) s = SatNav();
     for (auto& g : gnav) g = GalNav();
+    for (auto& a : rlmAsm) a.reset();
     for (auto& s : gsol) s = SolInfo();
     ggtoValid = false; galCredit = 0; predictedGal.clear();
     galRoundSeen = 0; galLong = false; galRoundHits = 0; galEmptyRounds = 0; galIdleUntil = 0; codeRateFrac = 0;
@@ -252,6 +257,14 @@ void GnssReceiver::Impl::resetState() {
     for (auto& s : sol) s = SolInfo();
     nextReport = 0.25; acqCredit = 0; havePredicted = false;
     tel = GnssTelemetry(); telReady = false;
+}
+
+// The search stages while nothing is locked: 0 the first window, 1 +-45 kHz, 2 +-170 kHz, 3..5 the same with the long integration.
+// 3.9: the long integration of the first window comes second (0, 3, 1, 2, 4, 5): a weak sky with a good oscillator (or a remembered error)
+// is found within the first rounds instead of after the +-170 kHz round, which alone takes about 35 s (docs/SENSITIVITY-3.9-E.md)
+static int nextStage(int s) {
+    static const int next[6] = {3, 2, 4, 1, 5, 0};
+    return next[s >= 0 && s < 6 ? s : 0];
 }
 
 // Where and how long to search next. With satellites locked the radio's error lies within 5.5 kHz of each of their Dopplers, so the others are within
@@ -283,10 +296,13 @@ void GnssReceiver::Impl::planSearch() {
         if (newRound) {
             stageRounds = r;
             if (nPull == 0) {
-                stage = (stage + 1) % 6;
+                stage = nextStage(stage);
                 static const char* what[6] = {"", "+-45 kHz (a radio without a TCXO, such as a HackRF)", "+-170 kHz (a dongle without a TCXO)",
                                                "with a 64 ms integration for weak signals", "+-45 kHz with a 64 ms integration", "+-170 kHz with a 64 ms integration"};
-                if (stage > 0) logf(std::string("nothing found yet: searching ") + what[stage]);
+                if (stage > 0) {
+                    logf(std::string("nothing found yet: searching ") + what[stage]);
+                    DIAG_DEBUG(992213, "A full GPS acquisition round found no satellite, so the search moves to stage %d with a wider Doppler window or longer integration.", (int)stage);
+                }
             }
         }
         const int st = stage % 3;
@@ -325,9 +341,12 @@ void GnssReceiver::Impl::planOwn(GnssAcq& acq, SearchPlan& pl, int sys, double r
         if (newRound) {
             pl.stageRounds = r;
             if (nPull == 0) {
-                pl.stage = (pl.stage + 1) % 6;
+                pl.stage = nextStage(pl.stage);
                 static const char* what[6] = {"", "+-45 kHz", "+-170 kHz", "with a 64 ms integration", "+-45 kHz with a 64 ms integration", "+-170 kHz with a 64 ms integration"};
-                if (pl.stage > 0) logf(std::string(name) + ": nothing found yet, searching " + what[pl.stage]);
+                if (pl.stage > 0) {
+                    logf(std::string(name) + ": nothing found yet, searching " + what[pl.stage]);
+                    DIAG_DEBUG(593053, "A full %s acquisition round found no satellite, so the search moves to stage %d with a wider Doppler window or longer integration.", name, (int)pl.stage);
+                }
             }
         }
         const int st = pl.stage % 3;

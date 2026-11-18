@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The drawing of the spectrum looks inside a plot (after plt::BeginPlot and the axis setup): the plot look, the passband, the trace with
 // its fill and the waterfall picture. Shared by the app (plots.cpp) and the offscreen render harness (tools/spec_render.cpp), so the
 // harness's pictures are the app's. Uses plt and ImGui only (no App).
@@ -76,7 +79,7 @@ inline void trace(const std::vector<double>& ex, const std::vector<double>& ey, 
 // history columns, R the newest row's number, frac the part of a row due since it came (the picture slides down by it).
 inline void wfImage(const plt::WfView& v, ImTextureID tex, int texW, int H, double x0, double x1, int W, long long rows, double frac) {
     if (v.cols <= 0 || rows <= 0) return;
-    const double vx0 = x0 + (x1 - x0) * v.c0 / W, vx1 = x0 + (x1 - x0) * v.c1 / W;
+    const double vx0 = v.exact ? v.vLo : x0 + (x1 - x0) * v.c0 / W, vx1 = v.exact ? v.vHi : x0 + (x1 - x0) * v.c1 / W;   // exact: the view is the pixels
     const float u1 = (float)v.cols / texW;
     const long long R = rows - 1, gN = R / v.k;
     const int w = v.rowOf(gN);

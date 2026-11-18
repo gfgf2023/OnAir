@@ -1,6 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // APRS / Packet receiver telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
+#include "aprs_board.h"
+#include "packet_path.h"
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -38,6 +43,9 @@ struct PacketStation {
     std::string via;             // the station that sent the object
     int carrierId = 0;           // whole-span decoding: the carrier it was last heard on
     double carrierHz = 0;
+    bool hasWx = false;          // a weather station (aprs_board.h): the last values, merged over the reports, and the last 24 h
+    AprsWx wx;
+    std::vector<AprsWx> wxHist;
 };
 
 struct PacketTelemetry {
@@ -61,9 +69,15 @@ struct PacketTelemetry {
     uint64_t digiCopies = 0;     // packets heard again through a digipeater (listed, not counted as new)
     float twistDb = 0;           // 1200 baud tone balance, mark against space (dB), over the recent frames: about -5 a pre-emphasised transmitter
     uint32_t twistFrames = 0;    // (heard on the radio's discriminator) or +5 de-emphasised speaker audio; 0 frames = not measured yet
+    uint64_t votedFrames = 0;    // frames that passed only after the demodulators' copies were voted (ax25::voteRepair)
+    uint32_t directFrames = 0;   // frames heard with no digipeater hop
+    std::vector<PacketDigi> digis;          // who repeated what (packet_path.h), most heard first
+    std::vector<PacketPathEdge> edges;      // the hops: station or digipeater to the next one
     // results (the newest frame last; the stations newest first)
     std::vector<PacketFrameInfo> frames;
     std::vector<PacketStation> stations;
+    std::vector<AprsMessage> messages;      // messages, bulletins and weather service bulletins, oldest first (aprs_board.h)
+    std::string myCall;                     // setMyCall(): the user's callsign, for "to me"
 };
 
 inline std::string packetSummary(const PacketTelemetry& t) {

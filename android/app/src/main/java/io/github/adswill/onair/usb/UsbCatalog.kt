@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.usb
 
 /**
@@ -5,12 +8,14 @@ package io.github.adswill.onair.usb
  * filter; DeviceFilterTest checks the two agree) and as usbFdKindForId() in the core (core/src/source/usb_fd.cpp).
  * Pure Kotlin: no Android classes, so it is tested on the JVM.
  *
- * SDRplay radios are not here on purpose: their API is a closed binary service that does not exist for Android (docs/USB.md).
+ * SDRplay radios are not here, except the RSP1 (1df7:2500): the SDRplay API is a closed binary service that does not exist for Android,
+ * but the RSP1 is a Mirics MSi2500 + MSi001 pair that OnAir drives itself (core/src/source/mirics_usb.cpp, untested on hardware, #503).
  */
 object UsbCatalog {
     /** The driver families; [kind] is the core's driver name (UsbFdRadio::kind). */
     enum class Family(val kind: String, val label: String) {
-        RTLSDR("rtlsdr", "RTL-SDR"), HACKRF("hackrf", "HackRF"), AIRSPY("airspy", "Airspy"), AIRSPYHF("airspyhf", "Airspy HF+");
+        RTLSDR("rtlsdr", "RTL-SDR"), HACKRF("hackrf", "HackRF"), AIRSPY("airspy", "Airspy"), AIRSPYHF("airspyhf", "Airspy HF+"),
+        MIRICS("mirics", "SDRplay RSP1 / Mirics");
 
         companion object { fun ofKind(k: String): Family? = entries.firstOrNull { it.kind == k } }
     }
@@ -41,20 +46,30 @@ object UsbCatalog {
         }
     }
 
-    // RTL2832U ids: the Realtek ones (generic sticks, RTL-SDR Blog V3 / V4, NooElec NESDR) and the DVB-T sticks of librtlsdr's list
+    // RTL2832U ids: every id of librtlsdr's known_devices list (osmocom rtl-sdr src/librtlsdr.c): the Realtek ones (generic sticks,
+    // RTL-SDR Blog V3 / V4 / V4L, NooElec NESDR) and the DVB-T / DAB sticks sold under other names (Terratec, Compro, KWorld ...)
     val rtlIds: List<UsbId> = listOf(
         UsbId(0x0bda, 0x2832), UsbId(0x0bda, 0x2838),
-        UsbId(0x0ccd, 0x00a9), UsbId(0x0ccd, 0x00b3), UsbId(0x0ccd, 0x00d3), UsbId(0x0ccd, 0x00e0),
-        UsbId(0x185b, 0x0620), UsbId(0x185b, 0x0650),
-        UsbId(0x1f4d, 0xb803), UsbId(0x1f4d, 0xc803),
-        UsbId(0x1b80, 0xd3a4),
-        UsbId(0x1d19, 0x1101), UsbId(0x1d19, 0x1102), UsbId(0x1d19, 0x1103),
+        UsbId(0x0413, 0x6680), UsbId(0x0413, 0x6f0f),
         UsbId(0x0458, 0x707f),
+        UsbId(0x0ccd, 0x00a9), UsbId(0x0ccd, 0x00b3), UsbId(0x0ccd, 0x00b4), UsbId(0x0ccd, 0x00b5),
+        UsbId(0x0ccd, 0x00b7), UsbId(0x0ccd, 0x00b8), UsbId(0x0ccd, 0x00b9), UsbId(0x0ccd, 0x00c0),
+        UsbId(0x0ccd, 0x00c6), UsbId(0x0ccd, 0x00d3), UsbId(0x0ccd, 0x00d7), UsbId(0x0ccd, 0x00e0),
+        UsbId(0x1554, 0x5020),
         UsbId(0x15f4, 0x0131), UsbId(0x15f4, 0x0133),
+        UsbId(0x185b, 0x0620), UsbId(0x185b, 0x0650), UsbId(0x185b, 0x0680),
+        UsbId(0x1b80, 0xd393), UsbId(0x1b80, 0xd394), UsbId(0x1b80, 0xd395), UsbId(0x1b80, 0xd397),
+        UsbId(0x1b80, 0xd398), UsbId(0x1b80, 0xd39d), UsbId(0x1b80, 0xd3a4), UsbId(0x1b80, 0xd3a8),
+        UsbId(0x1b80, 0xd3af), UsbId(0x1b80, 0xd3b0),
+        UsbId(0x1d19, 0x1101), UsbId(0x1d19, 0x1102), UsbId(0x1d19, 0x1103), UsbId(0x1d19, 0x1104),
+        UsbId(0x1f4d, 0xa803), UsbId(0x1f4d, 0xb803), UsbId(0x1f4d, 0xc803), UsbId(0x1f4d, 0xd286),
+        UsbId(0x1f4d, 0xd803),
     )
     val hackrfIds: List<UsbId> = listOf(UsbId(0x1d50, 0x6089), UsbId(0x1d50, 0x604b), UsbId(0x1d50, 0xcc15))
     val airspyIds: List<UsbId> = listOf(UsbId(0x1d50, 0x60a1))
     val airspyHfIds: List<UsbId> = listOf(UsbId(0x03eb, 0x800c))
+    /** MSi2500 + MSi001: the SDRplay RSP1 (and its clones), then the TV sticks with the same chips (libmirisdr's list, without the RSP1A / RSP2). */
+    val miricsIds: List<UsbId> = listOf(UsbId(0x1df7, 0x2500), UsbId(0x2040, 0xd300), UsbId(0x07ca, 0x8591), UsbId(0x04bb, 0x0537), UsbId(0x0511, 0x0037))
 
     /** Every supported id with its family. */
     val all: Map<UsbId, Family> = buildMap {
@@ -62,11 +77,12 @@ object UsbCatalog {
         hackrfIds.forEach { put(it, Family.HACKRF) }
         airspyIds.forEach { put(it, Family.AIRSPY) }
         airspyHfIds.forEach { put(it, Family.AIRSPYHF) }
+        miricsIds.forEach { put(it, Family.MIRICS) }
     }
 
     fun family(vid: Int, pid: Int): Family? = all[UsbId(vid, pid)]
 
-    private val rtlGeneric = Model("RTL-SDR (R820T)", Family.RTLSDR, 24e6, 1766e6, 2.4e6, false, 270)
+    private val rtlGeneric = Model("RTL-SDR (RTL2832U)", Family.RTLSDR, 24e6, 1766e6, 2.4e6, false, 270, "The tuner chip is only known once the radio is opened")
 
     /**
      * The model of a radio from its USB id and the strings the phone read ([manufacturer], [product] may be null when Android could
@@ -101,6 +117,12 @@ object UsbCatalog {
             }
             Family.AIRSPYHF -> Model(if (pl.contains("discovery")) "Airspy HF+ Discovery" else "Airspy HF+", f, 9e3, 260e6, 768e3, false, 300,
                 "HF 9 kHz - 31 MHz and VHF 60 - 260 MHz")
+            Family.MIRICS -> when (pid) {
+                0x2500 -> Model("SDRplay RSP1 / MSi2500 (untested)", f, 10e3, 2000e6, 8.064e6, false, 200,
+                    "OnAir's own driver, untested on hardware: please report whether it works (issue #503)")
+                else -> Model("${p.ifEmpty { "Mirics MSi2500 stick" }} (untested)", f, 10e3, 2000e6, 8.064e6, false, 200,
+                    "MSi2500 + MSi001 TV stick; OnAir's own driver, untested on hardware")
+            }
         }
     }
 }

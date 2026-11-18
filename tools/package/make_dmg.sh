@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Build OnAir.app (with its libraries inside) and a .dmg disk image for macOS.
 #   tools/package/make_dmg.sh [version]
 set -euo pipefail
@@ -14,13 +17,15 @@ export MACOSX_DEPLOYMENT_TARGET
 FFMPEG_PREFIX=${FFMPEG_PREFIX:-$PWD/$BUILD/ffmpeg}
 [ -f "$FFMPEG_PREFIX/lib/libavcodec.a" ] || tools/package/build_ffmpeg_static.sh "$FFMPEG_PREFIX"
 cmake -S . -B $BUILD -DDECT2_FFMPEG_PREFIX="$FFMPEG_PREFIX" -DCMAKE_BUILD_TYPE=Release -DDECT2_BUILD_TESTS=OFF -DDECT2_BUILD_APP=ON -DDECT2_HAVE_HAMLIB=ON -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" -DONAIR_VERSION="$VERSION" -DDECT2_WITH_TLS=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"   # TLS: HTTPS for onair-server and the web.on-air.dev heartbeat; libssl/libcrypto are bundled by bundle_macos.py
-cmake --build $BUILD -j"$(sysctl -n hw.ncpu)" --target dect2 onair-server
+cmake --build $BUILD -j"$(sysctl -n hw.ncpu)" --target dect2 onair-server onair-extcap
 APP=$BUILD/OnAir.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp $BUILD/dect2 "$APP/Contents/MacOS/OnAir"
+cp $BUILD/onair-extcap "$APP/Contents/MacOS/onair-extcap"   # Wireshark capture interface (docs/WIRESHARK-3.8.md)
 cp $BUILD/onair-server "$APP/Contents/MacOS/onair-server"   # the headless server for OnAir Web (docs/headless-server.md); bundle_macos.py gives it the same libraries
 mkdir -p "$APP/Contents/Resources/web"; cp -R web/onair-web "$APP/Contents/Resources/web/"   # the OnAir Web browser page (onair-server looks in ../Resources/web/onair-web)
+cp -R web/onair-app "$APP/Contents/Resources/web/"   # OnAir Web 3.9 (onair-server looks in ../Resources/web/onair-app)
 cp packaging/icons/OnAir.icns "$APP/Contents/Resources/OnAir.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +42,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>$MACOSX_DEPLOYMENT_TARGET</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>OnAir listens to a sound card input or a radio's USB audio (for example an IC-7300's USB Audio CODEC) when you pick it as the source, and to the microphone for transmit.</string>
+  <key>NSCameraUsageDescription</key><string>OnAir uses a camera only when you pick it as the picture source for analog or digital TV transmit.</string>
+  <key>NSLocationUsageDescription</key><string>OnAir uses the position of this computer as the antenna position on the ADS-B map.</string>
+  <key>NSLocationWhenInUseUsageDescription</key><string>OnAir uses the position of this computer as the antenna position on the ADS-B map.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
 </dict></plist>
 PLIST

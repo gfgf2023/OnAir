@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GSM-R: the System Information messages of the broadcast control channel (3GPP TS 44.018 9.1.31 - 9.1.36), parsed and, for the test
 // signal, encoded. Each is one 23 byte layer 2 frame: L2 pseudo length, protocol discriminator (RR, 0x06), message type, the fields.
 // Only the cell's public broadcast is read: its identity, the location area (operator code and area), the access parameters and the
@@ -56,5 +59,25 @@ Frame23 encodeSi2ter();           // a frame of the right type with filler, so t
 Frame23 idleFrame();              // 0x2B fill
 
 const char* siName(int type);
+
+// The common control channel (paging and access grant blocks): only the kind of each message is counted, as a measure of the cell's load.
+// The contents (the identities in a paging request, the channel in an assignment) are never parsed or kept.
+enum class CcchKind { Paging1, Paging2, Paging3, ImmAssign, ImmAssignExt, ImmAssignReject, Idle, Other };
+CcchKind ccchKind(const uint8_t* m23);
+struct CcchCount {
+    uint64_t paging = 0, assign = 0, reject = 0, idle = 0, other = 0, bad = 0;
+    void add(CcchKind k) {
+        switch (k) {
+        case CcchKind::Paging1: case CcchKind::Paging2: case CcchKind::Paging3: paging++; break;
+        case CcchKind::ImmAssign: case CcchKind::ImmAssignExt: assign++; break;
+        case CcchKind::ImmAssignReject: reject++; break;
+        case CcchKind::Idle: idle++; break;
+        default: other++;
+        }
+    }
+    void merge(const CcchCount& o) { paging += o.paging; assign += o.assign; reject += o.reject; idle += o.idle; other += o.other; bad += o.bad; }
+    uint64_t blocks() const { return paging + assign + reject + idle + other; }
+};
+Frame23 encodePagingKind(int type);   // the test signal: a frame of that RR message type with an all-zero (no identity) body
 
 } // namespace dect2::gsmr

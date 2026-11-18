@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // eLoran / Loran-C in the engine: mixes the carrier to 0 Hz, decimates to 250 kHz or more, low-pass filters to +-11 kHz,
 // keeps the last 2 s and runs the detector once a second.
 #include "dect2/eloran/eloran_engine.h"
@@ -83,7 +86,9 @@ struct ElLoranReceiver::Impl {
         }
         snap.dataValid = r.found;
         snap.griUs = r.found ? r.griUs : 0;
+        { const char* cn = r.found ? loran::chainName(r.griUs) : nullptr; snap.chain = cn ? cn : ""; }
         snap.zScore = r.zScore;
+        snap.cfoHz = r.found && !r.stations.empty() ? r.stations[0].cfoHz : 0.0;
         snap.masterFound = r.found && r.masterFound;
         snap.locked = r.found && r.masterFound && consec >= 2;
         snap.state = !r.found ? 1 : snap.locked ? 3 : 2;
@@ -190,7 +195,7 @@ ModeTuning elLoranTuning() {
     ModeTuning t;
     t.stdMode = 128;
     t.id = "eloran";
-    t.name = "eLoran / Loran-C (WIP)";
+    t.name = "eLoran / Loran-C";
     t.minMhz = 0.090;
     t.maxMhz = 0.110;
     t.defMhz = 0.100;

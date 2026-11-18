@@ -937,3 +937,1506 @@ Shortwave and ATIS were both built with family 211 / standard 213 / active 212 /
 Auto gain for ADS-B now climbs the good-message rate and docks a high share of loud messages (pulse level above -7 dBFS, readsb style) instead of servoing the headroom of the samples (`pulse_gain.h`, `RxTelemetry::adsb.loudMsgs`, v2 controller: pulsed objective, loud-share down rule, pulse-peak headroom, own entry into the climb so the old headroom loop is no longer used for ADS-B). Simulated skies: far-only traffic 100 % of the best fixed gain's message rate (old servo 21 %). The Statistics view got a coverage plot by altitude band (five bands, overlay or single band, hover list, Save results rows, "Copy coverage CSV"). Tests `adsb_autogain`, `adsb_loud`. Untested on real signals: thresholds, a real sky's traffic changes during trials; the start-up bracket search still uses the sensitivity floor score.
 ## 2026-10-31: 3.5 CI failures fixed (fix35-ci3)
 Eleven tests failed on integ-35 after the merges. automation::familyOf had no "msg" name for the new FMsg family (names[] one short: null read, segfault in family_mask, integrations, automation). ACARS block joining (lane-e) held the ETB blocks the block-level tests count: added AcarsReceiver::setJoinBlocks (default on) and the ACARS sim measures blocks with it off (acars_reasm covers joining); finalBlock is only forced for joined messages. The Paper colour map is light-to-dark by design (plot_util), every RTL-SDR now offers 3.2 Msps (dxpatrol), web_policy did not classify "shortwave" (blocked), web_directory wrote files from server/web (moved into onair_server::writeHostFile), two stale translations removed (the rate tooltip changed), and tr() on tree nodes / duplicate "##v" IDs fixed for gui_rules.
+
+## 2026-11-01: FengYun geostationary, FY-4A / FY-4B LRIT, FY-4A HRIT-II/III and FY-2 S-VISSR (feat36-fygeo)
+Four mode-list entries (families 232 - 235, engine standards 234 - 237, poll slots 232 - 235) on one receiver, `FygeoReceiver` (`core/src/fygeo/`). FY-4: the DVB-S2 receiver of the DVB-S/S2 mode with the link's symbol rate (90 / 120 / 1000 ksym/s; captures under 2 Msps are interpolated by a whole factor because that receiver refuses them), transport stream packets searched for CADUs on any PID (ASM in the first 128 bytes of a payload), VCDUs through the GOES xRIT layers (`Assembler::setRawFiles`: packet zone 1012, no CRC check, whole files out; `Mux` takes a zone size), FY-4 header dialect (type 1 image information with segment numbers, navigation, key; encrypted files kept and counted), JPEG 2000 segments decoded with a vendored OpenJPEG 2.5.3 (`third_party/openjpeg`, libopenjp2 only) and put into one picture per satellite, channel, region and time. FY-2: matched filter, squared-signal carrier search, Gardner, Costas, NRZ-M, a free-running PN follower for the 10000 bit preamble (frame sync works to a channel bit error ratio of about 25 %), BER from the preamble, descrambling, IR1 - IR4 and VIS (half resolution) lines into five pictures. Test signals for all four (`fygeo_gen.h`), `tools/sens` entries, tests (`tests/fygeo/` proto, rx, impair, import; `tests/app/test_fygeo_mode.cpp`), docs/FENGYUN-GEO.md, credits (OpenJPEG, SatDump layouts). Shared code touched: `goes_proto` (raw mode, zone size: GOES and Elektro unchanged), `dvbs_dsp.cpp` (the symbol timer divided by zero on exact silence and indexed outside its buffer with a NaN timing: floor on the power estimate, guard on the correction; found by feeding zeros after noise to a DVB-S2 receiver with a manual symbol rate). Nothing verified on air: no FengYun recording was found.
+
+## 2026-11-01: FengYun restructured to three modes (feat36-fygeo)
+The four FengYun entries became three: 232 FY-4 LRIT (FY-4A 90 ksym/s or FY-4B 120 ksym/s as a choice in the panel), 233 FY-4A HRIT-II/III, 234 FY-2 S-VISSR (active standards 233 - 235, engine standards 234 - 236, poll slots 191 - 193 (inside the 189 - 194 block kept for 3.6; after the merge with integ-36, kNumFamilies 237, kPollSeqSlots 197); 230/231 GK-2A and 235/236 FY-3 belong to other branches). The WIP commit did not link (modeui still pointed at the old UI symbols); fixed along with mode_table, picker/mode-info names, sig_known (one fy4lrit signature, 90/120 kBd), web policy id fy4lrit, ui_layout_check, sens entries (LRIT link 0/1 as modeOpt[0]), tests and docs. AWGN sensitivity rerun on the built tree: LRIT-A 0 dB (ideal -0.3), LRIT-B 7 (6.2), HRIT 6 (5.2), S-VISSR sync -2, BER<2% at 5 (4.3); no false lock. The DVB-S2 symbol-timer exact-silence guard sits in the shared dvbs_dsp.cpp (1/0 avoided), so every DVB-S2 user has it. Tests fygeo_*, mode_numbers, layout, web_* pass locally. Unverified: any real FengYun signal (layouts follow SatDump), Windows build (CI).
+## 2026-11-01: Issues 418 412 411 410 409 408 (feat36-issues)
+Triage of six reports. #410 fixed: the hardware-decode fallback (HwStartGuard) was only evaluated for packets fed to the GPU, so an H.264 stream with no flagged keyframe held every packet back and never fell back (audio only); giveUp is now checked before the hold-back (player.cpp). #409 fixed: the wheel Tune action returned early in the general family; new generalWheelTune moves the listening channel by the step. #418 hardened: the FM scan survey waited for ever for a spectrum frame after a retune; it now skips the hop after 4 s and logs it (cause on the user's PC still unconfirmed, asked for rate/gain/log). #412 not a bug: Motorola/Hytera Basic/Enhanced Privacy is deliberately unsupported (docs/KEYS.md). #411 not a bug: "asm" hits the IATA airport code of Asmara, ASM 2 162.050 MHz is correct; CSV export of search results is a possible small feature. #408: Ch/SNR columns already back since 9f01658b2; traffic info needs a capture. Reply drafts in docs/ISSUE-REPLIES-3.6.md. Not built locally (no build dir); verified by CI.
+## 2026-11-01: Four Discord requests (feat36-req)
+Owner-approved user requests. 1) Mesh (LoRa) transmit from the user's own node: `mesh_tx.h/.cpp` builds NODEINFO + text packets (long name, 4-char short name, node ID or one derived from the callsign, channel name + PSK, preset, hop limit 0..7, ham callsign with an option to prefix the text); `TxRequest::mesh`, the Mesh payload panel (saved as tx.mesh*) and the Mesh generator in `tx_payload.cpp` use it; problems are warnings only, a bad PSK still transmits (default key). Test: tests/mesh/test_mesh_tx.cpp decodes the packets with the receiver's own decoder. 2) Linux update: the updater already replaced the portable tar install and ran `pkexec dpkg` for the .deb; the .deb path no longer runs anything as root: it downloads, checks the SHA-256, and shows `sudo apt install '<file>'` with a copy button (`Status::manualInstall/manualCommand`, `debInstallCommand`); download progress shows MB, failure text says nothing was changed. The opt-in toggle is the existing "Download updates by itself" (off by default). No AppImage is built, so there is nothing to replace for it. Test: tests/engine/test_updater.cpp. 3) WeFax rotation: `wefax_rotate.h` (header-only quarter-turn rotate), buttons and keys ] [ \ in the Fax view (pref faxRotate), applied to the shown picture, the saved PNG, the autosave, the gallery publish and the list; gallery large view rotates the saved PNG on disk. Test: tests/marine/test_marine_wefax_rotate.cpp. 4) Selcall in Pagers: the five-tone decoder existed only in the Tones mode (the Pagers tooltip said so). Split out as `SeqToneDecoder` (core/src/tones/seq_decoder.cpp) and run on the pager discriminator audio (48 kHz to 8 kHz) in parallel with POCSAG/FLEX when "Selective call tones" is ticked (`PagerReceiver::setSelcall`, pref pagerSelcall, default off); results go in the same table with Protocol "Selcall CCIR" and the digits as text; capcode view skips them. The Tones receiver still has its own copy of the detector (same logic). Test: tests/pager/test_pager_selcall.cpp. Whole-span (wide) pager receivers do not get selcall yet.
+## 2026-11-01: Sensitivity against theory (feat36-sens)
+Owner goal for 3.6: much more decoder sensitivity. Step 1: swept 13 modes with the existing sens_sweep harness (AWGN, full tier) and wrote docs/SENSITIVITY-3.6.md with floor, rough theory and gap; added harness modes drm16 (DRM30 16-QAM level 0, floor 9 dB) and drmE (DRM+ 4-QAM, floor 2 to 3 dB). Single-transmitter modes are within about 1 dB of theory; big gaps are multi-transmitter test mixes (AIS, ACARS, ADS-B). Step 2 attempt: DRM common phase error from the frequency pilots (phase noise scenario): no gain, inter-carrier interference dominates, reverted. No receiver code changed.
+
+## 2026-11-01 sensitivity second pass
+One-transmitter harness modes adsb1/ais1/acars1 show the ADS-B and AIS gaps were the test mix. ACARS bit-clock gain 0.04 -> 0.015 and reference memory 0.97 gained about 1 dB (1 aircraft), see docs/SENSITIVITY-3.6.md. APRS and FM RDS unchanged.
+## 2026-11-01 Spectrum zoom and target click (feat36-spectrum)
+Wheel zoom now fixes the tuner marker when the pointer is near it; the target click acts on the radio centre (not the marker), recentres the zoomed view on the signal; double click tunes instead of resetting the zoom; Home shows the whole band. Pure maths and tests in tune_drag.h. Ideas in docs/SPECTRUM-3.6.md.
+
+## 2026-11-01 Target mode keeps the marker centred (feat36-spectrum)
+Switching to Centre/target mode, or tuning while in it, eases the view so the tuner marker sits in the middle (followMarker in tune_drag.h, unit-tested; a drag cancels it). The marker is the tuned frequency, so ModeTuning offsets do not move it.
+
+## 2026-11-01 3.5 carry-over test failures (feat36-winfix)
+Root causes, all in the tests or in shutdown order, none skipped: ssbconv wrote its clip to "/tmp" (absent on Windows) -> temp_directory_path(); iridium_bits made a UDP socket before netInit() (no WSAStartup yet); shortwave_path kept an ifstream open on the log while remove_all ran (Windows cannot delete open files; an uncaught filesystem_error aborted with 0xc0000409); dmr_rx threads test depended on the UI thread's first turns (1 poll on a Windows runner) -> callbacks installed before the feed and the feed goes on until 50 polls; native_tci on Windows: stop() shut the read side (SD_RECEIVE) and closed with unread IQ queued, so the stack reset the connection and iq_stop never reached the server -> short receive timeout in interrupt() and a drained, half-closed socket in closeWs(); native_kiwisdr slow-frame step: test stall limit 1.5 s against a 1.4 s pause -> 3 s; native_netradio: fixed 500 ms wait -> polled up to 6 s; i18n stale keys removed (all 14 languages); gui_rules: three "Release page" buttons got ## ids. dvbs_vlsnr (Windows only, BPSK 1/5 SF2): decoder acquisition is marginal at Es/N0 -5 dB (false PLS accepts), see the commit notes.
+## 2026-11-01 Sensitivity harness for HFDL, NAVTEX, DSC, CDR, DVB-C, ATSC 3.0 and HFDL why-bad counters (feat36-fe)
+Added harness modes (hfdl per burst rate, navtex with 40 s trials, dsc VHF, cdr, dvbc, atsc3) to tools/sens/sens_modes.h and measured them against rough theory (docs/SENSITIVITY-3.6.md): HFDL at theory (300 bit/s about 1.3 dB off), DVB-C about 1 dB, ATSC 3.0 about 1.5 to 2 dB (LDPC itself is at 1.4 dB on an ideal channel; sync/estimate not touched), NAVTEX coarse. No receiver change for sensitivity (no clear gap above 1.5 dB with one transmitter). HFDL: why-bad counters (preamble not confirmed, short, SPDU FCS, MPDU header FCS, LPDU FCS, unknown LPDU) in HfdlTelemetry and the Receiver tab, test_hfdl_why checks the counters add up to blocksBad. Other skipped modes (hfdig, airband, ism, ndb, vorils, m17 etc.) not done in this pass.
+## 2026-11-01: FY-3 AHRPT and FY-3 MPT finished (feat36-fy3)
+Modes 235 and 236 decode the Fengyun-3 downlinks (two K=7 rails, differential decoder, CADU, RS, VIRR / MERSI pictures, MWRI counted). Sensitivity against the ideal chain: AHRPT 1.95 dB against 1.78 dB; MPT at 18.7 Msym/s needs a capture of 28 Msps or more (1.72 dB at 28 Msps, about 3 dB and erratic at 20 Msps, where 1.4 samples a symbol are too few). The impairment sweep passes for both. Numbers and the table are in docs/fy3.md. HRPT / AHRPT label says FY-3 is frame-count only there. Not done: RS erasure decoding. Not verified against a real FY-3 recording.
+## 2026-11-01 Inmarsat Aero C channel voice (feat36-inmvoice)
+Owner rule: no "can't do", study the reference. Read JAERO (MIT, github.com/jontio/JAERO; the task said GPL-3, its LICENSE is MIT) and libaeroambe. The C channel is 8400 bit/s OQPSK, root raised cosine 0.6; frame = two 52-symbol unique words (one per arm, JAERO's 216866263330005 / 3012071630031408) + 4096 coded bits; 16 interleaver blocks of 64x4; rate 2/3 puncturing (every 4th coded bit dropped); K=7 code 109/79; P channel scrambler restarted per frame; 2714 bits = 24 x (1 lead + 96 voice + 12 signalling) + 1+96+1, i.e. 25 AMBE frames of 12 bytes and 3 signal units (0x01 fill-in, 0x30 call progress with AES and GES, 0x60 acknowledge). New: aero_cchan.* (coding, framer with arm/polarity/shift handling and flywheel), aero_crx.* (one carrier, mixer + CIC + AeroDemod 8400 + framer; AeroDemod got setBitSink and alpha 0.6; Front moved to aero_front.h), aero_cgen.* (generator), manager C receivers per wide carrier (updateC, cost 0.5, 45 s give-up, 60 s back-off), VoiceMixer::pushCFrame + call list, Voice tab (aircraft, GES, Eb/N0, call history), Advanced switch. Codec: new id aeroambe (AMBE 4800x3600, 12 bytes as JAERO gives libaeroambe), plug-in source tools/addons/aeroambe (no vocoder; user builds with libaeroambe's mbelib). VERIFIED ON REAL DATA: JAERO's 8400bps_ambe_sample.ogg: 166 frames, 160 with CRC-good SUs, call-progress AES 7812E7 GES 90; the plug-in on the voice bytes gave 0 Golay/Hamming errors and speech bursts (29-33 s, 64-72 s) from level and zero-crossing statistics (not listened to). Tests: test_aero_cchan (coding, framer, chain sweeps: offsets +-2.6 kHz, +-1000 ppm, rates 48k..2.4M, chunk 1..65536, drift 5 Hz/s, level step, three calls on one receiver, no frames from noise or a P 10500 channel; decoder only 100% from 3 dB per channel bit vs theory 2.6; chain locks from 2.5 dB), test_aero_cchan_real (14 s excerpt in tests/data/aero, int8 48 kHz), test_inmsat_cvoice (two simultaneous calls in a 2.4 Msps capture through the manager and mixer with a fake codec). Note: at 24 kHz input the demod does not lock (squared-signal aliasing); the Front always hands it about 48 kHz so this does not matter. Not done: single-channel Aero mode still P only (voice lives in Inmarsat all carriers); C-channel assignment SUs from the P channel are not yet used to prime receivers; encrypted calls cannot be told apart (no marker known).
+## 2026-11-01 Simple / Advanced view per mode (feat36-simpleadv)
+Owner dislikes the overall UI: every mode with its own screens now has a Simple | Advanced switch (two pills above the tabs). Simple = spectrum plus ONE Command view: the mode header, the summary line, the meters as coloured read-outs and the live data in panes side by side; Advanced = the tabs as before. Framework in app/ui/kit/mode_panel.{h,cpp} and mode_panel_logic.h (pure, tests/app/test_mode_panel.cpp): ModeUi gets optional `command` and `noSimple`; a mode with neither gets a generic view (its tab on the first view; kit::modeNav hides the pills and keeps the first item, and for a mode with a Map view shows Live and Map as two panes on a wide window, giving the user's Advanced choice back afterwards). `modepanel::panes()` is the layout helper (side by side, wrapping, stacked, one pure width function). Saved per mode as `uiLevel.<family>[.<sub>]`; the profile default is decided once at start (`setupUiLevelProfile`): an existing profile Advanced, a new one (no settings) Simple. HFDL (messages + ground stations, band and channels folded) and DMR (calls and slots + channel signal) have their own `command`; every other mode uses the generic view. Design note docs/SIMPLE-ADVANCED.md. Test aids: env DECT2_UILEVEL=simple|advanced, `UILEVEL=simple tools/ui_layout_check.sh`. Lesson: the first shots showed Advanced because the API token is made before the "fresh profile" check and the nested child made the layout checker report cut content, so the Command view is drawn in the tabs' own window.
+
+## 2026-11-02: PACTOR-II, PACTOR-III, PACTOR-IV (physical layer) and Multitone framing (feat36-pactor)
+Three new mode-list entries (families 237 / 238 / 239, engine standards 239 - 241, poll slots 197 - 199; kNumFamilies 240, kPollSeqSlots 200) on one receiver, `PactorHfReceiver` (`core/src/pactorhf/`), receive only. Searches (SCS PACTOR-3 / PACTOR-4 technical descriptions, ARRL, Wavecom, the Korean "Pactor Series Overview", sigidwiki, github, the p4dragon downloads): no open decoder and no reverse-engineering paper of the PACTOR-II / -III / -IV channel coding exists; the public descriptions give only constraint length 9 or 7, rate 1/2 and the puncturing rates, not the polynomials, puncturing patterns, interleaver, scrambler or header layout. docs/pactor.md says OnAir does not reverse engineer proprietary protocols, so the modes stop at the physical layer: carriers found by the symbol clock line (PACTOR-II pair 200 Hz apart, PACTOR-III on the 480 + 120 n Hz grid with the tuning error searched and the speed level from the carrier count, PACTOR-IV 1800 baud single carrier at 1500 Hz), common symbol clock with ppm drift, differential phase steps per carrier (D-BPSK / QPSK / 8PSK / 16PSK, block-wise frequency follow), repeating frame period and constant part found by a z-score over lags, PACTOR-IV constellation estimate by power-law lines. Owner's PACTOR-II recording (1 Nov, 8532.8 kHz): two carriers 200 Hz apart, 100.000 baud, a frame repeating every 362 symbols = 3.62 s (22 copies); neighbouring copies agree in about 60 % outside the constant part, so a changing scrambler or paired frames: not worked out. Symbols are right in perhaps 80 % there (poor channel). Tests: synthetic generator with the exact symbols (all PACTOR-II orders, PACTOR-III levels 2 - 6, PACTOR-IV orders 2/4/8/16; tuning +-20 Hz, clocks to +-300 ppm, noise to 12 dB in 2.5 kHz, fading, noise and a tone alone must not be found), the receiver through the front end at 250 ksps, the engine, the owner's recording (26 s excerpt in tests/data/pactorhf). Known limits: no equaliser (a second path turns PACTOR-IV QPSK into "QAM"), PACTOR-IV constellation needs about 15 dB, PACTOR-III level 1 equals PACTOR-II, two-path hurts PACTOR-II/III, the synthetic signals are not real PACTOR frames. Sens harness entries pactor2 / pactor3 / pactor4 (AWGN threshold about 3 dB SNR in 2.5 kHz for II and III; the combined scenario has no 90 % success). Multitone: the detector now measures framing from the bit stream (analyseFraming: doubled bits, repeating marker and spacing, word list, repeated halves) and the owner's recording (Multitone 27599.8 kHz FM audio) gives FFSK 292.8 / 585.6 Hz at 585.6 baud, 48-bit frames of a 24-bit marker 000000101101001001110110 plus a 24-bit word, 26 distinct words, first ten a byte sent twice; docs/multitone.md; no meaning is claimed (format not public). Credits row for the public descriptions added (THIRD_PARTY.md, in-app Credits). Fix: panel standard of the new modes is the active standard (238 + V).
+## 2026-11-02 AppImage update, search-results CSV, selcall in whole-span pagers (feat36-ux2)
+1) Linux: the release workflow now builds OnAir-<ver>-linux-<arch>.AppImage from the portable package (tools/package/make_appimage.sh, appimagetool 1.9.0 with --appimage-extract-and-run); release.sh lists it. The updater has InstallKind::LinuxAppImage (APPIMAGE variable or *.AppImage with the type-2 header), picks the asset for the architecture, checks GitHub's digest AND the release's SHA256SUMS (they must agree; SHA256SUMS fills in a missing digest), stages `<file>.new` next to the old file and swaps it after exit through the same apply script, no root. Tests: a fake release of local files (wrong SHA256SUMS, wrong digest-less sum, not-an-AppImage, success + swap). Not run: the real appimagetool in CI, an AppImage on a real Linux desktop. 2) #411: new "Export results CSV..." in the Frequencies panel saves the rows now shown (search + filters, airport rows included) in the Memory CSV format; 3 new strings in all 13 languages (unreviewed list). Issue parts A (airport rows for the IATA code ASM are listed first, by design) and B (VDES ASM 2 frequency) left alone, B needs the ITU channel table. 3) setPagerOptions gained the selcall flag: the whole-span pager carriers now decode CCIR/ZVEI/EEA/EIA/DZVEI like the audio pager (existing Pagers checkbox, no new control); test_pager_wide_selcall.
+
+## 2026-11-02 Iridium voice finished (feat36-iridvoice)
+Studied iridium-toolkit (README: 2-Clause BSD; THIRD_PARTY.md and in-app credits corrected from "unknown licence") and gr-iridium. The toolkit hands its AMBE decoder the 312 bit voice field as 39 bytes with the first bit received as the LEAST significant bit (bits_to_dfs.py); OnAir had sent MSB first, now the same as the toolkit (plug-in id `iridium`, 39 bytes, documented in CODECS.md). Silence frames (LCW 001111 / 100..0, stats-voc.py) are counted and not sent. Calls got a level meter, Mute and Solo (soloed calls mixed, Listen ignored while any solo; muted calls still decode and record) and a Record calls switch. New test_iridium_voicechain: known voice payloads through generator, demodulator and frame layer, bit-exact at +-8 kHz offset, +600 kHz off-centre, +-37.5 kHz Doppler at 350 Hz/s, +-50 ppm clock, 8 bit + DC; 90 % whole bursts at Es/N0 12 dB against 11.2 dB theory. Not verified: a real Iridium recording and the real FEC / interleaving inside the (user-installed) vocoder; GUI shot not taken (no full app build).
+
+## 2026-11-02 3.6 modes triage and SITOR-B (feat36-modes)
+Branch feat36-modes from integ-36. docs/MODES-3.6-TRIAGE.md: every item-21 queued mode (FT8/WSPR/FT4/FT2, airband, LoRa APRS, LoRaWAN, HD AM, DRM mode E, GNSS multi-constellation, cell, DTMB, DVB-C, explorer, analyser, TETRA/MAC/astro/ALE/P25/BLE) is already merged in integ-36; there is no remote WIP branch for any of them. The real remainder is the rows still marked WIP: SITOR, DGPS, DME, eLoran, MPT1327, LTR, EDACS, Yaesu Fusion, KAVB. SITOR finished: family 119 / active 120 / engine standard 121 / poll slot 194. core/src/sitor/sitor_live.cpp (SitorLiveReceiver): marine front end, FSK tone finder and slicer, two NavtexDecoder instances (either tone polarity, bit phase search, 4-character time diversity) with a new character callback (NavtexDecoder::setCharCallback), so the SITOR-B text is shown without ZCZC framing. SitorDecoder (hfdig_sitor) now uses the ITU-R M.476 word table shared with NAVTEX instead of the 32 smallest four-of-seven words; idle / repeat words print nothing and are not counted as errors. Panel app/hfdig/hfdig_sitor_ui.cpp shows state, tone shift, baud, SNR, word counts and the text; the WIP label and the unverified-table warning are gone. Tests: tests/sitor/test_sitor_live.cpp (rates 250 ksps to 8 Msps, chunk sizes, carrier offsets, swapped tones, noise, 8 bit, DC, gap, reset, figures), test_hfdig_sitor, test_sitor_mode. Sens harness entry "sitor". Not done: SITOR-A (ARQ, two-way), a real recording, the sens curve (entry added, not run), GUI shot.
+## 2026-11-02 DVB-S2 false header lock at very low Es/N0 (feat36-s2lock)
+test dvbs_vlsnr (BPSK 1/5 SF2, VL_MODE=4 VL_CFO=5000) failed on Windows CI and on macOS: at Es/N0 about -5 dB s2Hunt accepted a chain of two 90-symbol headers (rho 0.37-0.44, SNR -6 to -8 dB: noise gives those) and the receiver locked on a false PLS ("64APSK 32/45-L"), then "frame synchronisation lost", again and again; the VL-SNR search (990 known symbols) was only asked when no chain existed. Fix: a chain of at most two headers with SNR below 0 dB asks vlHunt first (forced, not on every other call), and vlHunt takes a peak from 5 sd (was 7) when three mode patterns of the same set agree on the position (the real signal shows at the same position in several, noise in one; the symbol clock wander of the front end at -5 dB lowered the true peak to 5.4-6). Shared receiver: DvbsReceiver serves DVB-S, S2, S2X, VL-SNR, QO-100 second carrier, multi-TV, Fengyun/GK-2A DVB-S2 paths; all 38 related ctests pass, sens_sweep dvbs2 quick identical before and after (awgn 4 dB, cfo20ppm 4 dB, false-lock rate on noise 0.000; the +1 dB against the committed baseline is older than this change). Open: the front-end timing loop jitters ~1e-3 at -5 dB, which is the real limit of the VL hunt there.
+## 2026-11-02 Auto gain rebuild: audit, SpyServer / generic radio fix, SDRplay split, per-mode refinements, spur notch (feat36-autogain)
+Issue #8 ("still sucks"). Audited v2 against the 2026-10-31 diagnosis: meter, climb, slope test, calibration and re-run triggers were already there; the gaps were found by running every radio profile through the simulated front end (new `autogain_models`): radios whose gain table is an index of an unknown radio (SpyServer, Kiwi, generic) had the wanted signal read as intermodulation (SpyServer -27 dB final SNR beside strong carriers; fixed: slope test waits for the measured step, `RadioProfile::stepsUncertain`), and an ADC-limited start could not climb (new rule: floor within 1.5 dB of the ADC noise accepts a step up). SDRplay: Auto can now pick the LNA-first (linearity) split by policy through a driver setting `gainsplit` (sensitivity stays the default); per-mode refinements for keyed-burst modes (peak-hold headroom floor) and LoRa/mesh (GNSS class); one "Clean the input" switch (DC + IQ + new adaptive spur notch `dsp/spur_notch.h`, cut only when a line stays at the same baseband place after a retune; first version cut Inmarsat Aero's other channels, caught by test_iq_modes, so persistence alone cuts nothing). Tests: autogain_models, spur_notch, iq_modes extended with a spur outside the channel in every mode that has room. tools/sens untouched by construction (the notch is off by default and sits in the engine, not the decoders; the controller changes only the Auto gain targets). Unverified on hardware: see docs/AUTOGAIN.md section 9. Pre-existing: `gain` (real-time GainSweep) fails the same way on other branches.
+
+## 2026-11-02 3.6 WIP modes finished (feat36-wipmodes)
+Branch feat36-wipmodes from integ-36, one commit per mode. LTR: the 7 check bits are the XOR of a fixed 7-bit value per information bit (table from sdrtrunk CRCLTR, GPL-3, credited); words are listed only when they verify, the inbound inverted check is accepted on inverted polarity; test: distinct syndromes, every single-bit error caught, corrupted words never listed, 162-case sweep (rate, offset, deviation, polarity, baud clock). EDACS: real framing (sync 0x555557125555 = dotting, Barker field 0x5712, dotting), BCH (40,28) with g = 0x1539 checked word for word against DSD-FME's encoder (2000 words, vectors in the test), polarity found from the sync/check bits (no setting), Standard/Networked message layout (TSB-69.3 as implemented in DSD-FME's edacs-fme.c) and Extended Addressing, optional ESK 0xA0; the frame start is followed to the sample after each good frame (clock difference no longer loses frames); 162-case sweep plus an 80-frame run at 0.05 % clock error. MPT1327: the decoder already followed the 1997 standard (CRC, parity, CCSC); the standard's text (sigidwiki copy, text dumped with a PDFKit script) was used to complete every address codeword (Aloha WT/M/N, ACK qualifier, AHY/AHYQ/AHYC/AHYX, MARK, MAINT, CLEAR, MOVE, BCAST variants, HEAD, special idents) and one wrong bit is repaired as Appendix 2 allows; test_mpt1327_std builds each codeword from the printed bit widths and sweeps the engine over rate, offset, deviation, polarity and clock. Yaesu Fusion: frames written by MMDVMHost (header, VoIP header, terminator) are read exactly and rebuilt bit for bit (test_fusion_interop, bytes only); the 72-bit V/D mode 1 voice frame is the DMR/NXDN AMBE+2 frame (positions equal MMDVMHost's tables), so it now plays through the user's mbelib (not while silent); sweep over data type, tuning, deviation, symbol clock, noise, mirrored spectrum. DGPS: the parity was wrong (no D29*/D30* terms, wrong D30 equation, so it only agreed with itself); now the GPS equations (checked against OnAir's LNAV parity), messages 1/9/3/5/6/7/16 decoded to the end (the public RTCM SC-104 paper's example messages are test vectors, ECEF to lat/lon checked against its figure 5.4), bit clock followed across blocks, 50/100/200 bit/s side by side, sweep of rate, offset, sample rate, clock, polarity, noise. DME: Y channel beacon replies are 30 us apart (36 us is the aircraft interrogation, now counted separately); the ident is found as the regular 1350 pp/s train between random replies (the old pair-rate window could be filled by normal traffic), timed into dots, dashes and gaps; channel number from the tuned reply frequency (Annex 10 plan, 252 channels each once); test with shaped pulses, Poisson replies, noise, 2 to 10 Msps. eLoran: the coherent phase-code stage failed when the carrier was a few tens of Hz off; the pulse-to-pulse rotation is now measured and removed (works to +-250 Hz, also gives the tuning error); 27 chains of the public GRI list swept; chain names; the 32 9th-pulse position states as a verified table. NOT done / unverified: the eLoran data channel (Reed-Solomon RS(24,9) constants, coset vector and message layouts of the USCG Loran Data Channel standard v1.1 are not in any public text I could reach; a 9th-pulse recording would also be needed), Eurofix 3-level PPM pattern table; EDACS and MPT1327 and LTR and DME and DGPS and eLoran have no real recording, only spec-derived generators and independent oracles; Fusion voice FR / V/D mode 2 still go to the user's 'ysf' plug-in as sent. Credits added: sdrtrunk, DSD-FME / EDACS-FM / ledacs, MMDVMHost, gpsd, Rohde & Schwarz app note, Loran chain list / Lo et al. KAVB checked only: 7 of 7 tests pass, no WIP label.
+
+## 2026-11-02 First-run setup v3, regional presets, easy mode (feat36-firstrun)
+Branch feat36-firstrun from integ-36. The 2.x wizard (radio, location, interests, done) became six screens: radio, location, antenna, interests, voice codecs, done. Location has one-click regional presets (Lithuania, EU generic, UK, Germany, Poland, US, Canada, Australia; setup_logic.h `regionPresets`) that set band plan, TV channel raster, FM band and step, default FM/APRS frequencies and units (follow region / metric / imperial); a preset has no position (approx), so adsbLat/Lon is only saved for a typed city or coordinates. Antenna screen reuses learn::checkup lines as hints per interest. Codec screen (`appcodec::wizardCodecPanel`) lists every voice plug-in with status, Open codecs folder, Look again (rescan, no restart), Copy build command and the OS steps; nothing is shipped or downloaded (docs/CODECS.md rules). Easy mode (default on in a new profile) = every mode opens its Simple view: `modepanel::setEasyMode` sets the profile default and rewrites saved per-mode levels. Settings: Easy mode, Region preset, First-run setup (Run setup again), Font look unchanged (Current/Clean/Compact, persisted as uiTypography, applies after a restart). Existing users still get no wizard (wizardPending unchanged; its tests cover it). Radio detection: every board a driver reports now has its own plain line (airspyhf, fobos, rfnm, nrspst, tci, sdrpp, audio; rtl_tcp no longer matches the RTL-SDR line), checked by a test that scans core/src/source for `board = "..."`. Fix found on the way: the map-sharing question popped up over the setup screens after 90 frames; it now waits until the setup is closed. 52 new texts in 13 languages (machine translations, listed in app/i18n/unreviewed). Not done: live font switch (fonts load at start-up), the three English-only buttons of openCodecFolderButtons.
+## 2026-11-02 Digital voice quality: capture range and "why" hints (feat36-voiceq)
+Measured DMR, P25, NXDN, D-STAR, dPMR, TETRA with the sweep harness plus new +-4 kHz carrier scenarios (cfop4k / cfom4k, narrowband modes only). Found the real gap in the capture range, not the AWGN threshold: D-STAR needed 19 dB with the carrier 4 kHz off (7 on frequency), NXDN 13 (9), P25 11/13 (9), dPMR no decode at all. Fix: `MeanAfc` fine regime (mean of 4 x 20 ms windows, 2.5 kHz threshold), enabled in NXDN and P25; D-STAR and dPMR got MeanAfc with a 1.2 kHz threshold that moves the oscillator only while searching (a mid-call move broke the voice bits in test_dstar_rx; 1 kHz in NXDN dropped 3 frames of a +-1 kHz call, so 2.5 kHz). After: D-STAR 9/11, NXDN 9, dPMR 9/7, P25 5/7; awgn, cfo20ppm, tu6, combined unchanged or better. TETRA harness wired (centre 392.5 MHz + threaded session): 10 dB AWGN, lock 3.3 s (capture-bound). Hints: `voiceWhy()` verdict (no input / no sync / identity unreadable / FEC fails / marginal / decoding) as a coloured first line of the Receiver tab of DMR, P25, NXDN, D-STAR, TETRA, 7 strings x 13 languages. Not done: GUI screenshot (app not built here), D-STAR single-sync late entry (false-lock risk), a full-tier baseline refresh (quick tier only, 2 dB steps), the other modes' regression sweep beyond the voice family (MeanAfc is used only by P25 and NXDN).
+
+## 2026-11-02 Simple / Advanced rollout to mode families (feat36-simpleroll)
+Branch feat36-simpleroll from integ-36, one commit per family. New own `command` views (modepanel::panes: header, key controls, live tables side by side): ADS-B, AIS, ACARS, VDL2, pagers, APRS / packet, LoRa mesh (by protocol entry: Meshtastic, MeshCom, LoRa APRS, LoRaWAN), TETRA, P25, NXDN, D-STAR, dPMR, M17, radiosondes, Inmarsat-C, Inmarsat Aero, Iridium, Orbcomm, and one commit for the picture modes (Meteor, GOES, HRPT, GK-2A, Elektro, FY-3, FY-4 / FY-2: picture + signal readout). Voice modes got a `voiceBar()` split out of `tab` so both views draw the same strip. Shared fixes the narrow panes needed: the "Save results" bar, the message-log bar, the ADS-B table toolbar wrap with `sameLineIf`; the "voice codec missing" note wraps. 16 new strings in 13 languages (app/i18n, unreviewed lists, keep-English list). Checked with tools/ui_layout_check.sh (UILEVEL=simple, 3 sizes, DECT2_SKIP_FIRSTRUN=1 so the map consent popup does not cover shots): findings left in the new panes are map labels at the map edge and clipped table text; the rest are the old spectrum / side panel ones. test_gui_rules and test_i18n pass. Left: DVB / DAB / FM screens have no Simple view, DRM and Fusion already single-view.
+## 2026-11-02 CI test failures on integ-36 run 41352790402 (feat36-cifix)
+Root causes and fixes, tests only except one ctest property. time_machine: the 10 s save deadline and the engine test's fixed 4 s run are too tight when a thousand tests share the runner (the save thread starved, c.cs8 removed after an error and the test threw from fs::file_size); deadlines are now generous polls (return as soon as done), the engine test runs until the save is triggered and finished, file sizes use error_code. updater: waitFor 10/20 s on the curl file:// check/download is now 6x+20 s. dtmb_c1: reproduced locally under load, the receiver's 2 decoder threads drop codewords (queue limit 256) when starved, so missing packets varied 0..112 run to run; test scenarios now use threads = 0 like dtmb_snr/c1echo/bw6. plugin: stop() waits watchdog + 1 s by design (1.4 s) against a 1.5 s bound; bounds widened to 8 s. dvbc_engine: the single 2 s steady-state window can catch a scheduling hiccup; up to 6 windows, first clean one counts. audio_engine (Windows): ctest TIMEOUT 1800 (80 s on a Mac, 600 s exceeded on the Windows runner). multitv (Windows segfault): not reproducible on macOS; the test now prints the crash report and runs unbuffered on Windows so the next CI log shows where. dvbs_vlsnr is owned by feat36-s2lock.
+
+## 2026-11-02 MCP server: AI assistants drive OnAir (feat36-mcp)
+Branch feat36-mcp from integ-36. `core/src/mcp/` (full JSON value, JSON-RPC 2.0 dispatch, initialize / tools / resources / prompts / ping, activity log, 120 calls/min limit, stdio loop, `McpHttpHost`), a thin layer over `RemoteApiHost` plus the engine's signal identifier. 21 tools (+3 `tx_*` listed only when the separate TX switch is on): list_radios, get_status, set_radio, tune, start/stop_receiver, list_modes, set_mode, scan_band, identify_signal, auto_decode (scan, identify, pick mode, switch, tune, wait for lock, hints), get_decoder_state, get_messages, get_spectrum, get_receiver_health, recording x3, search_frequencies, get_band_plan, get_codec_status. Transports: `onair-server --mcp-stdio` (stdout is protocol only) and streamable HTTP via a new `/mcp` route in RemoteApiServer (`handleMcp`, `mcpOnly`) on its own port 8766, so token, Host/Origin and rate guards are reused. App: Data feeds > AI assistant (MCP), off by default, token, snippets for Claude Desktop / Claude Code / other with Copy, activity log; TX switch is never remembered. 15 new strings in 13 catalogs (machine translated, listed in unreviewed/). Tests: tests/mcp/test_mcp.cpp (in-process fake client, every tool on the test signal, end-to-end DRM at 15 MHz, HTTP guards) and test_mcp_stdio.py (real client against the binary). Not tried with a real radio or real Claude / ChatGPT clients. docs/MCP.md.
+## 2026-11-02 Real-signal test library (feat36-reallib)
+Branch feat36-reallib from integ-36. docs/REAL-SIGNALS.md: table of every mode with a real-recording test (existing: JAERO Aero, HFDL burst, DRM cells and AAC, SARSAT, Multitone, PACTOR-II, ATSC3 media), the leads checked (PALindrome has no licence and 32 MS/s LFS masters, HamTV offers TS not IQ, grcon23-ctf holds baseband frames not IQ, rx1090 75 MB without licence) and the modes with no real recording. Three new tests in tests/real, registered as real_adsb, real_dtmb, real_dsc (about a second each): dump1090 modes1.bin (MIT, 714 KB: 57 short + 126 long CRC-good messages, one aircraft); the owner's 554 MHz DTMB capture (first 2 MB: PN945, 16QAM 0.8, mode 2, CFO -560 Hz; the first TS packet needs about 8 MB, too big, so the test reads the receiver's log lines because 0.1 s ends before the first telemetry report); the owner's Dsc_examples.mp3 (22 s at 12.5 kHz s8, played in as IQ at 250 ksps with a 1700 Hz offset: two individual calls on 8291 kHz, ECC ok). THIRD_PARTY.md rows added. No decoder failure found. Minor: adsbtool rx prints "0 good" in its closing summary (telemetry read once after the last feed) while the messages are right. Tests were built by hand against the integ-36 library of the voiceq worktree (the full tree build was not run); CI not dispatched.
+## 2026-10-31: OnAir Web redesign (feat35-webui)
+Restyled both web faces in the desktop app's instrument language (neutral greys, hairline rules, one amber accent, JetBrains Mono for numbers, Inter for text, fonts self-hosted as Latin WOFF2, light and dark theme). Receiver console (`web/onair-web`): tuning / signal / audio modules, frequency readout with digit click and wheel tuning and a typed-frequency dialog, mode segment, S-meter that also reads the spectrum while audio is off, squelch mark, output level meter, buffer indicator, record-a-clip, spectrum with dB axis, band plan strip, peak hold, draggable passband edges, hover frequency, waterfall with passband overlay, three more colour maps (turbo, magma, ice), memories, decoder tabs, `?` shortcut overlay, phone layout with an audio dock and a bottom sheet. Wire protocol, worklet and decoder code are untouched. Directory (`web/onair-directory/public`): top bar, totals, region / radio / band filters, list, cards and a plain lat/lon map view, favourites in localStorage, shareable URLs (query string), light theme. `?demo=1` on either page runs on built-in fake data (receiver: simulated socket in `onair-demo.js`; directory: sample receivers) and is inert without that parameter. Not done because the data does not exist: mode filter and signal sparkline in the directory (the API has neither); the map has no coastlines (no tiles, nothing fetched).
+
+## 2026-10-31: OnAir Web redone as a port of the real app look (feat35-webui)
+The first redesign was a new brand; the owner wanted the app itself. Both pages now use the app's graphite palette (ui2_theme.cpp "Dev A": bg 30, rail 37, edge 60, text 204, accent 59/130/196) with theme.h's tab and widget style: JetBrains Mono 13 px everywhere (the app's embedded mono, no Inter), flat 1 px panels, square slider grabs, framed inputs, ImGui-style checkboxes, collapsing headers with a triangle, selected tab a filled blue (38/97/168) with a white label, alt rows 2 % white, 11 px scrollbars. Layout copies the main window: menu bar, RX tab, header strip (stop/listen square, 0.000.145.500.000 Hz readout, mode line, segmented level bar, volume strip), left collapsing panels (Receiver, Listen, Display), Overview plot with band bars, soft white trace, red-brown passband column and blue tag, the app's Navy heat waterfall with colour bar, Zoom column, right tab panel (Bands, Memory, Decoders), boxed status bar. Directory: same chrome, ImGui-style sortable table (click headers), row hover and selection, flat cards and map. Side-by-side proofs are in docs/webui-shots/compare (local, ignored by git). Light theme is a plain lightness inversion of the same tokens.
+## 2026-10-31: Map: ham contacts always 0, icon set, UI (feat35-map)
+Not deployed. Ham contacts were zero for three independent reasons plus one that hides real data. (1) Page: `ham-ui.js` passed `Map.values()` (an iterator) to `buildContacts`, which walks the list twice, so the second pass saw nothing and the counter was 0 even with eight ham tracks on the map; found by running the real page against a local hub (`web/map/test/dev-server.js`), not by the unit tests, which passed arrays. (2) Hub: `track-book.js` refused ham tracks older than 120 s, but a WSPR contact is known only after its 2 minute slot and decoded after it, and any contact waiting in the app's rate-limited queue is older too; now 3600 s (the app queue holds 1800 s). (3) App: `map_send.cpp` took the contacts out of the queue and put them in the post before the 4 s post throttle, so a throttled tick threw them away (the normal tracks are collected again every tick, contacts are one-shot); the sink also dropped them when the post already held 250 tracks (the hub refuses more than 250). The flush now happens only when the tick will post, with room reserved (`mapfeed::roomForOthers`). Also the page aged a contact from hub arrival instead of from when it was heard. Honest limits that remain by design: nothing is sent unless Server > Share ham contacts is on and consented; CQ calls without a partner are not contacts; a contact needs the sender's locator to have been heard in this session (no locator, no track); only the FT8/FT4/FT2/WSPR/JS8 engines and logged QSOs feed it, only while the ham window is decoding. Tests: `web/map/test/ham-feed.test.js`, `tests/ham/test_ham_mapfeed.cpp`.
+Icons: one sprite generated from `shapes.js` (`iconsvg.js`, 55 symbols, about 50 kB), same flat style on the map canvas and in the page, new shapes (train, base station, tower, weather, pager, contact), hover and stale states, legend with every shape (a test keeps legend, shapes and sprite in step), `test/icon-sheet.html`. UI: grouped layer panel with counts and "only", age filter plus age fade, hover tooltip, history sparkline (altitude or distance) in the card, auto/dark/light theme button, keyboard shortcuts (`?` lists them).
+
+## 2026-11-02 - OnAir Web client finished (feat36-webclient)
+
+Merged feat35-webui and feat35-map onto integ-36 and filled the gaps in the browser client (web/onair-web/): a full Settings panel built from a validated schema (receiver, display, layout; localStorage with try/catch, JSON export and import), AGC, gain, de-emphasis and Narrow / Normal / Wide filter presets, auto-range (adaptive or manual levels), waterfall speed, FFT size, trace smoothing and peak hold, memories drawn as flags on the spectrum, memory export and import, an offline pan/zoom map tab for ADS-B, AIS and APRS (coarse world outline from worldlow.h), i18n strings (en, lt, de), compact layout chosen by class instead of a media query (so Settings can force it), side panels that can be hidden, text size, reduce motion. Protocol unchanged (only `rx`, `audio` and `spectrum` messages with values the server already accepts). Tests: tests/web/run.js grew from 24 to 39 tests (settings, i18n, map maths, world data, marks). Checked live against onair-server --web --device test in the built-in browser at desktop, tablet and phone widths: audio frames (74 in 3 s), spectrum rows, rx and audio messages accepted, muted playback buffer 120 ms, no console errors. Deploy steps are in docs/ONAIR-WEB-DEPLOY.md; nothing was deployed. Not verified: real browsers over the internet (Safari iOS, Android Chrome, Firefox), a real radio, TLS and reverse proxies.
+## 2026-11-02 Multi-signal decoding from one wide capture: UI, span decoders, tests (feat36-wide)
+Branch feat36-wide from integ-36. WideSession (71b54fcb8) was not reachable from the app; now Engine::setWideAll / wideAllSession() put it in front of the mode's receiver (syncWideAll configures it on the analysis thread, a new rate or centre starts the search again, the AM / NFM sound goes through the VFO audio path). New window View > Everything in view (app/panels/wide_all_ui.cpp): one button (also in every Simple view when the capture is >= 1 Msps), table with enable, MHz, mode picker (Automatic or any kind by hand), state with the reason, what it is, SNR, CPU share, pin, Listen, remove; "Add selected region" (the Identify tool's dragged region) and "Add tuned signal" (WideSession::addManual / remove); found signals are drawn as bands on the spectrum; CPU bar against the limit, a limit slider and an orange line "N signals are paused to save CPU" when the guard has dropped something. Core: TETRA and Inmarsat are span decoders in the session (kinds Tetra, Inmarsat): one TetraReceiver / InmsatReceiver takes the whole capture while an entry of the kind runs and finds all its carriers itself (a 25 kHz TETRA carrier shows as two finder carriers: the weaker is hidden); L band carriers (1525-1559 MHz) are Inmarsat; their CPU is measured in the session load and they are dropped by the guard like the rest. TV exclusion zones got 500 kHz margin: a channel off the 8 MHz slot grid stuck out of its slot and its edge became 24 bogus narrow entries (found by the 3-channel test). Tests (synthetic IQ only): wide_multi (TETRA 2 cells + DMR; Inmarsat all carriers; marked-by-hand add / kind / remove; sweep: carriers at +-1.0 MHz off raster, DMR next to DC, 4 Msps at +-1.7 MHz), wide_multi_tv (DVB-T2 -8.4 + DVB-T +0.3 + DVB-T2 +8.2 MHz in one 28 Msps capture, all 3 locked with services). 31 new i18n keys in 13 languages (unreviewed lists updated). Not verified: live radio, real TETRA / Inmarsat air signals, the GUI with live entries (the window was only seen empty, headless), Windows build, TETRA span decoder's own worker-thread CPU (not in the guard's measure), CPU guard on a genuinely slow machine (tests use the load override).
+
+## 2026-11-02: Share my radio, relay client, listener bans (feat36-webshare2)
+Goal: sharing a radio on the web from inside the app in one button. Findings: the app already had a Share on web window (radio, range, decoders, access, directory listing, Cloudflare quick tunnel) but the link needed a downloaded helper, there was no listener list and the Server menu closed the window with the menu (drawPopups was only called while the Server menu was open; fixed in map_send.cpp). Built: (1) `server/web/web_relay.*`: an outbound WebSocket relay client (docs/ONAIR-WEB-RELAY.md is the wire spec and the list of what the relay service must do): signed hello with the directory key, virtual connections carried to 127.0.0.1 with the listener's address in a rewritten X-Forwarded-For, reconnect with backoff, status file; started by `web_relay=1` (sets web_trust_proxy). (2) Hub and admin API: `ban`, `bans`, `unban` (address blocked in memory, session kicked). (3) The window: big **Share my radio** button with a one-sentence summary, relay health, processor and upload bars, listener table with Kick / Block 24 h, blocked list with Allow again, invite links (invite-only access), who may listen (anyone, password, invites), antenna, a Server settings tab (port, certificate, relay address, per-address, CPU and bandwidth caps, idle and session limits, spectrum bins and rate), auto-apply of changes and automatic restart of a stopped server (3 in 10 minutes), fallback to the Cloudflare tunnel when the relay does not answer in 25 s (and back to the relay when it does). 46 new window texts in all 13 catalogs (listed in unreviewed/). Tests: web_relay (client against a fake relay + fake web server, signature verified), web_hub ban, web_server admin ban, webshare_core (settings, conf, user list beyond jsonParse's 4 KB, invites). End to end: real onair-server with the test signal against a Python fake relay returned /web/v1/info through a virtual connection. NOT done: the relay service itself (nothing deployed, nothing contacted), wss with a real TLS build, the window's real-radio flow (screenshots only, demo data), Windows build (no TLS there: falls back to the tunnel).
+
+## 2026-11-02 second CI pass on feat36-cifix (run 41368592246)
+tx_quality_b: the time-signal generator starts at the wall clock, so its keying sidebands (far power) vary with the minute the test runs in (-41 .. -38.9 dBc), limit for timesig -35 like uat's special case. dvbc_engine: the 256-QAM lock was lost for a moment at the measurement; the steady-state window now also needs a TS lock. ham_sdr: Halt bound 100 ms -> 750 ms (a block is 10 ms). kaws_synth (Windows): waits up to 450 s / 300 s (returns at the first decode), ctest TIMEOUT 1500.
+
+## 2026-11-02 Discord button (feat36-discord)
+Menu bar chip with a drawn Discord icon (Ic::Discord, tooltip "Join the OnAir Discord", unique ID discord_invite) opens the invite in the default browser; Help > Join the OnAir Discord; header icon link in onair-web. One URL constant (kDiscordInviteUrl) in the app; i18n in 13 languages, unreviewed lists updated. test_i18n and test_gui_rules pass; ui2_shell.cpp compiles. No GUI shot: a cold full build was too heavy for the lagging Mac. README already links Discord.
+## 2026-11-02 Sensitivity pass part 2 (feat36-sens3)
+ATSC 3.0: channel estimate from the pilot comb with noise taps dropped (Preamble and data symbols, below about 25 dB): AWGN 4 -> 2 dB, TU6 16 -> 12 dB, at theory now; ctest atsc3 passes (realworld flaky under load). Harness gained ndb cw ism vorils hfdig airband cell navtexl with derivations. NAVTEX measured over 8 messages a trial: floor 10 dB, 4 to 5 dB over theory, cause not found yet (centre estimate / bit clock / framing: add a per-message damage print). Builds held for Mac load; final tree not rebuilt after removing a debug env switch. Open: impairment sweeps for the new modes, full tier, ism/cw/ndb/NAVTEX fixes.
+
+## 2026-11-02 Multi-radio trunking (feat36-trunk)
+Branch feat36-trunk from integ-36. Core `core/src/trunkpool/` (pool controller, channel plan and access CSV, per-call recorder, adapters for P25 / DMR / TETRA / MPT 1327 / EDACS / LTR grants), app window View > Multi-radio trunking (`app/trunkpool/`, device table, call log, Auto-assign devices, Advanced settings, access rules, plan import), `Controller::grantTap` in the P25 model, P25 follower hands its voice radio and retune over while the pool is on, i18n in 13 languages (unreviewed lists updated), docs/TRUNKING.md. Written under a build hold from the coordinator (owner's Mac out of memory): nothing was compiled or run; first build and `test_trunkpool_pool` are still to do. Live: P25 only. Not done: audio tap for app recordings, non-P25 app feeds.
+## 2026-11-02 decoder features batch 1 (feat36-feat1)
+Checked integ-36 first: ADS-B polar coverage, pager capcode aliases, ACARS/VDL2 reassembly, VDL2 channels/type/distance/export, radio-ID database, AIS filter + CPA/geofence and the APRS-IS iGate already exist, so nothing was added for them. New: (1) voice Watch list across DMR/P25/NXDN/TETRA (core/include/dect2/voice/watch.h, app/voice/watch_ui.cpp): per entry Notify / Beep / Record (record rules kept in step, master switch on only when ticked), history table with CSV copy, DMR last LRRP position with Show on map (dmrMapFocus). `automationapp::alertNow` added for banner + notification + beeps. (2) Pager keyword alerts (app/pager/pager_keywords.h): plain and `re:` keywords against text and capcode name, row highlight, ticker, optional notification. Tests voice_watch and pager_keywords written. 31 new texts in all 13 catalogs and unreviewed lists. NOT verified: nothing was compiled or run (owner's Mac out of memory: builds on hold), no GUI shot taken.
+## 2026-11-02 Open PRs for 3.6 (feat36-prs)
+Merged BrunoKlu's #413 (Inmarsat satellite naming, Inmarsat-C search span; our aero search limit kept), #415 (receivers on the shared pool), #416 (carrier width 10 dB under peak), #417 (HydraSDR RFOne native driver on libhydrasdr loaded at run time, MIT, credited) and Curium-3391's #366 (fm status layout). #414 (Aero C-channel voice) duplicated our feat36-inmvoice (same JAERO framing, different layout: AeroDemod C mode vs aero_cchan/aero_crx, clashing constants), so it was ported selectively: tuned aeroambe plug-in (unvoiced quality 3, mute above 3 errors, optional post-filter, decode_bits tool; CMake var AEROAMBE_MBELIB), detector valley split of neighbouring C channels, codec retry for calls that began without it, hardware-gated live and detector-probe tests. Twin-decoder parking and two-decoders-per-region left out (one decoder per carrier here). Credits via tools/credits_data.tsv (libaeroambe, libhydrasdr).
+
+## 2026-11-02 Custom bandwidth and sample rate in every mode: audit and one mechanism (feat36-bw)
+Owner demand (asked many times): any bandwidth and any sample rate in every mode, default unchanged, limits only warn. Audit first (docs/BANDWIDTH-AUDIT.md, generated by tools/gen_bandwidth_audit.py from the code): 3.4 had put an Advanced row (Custom bandwidth + Custom rate) in every mode, but the claim "every mode" was tested on 12 of 150 and the plan was a copy in the test, not the call the app makes. Findings: (1) the custom width replaced TuneSettings::bandwidthMhz, which DVB-T2, DVB-T and DTMB decode with as the signal's channel width: measured on the test signal DVB-T2 lost lock at 12, 20 and 40 MHz (and 3 MHz). New TuneSettings::channelBwMhz keeps the signal's width, signalBwMhz() feeds gain/SNR/doctor/memory/scan; locks again at 12/20/40 MHz. (2) Whole-span HF decoders (HF digital, CW, PSK, RTTY) had hard span caps of 250/100/64 kHz: now defaults (setWideSpanCapHz), lifted by a custom bandwidth. (3) Remote API refused rates above 1 Gsps and widths above 1 GHz: gone; new POST /api/v1/capture_bandwidth, MCP set_radio capture_bandwidth_khz, headless server capture_bw_mhz. (4) Mechanism: rxApplyWidth/rxApplyRate in app/state/rx_width.h are the one call applyBandwidth(), ServerHost::buildTune() and the test make. (5) UI: width warning (checkManualRate on the rate that carries it), Reset to default (Advanced row and chip), a compact Bandwidth chip in the Simple view's Command view, 4 new strings in 13 languages. New test custom_bandwidth_all: every engine standard (145 + 6 classic + a plugin), every mode-table row, every protocol entry: default untouched, width reaches the config (1 kHz .. 500 MHz, nothing clamped), rate 1 Hz .. 1 Gsps accepted and warned, persistence per mode, engine starts at the planned rate and processes signal, DVB-T2 locks with a wide capture, the control is placed in every layout. tools/sens/sens_sweep --wide K: the same test signal captured K times wider; 10 modes compared at 1x and 4x (the rest of the run did not finish).
+
+## 2026-11-03 Record and replay for any mode (feat36-rec)
+Audit in docs/RECORD-REPLAY.md: the IQ recorder, SigMF read/write, file source, rewind buffer and library already worked in every mode. Gaps filled: 16-bit recording (FileFormat::CI16, SigMF ci16_le, BLUE CI, .cs16, "16-bit" in the Record IQ box and Settings), replay now restores the mode from the SigMF description or the onair_<id>_ file name (recordingStdMode, restoreRecordingMode; centre, rate, format were already restored), and a Share button per Library row (opens the folder, copies the path). New test_replay: id-to-standard round trip for all 144 registered modes, 16-bit SigMF sweep over six modes, engine record then replay with no radio. ctest replay, iq_record, sigmf pass. i18n keys added to every catalog. Not done: --file does not restore the mode; raw files without a sidecar still need File info.
+## 2026-11-03 Relay service for one-click web sharing (feat36-web2)
+The client of docs/ONAIR-WEB-RELAY.md existed but the service did not. Built it as relay/relay.js: one dependency-free Node file (raw TCP, own WebSocket framing, Ed25519 hello check with node:crypto, TLS left to Caddy/Cloudflare), covering challenge/hello/ready, OPEN/DATA/CLOSE routing by host label, offline page, status endpoint, opt-in public list (GET /api/v1/servers; new hello field `public`, server setting web_relay_public, default off), per-server/per-address/total caps, byte-rate cap, 16 KB head, idle timeout, host-link rate limit, one link per id, ban lists and a token-guarded admin ban. The decoder allow-list in web_policy stays in the host's web server (the relay is blind to content by design). Test: relay/test (9 end-to-end tests, fake signing host + fake browser on 127.0.0.1). Not tested: real TLS, load, the C++ client against this relay (only the flag compiled, syntax check). docs/ONAIR-WEB-DEPLOY.md section 5 has the deploy steps (VPS, DNS, Caddy wildcard, systemd); nothing deployed.
+
+## 2026-11-03 - Plug-in SDK audit (feat36-sdk)
+Plug-in ABI, SDK folder, loader, manager, tests and the automation "run" hook already existed. Added docs/PLUGIN-SDK.md (exists vs missing) and a Settings category "Plug-ins and scripts" with links to the manager and Automations, de/lt strings.
+
+## 2026-11-03 DSC robustness sweeps and the SELCAL mode (feat36-dsc)
+DSC: radio-level sweep (tests/marine/test_marine_dsc_sweep.cpp, 92 cases per run, both variants: offsets, mistuning, off-centre, noise, fading, 250 ksps to 20 Msps, clock error, clipping, spectrum inversion, level steps, noise burst) all pass, so no decoder change. Bit-level sweep (test_marine_dsc_bitsweep.cpp): 6 call types x 4 dot lengths x bit errors, bursts, slips. Open: one bit slip loses the call; at 3 pct bit errors the 7-bit check passes a wrong call about 1 in 300; VHF with phase-modulated tones (2100 Hz louder) untested; rates below 250 ksps are unsupported (the generator crashes there). SELCAL: own mode (family 240, active 241, std 242, poll slot 200; numbers may move at merge): SelcalReceiver wraps the tones SELCAL detector (setSelcalOnly), call log with time, code, four tones, dial frequency, aircraft from selcal_aircraft.tsv; no position exists in a SELCAL code so no map. Synthetic signals only. Long help strings not yet translated.
+## 2026-11-03 Export for heard-item tables (feat36-export)
+Audit in docs/EXPORT-AUDIT.md (generated from the code): a shared exporter already existed (resexp: CSV/JSON/ADIF/KML/GPX/GeoJSON, "Save results..."), used by about 20 modes. Added app/ui/kit/export (kit::exportBar = Save results + Copy CSV to clipboard, hasPositions, clipboardCsv) and wired it into sonde, APRS stations, DMR calls and messages, P25 calls and talkgroups, LoRaWAN devices and GNSS channels. New test kit_export (quoting, unicode, coordinates, empty list), 5 strings in 13 languages. Not done: the remaining mode folders listed in the audit; no GUI screenshot check yet.
+## 2026-11-03 P25 fine frequency capture threshold (feat36-p25fix)
+P25 short-call sweep row "no header, 12 dB, cfo -3 kHz" fell to 67% after 67df49a90 enabled the fine MeanAfc regime (minHz 2.5 kHz): a 3 kHz error was moved on noisy 80 ms means and disturbed the call. P25 now uses fineMin 3.6 kHz (still catches the 4, 4.5, 5, 6 kHz rows at 100%); the row is 97%. NXDN was already passing (89%), D-STAR/dPMR unchanged.
+
+## 2026-11-03 3.6 changelog, release text, credits audit (feat36-docs)
+Wrote docs/CHANGELOG-3.6.md and docs/RELEASE-NOTES-3.6.md from the log since v3.5.0 (175 commits) and the PATHWAY entries. README mode table and count regenerated with tools/release/gen_changelog.py --base v3.5.0 --worktree-modes (158 -> 178). Credits audit: tools/gen_credits.py output is unchanged (THIRD_PARTY.md, docs/credits-for-website.md and app/panels/credits_data.h agree); the new third-party code (OpenJPEG, aeroambe, libhydrasdr, SatDump FY-3, MMDVMHost, PR 414) is listed. No commit since v3.5.0 carries Co-Authored-By Arclamp and none touches the DecSAT-derived files (core/src/satbeacon). check_spdx still reports 9 LicenseRef-Unknown files (not judged here).
+## 2026-11-03: mode audit (feat36-audit)
+Added docs/MODE-AUDIT-3.6.md: 27 mode families vs rival tools, grep-verified gaps, top-30 improvements ranked by size, real-signal items flagged. Read-only, no code changed.
+## 2026-11-03 MFSK pictures and MFSK128 / 64L / 128L for Shortwave Radiogram (feat36-mfsk)
+Owner promised on Discord that Shortwave Radiogram (WRMI, MFSK32 / MFSK64 with images) would decode. Found: the MFSK text chain is a faithful port of fldigi (code, interleaver, Gray, varicode, Viterbi checked again against fldigi's source; loopback decodes to -6 dB), but the decoder had no picture mode at all, no MFSK128 / 64L / 128L, and a receiver centre more than about 90 Hz off decoded nothing unless "Find signal" caught it. Added: MFSK128, MFSK64L, MFSK128L (appended variants 8 to 10, saved settings stay valid; MFSK128 also a Ham view preset); fldigi's picture mode on MFSK16 / 32 / 64 / 128 (header `Pic:WxH[C][pN];`, grey and colour, X1 / X2 / X4; band-pass filter, analytic signal, mean frequency per pixel; start delay calibrated against the transmitter: pixel exact); picture transmitter in the test generator (KbdTxConfig::picture); picture view in the MFSK window (live picture, progress, Save PNG, Save every picture to <data>/mfsk, eight thumbnails, Clear pictures, finished pictures also in the Images window); telemetry picLive / picHistory (KbdPicture). 5 new strings in 13 languages (machine translations, listed in app/i18n/unreviewed). Tests: test_hfdig_mfsk (ctest hfdig_mfsk), test_hfdig_kbd (variant count 11), test_ham_kbd, test_i18n all pass. docs/MFSK-IMAGES.md has the format and the limits. Real recordings: KS6M's WAV files of programmes 470, 472, 473 were run through the decoder; no readable text or picture came out (the tone grid is there, the stream is not an MFSK code word under any variation tried, the Viterbi metric is high only briefly, a real "CR EOT CR" end was found); whether fldigi reads them was not tested. Not done: mode auto-detect between MFSK32 / 64 / 128 (Radiogram announces switches in the text), RSID, slant correction, a recording in the repo.
+## 2026-11-03 Recordings folder (feat36-recdir)
+F5GKW (Iridium, Discord) could not find the recordings. One function `recordingsDir()` (pref `recordingsDir`, default unchanged, created on demand, fallback with one warning if unwritable) replaces every hard-coded `<dataDir>/recordings`; sibling folders follow it through `recordingsSub()`. Settings > Files has the folder, free space, Choose/Reset/Open; `kit::recordingsButton` ("Open recordings folder", path as tooltip) wired into Iridium and 7 other modes (docs/RECORDINGS-FOLDER.md). Strings in 13 languages (also in unreviewed/). Test `recdir`: default, custom, trailing slash, spaces, non-ASCII, unwritable fallback.
+
+## 2026-11-03 Smart CubeSat decoder (feat36-cubesat)
+Branch feat36-cubesat from integ-36, not merged. Auto mode in the CubeSat telemetry mode (view "Smart", one button): SatNOGS DB transmitter table (572 entries, 430 satellites) and TLE snapshot, pass planner and tune advice, narrow-carrier scan, modulation / baud classifier, chains (FSK / GMSK 1200-19200 with AX.25 G3RUH / NRZI, AX100 Mode 5 and 6, CCSDS RS, ASCII; AFSK 1200; BPSK 1200-9600 with AX.25, ASM, AO-40 FEC; CW Morse), telemetry for FUNcube-1 / FUNcube-2 / Nayif-1, SatNOGS-ready / CSV / KISS export (nothing uploaded), Engine::setSmartCube, 13-language strings, credits for SatNOGS DB (CC-BY-SA) and gr-satellites (GPL-3). Verified: AO-40 FEC decodes the real FUNcube recording of the gr-satellites tests; the 24 synthetic chain cases and the three-carrier controller test pass on the Mac; sensitivity floors in docs/CUBESAT-SMART.md. Bugs found by the tests: BPSK symbol clock never started (next_ unset), CW detector AFC chased noise and the keying thresholds drifted in long gaps, classifier called GMSK with idle carrier BPSK (now FSK candidates always run too). Not verified: any real satellite pass, the GUI (only a syntax check, no screenshot), engine wiring under a running radio, Windows build. Not done: LoRa path, CCSDS concatenated framing, USP / TUBiX10 / DOKA framings, per-satellite telemetry beyond FUNcube.
+
+## 2026-11-03 Country file support (feat36-cty)
+Discord request (suguslly): cty.dat / wl_cty.dat country file. The reader (DxccDb::loadCty) already existed; added `<lat/lon>`, `{cont}`, `~tz~` overrides in lookups, WAE-only `*` entities (not DXCC keys), the VER version stamp, BOM/CRLF, a 32 MB text cap, a limit on `?` expansion, and the exact-call entry surviving /P. UI: one `hamCountryUi()` block (Load, Download on click via plat::fetchUrl with 16 MB cap and parse check before use, Reset, path/counts/version, message-line setting default on) used in the Log popup and the setup wizard; country and zones shown after messages in the FT decode list and beside heard calls in PSK/RTTY/CW. Not bundled; credits added. docs/COUNTRY-FILE.md, 13+1 catalogs (unreviewed, keep-both), tests/ham/test_ham_cty.cpp. Not merged. Never run: the app build, the GUI, the real download, ctest and test_i18n locally (only the cty test and a syntax-only compile of the 4 app files were run); CI is the check.
+
+## 2026-11-04 Tracker caps removed (feat37-caps)
+Users hit walls at 200 VDL2 aircraft and 64 ground stations. Added core/include/dect2/limits.h and raised every busy-receiver table (VDL2, HFDL, ACARS, Inmarsat, AIS, ADS-B, UAT, Aero, Iridium ACARS, ASTERIX; docs/LIMITS-AUDIT.md) to 10000 aircraft/vessels, 4096 ground stations, 2000-line message lists, with 6 h age expiry for VDL2/ACARS/HFDL. HFDL's per-message full sort became move-to-front. VDL2 tables use a list clipper. Tests: vdl2_caps (300 aircraft, 90 ground stations), ais_caps (450 stations).
+Also: Settings > Decoding "Remove after" per family (VDL2, ACARS, HFDL, ADS-B, AIS, UAT, Inmarsat; Default/1 min .. 24 h/Never/Custom), 14 catalogs + unreviewed lists, expiry frees memory; vdl2_caps and ais_caps check it on the sample clock.
+
+## 2026-11-04: ESP32 / nRF24 module radio (3.7, branch feat37-esp32)
+- New device "ESP32 radio" (mode dir esp32): framed serial protocol v1 (firmware/esp32/onair_esp32/onair_wire.h, shared header), OnAir driver core/src/esp32 (serial port, auto-detect by HELLO, nRF24 RX/TX with all parameters, BLE adverts, WiFi observation: networks, clients, signal history, channel congestion, deauth counted; WiFi never transmits), window Tools > nRF24 / ESP32 radio (RX first, everything under Advanced, TX behind Arm with the warn-only line), firmware dispatcher + Arduino hardware layer. Design: docs/ESP32-NRF24-DESIGN.md.
+- Tests: tests/esp32/test_esp32_loopback (driver <-> firmware dispatcher over an in-memory port, fake hardware; clean under ThreadSanitizer), tests/nrf24/test_nrf24_matrix (IQ mode, full parameter matrix). UNTESTED on a real ESP32 or nRF24: the .ino hardware layer has never run; 802.15.4 firmware not written.
+## 2026-11-04 - feat37-ease: next-step line and friendlier radio errors
+- `app/ui/next_step_logic.h` (pure, tested by `next_step`): one plain line about the reception (stopped / starting / weak / no signal / overload / too little level / lost samples / slow computer) with at most one click fix (Start, Auto gain). Modes whose lock the app cannot read only get the hints based on measured things, never "no signal". Shown in the Radio panel (`nextStepUi`, diag_ui.cpp) when there is no error message.
+- `fixit` table: four generic USB entries (busy, resource busy, access denied, wrong driver) matched on libusb / OS error text; test cases added.
+- Not done: per-mode "Reset this mode", new auto-setup buttons, tooltip sweep (the mode picker with favourites / recents, first-run wizard with regions and auto gain, and the Settings per-item reset already existed).
+## 2026-11-04 - GPU for every mode, phase 1 (feat37-gpu)
+Audit of every mode's FEC / FFT / FIR stages in docs/GPU-AUDIT-3.7.md. Settings > Decoding: "Use GPU where available" plus a per-mode override (gpuGlobal / gpuModes, default on, no behaviour change); off forces the CPU path of DVB-T2, DVB-T, DVB-S/S2 and DTMB via Engine::setGpuAllowed. Modes without a GPU stage get a disabled tick and a reason. The ATSC 3.0 / ISDB-T / DAB / DRM FEC is CPU only (no kernel yet). Phase 2 (FIR / FFT kernel) not started.
+## 2026-11-04 CPU baseline and ATV blend (feat37-perf)
+Measured the per-mode CPU cost of 31 modes with bench_modes (Release, synthetic signals) and profiled the top rows with `sample`: written to docs/PERF-3.7.md. The big ones (DVB-C equaliser, DVB-T Viterbi) are already NEON, so nothing was left to vectorise without changing float rounding. One change: the ATV temporal noise blend uses a 256-entry weight table (-35 % per picture, byte-identical, test atv_blend). Idle UI and startup were not re-measured (app not built, machine load 77).
+
+## 2026-11-04 GPU phase 2 (feat37-gpu2)
+- ATSC 3.0 Type B LDPC now runs on the GPU in batches (Auto from 12 words; 16-word batches measured 2 to 5 times faster per word than the CPU on an M2 Pro, small batches slower), CPU fallback per word; stale toolbar tooltip fixed.
+- ISDB-T Viterbi can use GpuViterbi (bit-exact) but is 5 to 14 times slower than the CPU, so only when GPU is chosen.
+- New GpuFft (Metal): FFT, windowed power spectrum, FIR decimator. Slower than the CPU at every spectrum size, so the "Spectrum" tick only matters when COMPUTE = GPU; FIR not wired. Vulkan / D3D11 not written.
+- Numbers and the modes left on the CPU: docs/GPU-AUDIT-3.7.md.
+## 2026-11-04 - Live RDS control and TS network output (feat37-rdsts)
+Discord request from ItsOktawian. (A) core/include/dect2/fm/rds_live.h: FmGenerator takes PS, RT, PI, PTY, TP, TA, M/S and the clock group (4A) from a shared RdsLive state at the start of each five-group cycle, RT flips the A/B flag; changed by the panel (tx_payload_ui), UDP/TCP text commands (PS=, RT=, PI= ...), REST /api/v1/x/rds, MCP tool rds_set, and a watched text file. Warn only. docs/RDS-LIVE.md. Test rds_live (RDS decoded back by FmReceiver).
+(B) OutputManager already did paced UDP/RTP/multicast and the service filter; added an HTTP /stream.ts server, the multicast adapter, parseStreamUrl and a simple "Send the stream over the network" address + tick in the Stream tab (advanced hidden). RTP header now put on at send time. docs/STREAM-OUT.md. Test tsout_net (loopback UDP/RTP/HTTP, continuity, pacing).
+Not done: real-radio / real-OBS checks, i18n catalogs beyond en.
+## 2026-11-04 Discord reports (feat37-discord)
+1 Squelch: one Off / Level / Auto control (slider, Set, live meter) in the General controls, the receiver tab and a popup opened by clicking "squelch closed" in the Listen list; CW holds the squelch 1 s (NDB / keyed signals no longer chatter: 5 closes -> 0 on a 0.5 s on / 1 s off test). 2 Receiver pull-down was disabled while running: now switches (stop, open the new radio, settings kept). 3 Classic interface had no menu bar: it has one now; Ctrl+Shift+M, View and Settings restore the default view. 4 FT8 benchmark: 86 % of the lost messages are collisions (same 20 Hz and 0.8 s as another); candidate limit and passes do not change it; no decoder change. 5 Auto gain on HackRF: probes back off to 120 s, linear split stays 5 min after an overload (strong DVB-T2 hunting in the simulator). 6 Whole-span span centre ignored offset tuning (frequencies off by the offset); table shows 10 Hz. 7 Fax turned 90 degrees is fitted whole (wefaxFitZoom). Tests: general_rx, marine_wefax_rotate, dmr_wide (grid), autogain (HackRF sweep), ftxmulti collision count.
+
+## 2026-11-05: feat37-sens2
+FM station finder threshold 10x -> 1.6x (off-centre FM 14 -> 5 dB on Linux); SRO gaps in the old baseline found stale (none left); docs/SENSITIVITY-3.7.md has the table.
+
+## 2026-11-05 - Ease of use part 2 (feat37-ease2)
+- One action row above every mode's Simple view and tabs (app/ui/kit/mode_actions.cpp): the "what do I do next" line (now always visible, in the mode panel instead of only the side bar; green when it works, a plain "does not report a lock" line for modes without a lock reading, never a false "no signal"), [Auto setup] (Auto gain, the mode's own bandwidth and rate, fine frequency snap for captures of 0.6 MHz or less, 8 dB prominence, at most 25 kHz) and [Reset this mode] (frequency, bandwidth, rate; gain and other modes untouched), each with a 12 s Undo.
+- Settings table: every row has a one-line help; labels, help and category names are N_() so they enter the catalog scan. test_settings now fails on a row without help; test_mode_actions covers the snap.
+- Checked on screen with a renamed copy, --hidden --mute --shot: AIS Simple (line, Auto setup, Reset, Undo note after a click), DVB Advanced (green "Receiving well." above the tabs).
+- Audit: tuner / decoder / synth controls live in the top bar and side panels, independent of Simple / Advanced; Advanced adds the tabs. No mode found with a parameter unreachable.
+- Not done: Reset does not touch mode-specific decoder options (no stored defaults for them); Auto setup snap not tested on a real radio; other-language catalogs.
+## 2026-11-05 Sub-GHz sensors mode (feat37-sensors)
+New mode "Sub-GHz sensors" (family 241 / standard 243 / poll slot 201; numbers may move at merge): rtl_433's pulse detector, slicers and 377 decoder entries vendored in third_party/rtl_433 (GPL-2.0-or-later, headers and COPYING kept, credits in THIRD_PARTY.md and the app), behind core/src/sensors (receiver, device table with history, exports CSV / JSON / MQTT lines, "Remove after", unknown signal analyser, flex custom decoders) and app/sensors (four views). Measured on merbanan/rtl_433_tests with tools/sensors_vectors.py: 2946 of 3031 recordings, 318 of 353 tested models pass all their tests (details and the failing models in docs/SENSORS-3.7.md). FSK detection runs in rtl_433's classic mode (2946 against 2147 with the vendored auto mode). No live signal tested; "every sensor" is not claimed.
+## 2026-11-05 Four gaps from MODE-GAPS-3.7 (feat37-feat1)
+1 Recording tags and notes: .onair-tags.tsv in the recordings folder, search box, Tags/Note columns, Edit window, tag chips under Advanced (app/state/rec_tags.cpp, test rec_tags, docs/RECORDING-TAGS.md).
+2 Auto frequency labels on the waterfall already exist (app/gfx/autolabel.cpp, toggle "Names on the spectrum" in the Labels menu, thinning by priority); checked in a headless shot, only docs/WATERFALL-LABELS.md added, no code change.
+3 Spectrum ghost: earlier snapshot behind the live line, new signals shaded, rolling auto-snapshots (6 h, keep 28), all options under Advanced (app/state/spec_ghost.cpp, app/gfx/spec_ghost_ui.cpp, test spec_ghost, docs/SPECTRUM-GHOST.md). Compares dB per Hz levels, so a gain change between captures shifts the whole line.
+4 Talkgroup directory for DMR/TETRA/P25: core/src/common/tg_dir.cpp, editor app/voice/tgdir_ui.cpp (add/edit/delete/search, CSV import incl. RadioReference, export), names shown in the DMR, TETRA, P25 and trunk pool panels (test tg_dir, docs/TALKGROUPS.md).
+Checked headless (--hidden --mute --specdemo, isolated HOME and DECT2_DATA_DIR, dev flags --ghost --reclib --tgdir): ghost line and new-signal bands drawn, tags loaded in the library, talkgroup editor lists the file. Not done: names beside talkgroups in the live call tables not checked with a real or synthetic call; i18n catalogs beyond en; ghost not tested on a real long-term capture.
+
+## 2026-11-05 CI fix on integ-37 (feat37-cifix)
+Windows: tests/esp32 loopback includes <functional>. adsb_track updated to the removed 128/2000 walls (limits::kAircraft). adsb_autogain: the 300 s linear split after an overload (3.7) cost the far aircraft; kept for non-pulsed modes only (measured: 3 FAILs before, all passed after). gui_rules: gUi on a pixel width, PushID for the duplicate "serve". Linux: the runner disk filled during the build (ld "No space left on device"; tx/asterix/ebicab not built, tx_quality_a_rt/kaft_engine/qo100_dvbs_second failed on the full disk; qo100 passed on retry in 8.6 s): free disk step added.
+## 2026-11-05 KiwiSDR handshake fix, military air bands
+- KiwiSDR: a real Kiwi sends badp=0 (password accepted) right after sample_rate; the client treated every badp as a refusal, so every public Kiwi dropped at once. badp=0 is now accepted, the other badp codes (1..7) and too_busy have clear messages, and the connect step waits for badp (and the version) so wrong password / busy shows at once. Fake server now follows the real message order and streams only after SET mod and SET agc. Probed 3 public Kiwis for real: handshake OK.
+- Added data/bandplans air-mil (225-400 MHz and 138-144 MHz AM, 25 kHz) to every plan with air-25; aviation.tsv gets 138-144 start/end and 282.800; 243.000 and the 225-400 ends moved to the general receiver (AM).
+## 2026-11-05 feat37-discord2 (NXDN false 'encrypted', external FFmpeg folder, SDRconnect log)
+- NXDN: a cipher flag from a VCALL (SACCH superframe, FACCH or CAC) is believed only when seen twice in a row; clear is taken at once; pending state is cleared at call end. A later cipher change re-runs the key lookup. Regression: tests/nxdn/test_nxdn_plugin.cpp (generator option sacchGlitchCipher): without the fix 80 of 96 frames reach the codec, with it 96 of 96. Root cause on the VE3SCP signal not confirmed (no recording).
+- Settings > Advanced: FFmpeg libraries (bundled / external folder; used by the AC-4 and AVS+ run-time loaders only), Log SDRconnect websocket traffic (sdrconnect-ws.log in the data folder). WsClient sends the close frame once per connection.
+
+## 2026-11-06 feat37-discord3
+- TETRA: a call's cipher flag needs 2 identical consecutive set-up messages, clear is accepted at once; a clear call is vetoed by encrypted PDUs of a capture only when they outnumber the clear ones (a cell mixing terminals). Field offsets of MAC-RESOURCE checked against EN 300 392-2 (type 2, fill 1, grant 1, encryption mode 2): correct; CRC-failed blocks never reach the parser.
+- CoreAudio output: a refused stream format (device at another rate) is now converted instead of played at the wrong speed (kevtheskin's choppy / pitched-up audio; Windows and miniaudio already convert). Not reproduced here.
+- SSDV: WAV audio recordings (FSK waveform from an FM receiver) open via File > Open; ssdv_audio converts to an FM carrier at 192 kHz; the receiver floor is now 190 kHz. Test test_ssdv_audio.
+
+## 2026-11-07 feat37-modesA
+- Checked MODE-GAPS: FST4, FST4W, Q65 and MSK144 are already modes (hfdig, kFtxModes 6 to 9; mode table rows 156 to 158), nothing added for them.
+- CPDLC: FANS-1/A ASN.1 PER decode (uplink and downlink sets, CR1 / CC1 / DR1 / AT1 with CRC-16) through the vendored libacars asn1c tables (third_party/libacars, MIT), shown in the VDL2 frame detail and the ACARS / Aero detail. Test test_aero_cpdlc (4 real downlinks + 1 real connect request from libacars examples, loopback encode/decode, damaged/truncated/lower-case). Not a separate mode entry: a layer on the ACARS readers (docs/CPDLC.md). ATN B1 CPDLC and ADS-C contract decode still missing.
+## 2026-11-07 feat37-modesB
+- Checked the gap list against the program: Z-Wave (family 98) and VDES (family 63, ASM decoded, VDE-TER bursts only detected) already exist; no VLF / sferics mode existed; ERMES not present.
+- New mode Sferics (lightning), family 243 / engine std 245 / active std 244 / poll slot 203: broadband impulse counter (noise floor from a 4 s median, threshold 6 to 30 dB, merge time), strikes, flashes, per-minute histogram, mains train (100 / 120 Hz) rejection, impulses over 5 ms thrown out. Time and strength only, no position. Doc docs/SFERICS-3.7.md. Tests test_sferics_rx (48 kHz to 2.4 Msps, offsets, noise levels, thresholds, mains), test_sferics_mode. Synthetic signals only; no real storm tried.
+- Not done: VDE-TER decoding (needs ITU-R M.2092 annexes and a signal source), ERMES (dead network, spec not checked), HD Radio NRSC-5 (patents, no permissive reference found).
+## 2026-11-07 feat37-iridium (silent Iridium WAV, voice clip history)
+- Iridium voice: a call whose decoded sound is all (near) zeros is no longer saved as a silent WAV: status "silent audio" and a plain-words warning (IridiumCall::warning); a missing codec also gets a warning; write failures remove the partial file. Root cause of the reports is not proven (no real recording, no user plug-in here); the code path could only produce silent WAVs when the plug-in itself returned zeros. Tests: tests/iridium/test_iridium_voice.cpp (non-silent WAV from the stub, zero-codec and no-codec cases).
+- Shared voice clip history (core/include/dect2/voice/clip_history.h, app/voice/voice_clips_ui.cpp, docs/VOICE-CLIPS.md): list with Play/Stop, star, save as, show, delete; retention by count (default 20), age and size; pins exempt. In the Iridium Calls view and in the Voice monitor Clips tab (DMR/P25/NXDN/dPMR/D-STAR/YSF/TETRA/M17). Not yet: TETRAPOL/trunk (P25 trunk follower) and Inmarsat recorders keep their own files. Test tests/voice/test_voice_clips.cpp.
+## 2026-11-07 feat37-discord4 (pager both, waterfall colour, sensors, AIS country)
+- Pagers: "POCSAG + FLEX (both)" checkbox in the messages row of both mode entries (saved pagerBoth, default off). The engine already ran both decoders on one demodulator (mask 3); each entry forced its own mask, so users thought both was impossible. The toggle pushes mask 3 from tick(); the lamps follow it.
+- Waterfall: "Colour intensity" 0-200% (wfSat; popup slider, Settings > Advanced). Saturation after the level transform, one shared value for the main, TX and mode waterfalls (jet()). Test in test_spec_axis.
+- Sensors: history graph shows both values (temperature + humidity / pressure) with two axes, colours and legend; the lower box is always reserved for the selected row. Remove after saved in seconds (sensorsRemoveSec, default 1 hour, 2 hours and 1 day added); pinned sensors sort first and never expire (SensorsReceiver::setPinned, tested).
+- AIS: MMSI -> kind and country (core ais_mid.h, ITU MID table credited); Flag and MMSI type columns, detail rows, map tooltip, country filter (AisFilter::countries, saved in aisFilter), CSV columns. Test test_ais_mid. The MID table was typed from the ITU list and is not checked against the current file; flags are shown as ISO codes (no flag glyphs in the fonts).
+## 2026-11-07 - bug hunt 3.7-D (sources and modes)
+Network IQ sources now scrub NaN/infinity (SDR++, SpyServer float); rtl_tcp chunk test added; modes and drivers reviewed, listed in docs/BUGS-3.7-D.md. No ASan run yet (GitHub).
+## 2026-11-07 feat37-discord5
+- Hytera Basic Privacy and Hytera Enhanced Privacy key types (DMR keys window, key store, Decryptor, voicekeys/hytera.cpp): method from DSD-FME (ISC, credited in THIRD_PARTY.md and the in-app credits), user types his own key, nothing searched. Known-answer vectors from the DSD-FME algorithm + synthetic round trips (test_hytera). NOT applied to live DMR audio yet (needs the AMBE+2 bits after FEC; the codec is a black box) and not tested on a real Hytera call.
+- Zigbee: sub-GHz BPSK PHY (868.3 MHz 20 kbit/s, 906-924 MHz 40 kbit/s) with channel presets (Zigbee channel combo, scan); chip-product detection that survives +-40 ppm offsets. test_zigbee_bpsk (offsets, chip clock, noise, 2.4/4/5 Msps, bad FCS, noise only). Synthetic only.
+- Thread (family 244): the 802.15.4 receiver in Thread mode + thread_proto (beacon network name / ext PAN / version, MAC security aux header, 6LoWPAN mesh / fragment / IPHC / UDP NHC, MLE and CoAP where clear). Encrypted traffic is shown as encrypted (no keys). tests/thread. No user-supplied Zigbee / Thread network key decryption (not done).
+## 2026-11-07 - bug hunt 3.7-D (sources and modes)
+Network IQ sources now scrub NaN/infinity (SDR++, SpyServer float); rtl_tcp chunk test added; modes and drivers reviewed, listed in docs/BUGS-3.7-D.md. No ASan run yet (GitHub).
+
+## 2026-11-09: open pull requests reviewed for 3.7 (feat37-prs)
+
+- Merged, authors kept: #461 (DME-3, FSK acquisition, fixes #460), #447 (bellx2, RTL-SDR macOS read thread, may help #210), #445 (peterdewitte, Windows camera and microphone by name), #467 (peterdewitte, LoRa APRS transmit), #446 and #444 (peterdewitte, video generator encoders, easy mode and preview; joined by hand), #437 (BI8SYN, Chinese fonts, squashed at the author's request so the full-size font blobs stay out of the history).
+- Follow-ups: Python added to ci-full.yml's Windows job and the Linux Docker images (the build now generates the font resources); LoRa APRS comment box has its own ImGui ID; no B-frames on h264_videotoolbox (the muxer refused them).
+- Left out: #448 (draft, its author withdrew delay-loaded FFmpeg, overlaps the existing external FFmpeg folder setting) and #414 (already ported in a161b3310, the rest duplicates our Aero C code).
+- Checked on macOS: typography, text_select, modebuilder, native_lifecycle, native_nobias, theme, credits, i18n, gui_rules, tx, tx_params, tx_loraaprs, videogen. Not exercised here: Windows camera path, FFmpeg prefix check in package builds, NVENC/AMF, over-the-air LoRa APRS.
+## 2026-11-09: Mode Builder crash, wheel zoom limits, VDES ASM 2 (#465, #442, #425, #411)
+
+#465: reproduced by selecting Mode Builder while running (SIGBUS in setMode). The family number 19999 was used as an index into famGain and famFreq, which only have kNumSlots entries; Plugins and the plugin and custom modes read past the end the same way. setMode now checks the slot (app/state/mode_slot.h). A second crash showed up when the mode is on screen from the first frame (--pick): the toolbar read the tuning before it was registered, so the registration now runs first in drawUI.
+
+#425, #442: a headless run of the real plot code hung after 310 wheel notches, in the tick loop of the frequency axis (the step was lost in double rounding). The wheel had no span limit on either axis and the dB axis no range at all. Added SetupAxisSpan and a numeric floor for every plot; the spectrum and waterfall stop at 1 kHz and at 10 to 180 dB inside -160..20, and a wheel zoom can no longer leave the dB view off the trace. The other items in #442 are not touched.
+
+#411: ASM 2 is 162.000 MHz (channel 2028), corrected from 162.050. A row found by an IATA code now shows it ("HHAS Tower (ASM)"). The CSV export already exists. Open: the VDES receiver still treats ASM as AIS 1 / AIS 2 (161.975 / 162.025 MHz, GMSK), which does not match the channels above.
+## 2026-11-09 feat37-sm-ft8 (smart FT8 / RTTY)
+FT8/FT4/FT2: cross-slot soft-bit combining (about 2 dB on repeated messages), a-priori decoding from conversations heard on the band (2-3 dB), early decode ~4-5 s before slot end; RTTY one-click auto-lock (speed/polarity 40/40, exact shift 39/40). Beacon calibration dropped (selfcal exists). Details: docs/SMART-ft8-3.7.md. Tests: test_hfdig_ftxsmart, test_hfdig_rttyauto; full suite via CI.
+
+## 2026-11-09 smart voice package (feat37-sm-voice)
+Soft AMBE frame FEC + concealment (DMR/D-STAR/NXDN), optional symbol equaliser (off: no gain through the FM front end), heard-ID header repair (D-STAR, DMR), trunk call dedup across sites, control channel health + auto park + site book, TETRA SDS/LIP parser. Details and numbers: docs/SMART-voice-3.7.md.
+## 2026-11-09 feat37-sm-pager
+Pager smart package: text repair and positions/fields/incidents for pagers (pager_intel), digipeater path graph and the demodulator vote for APRS (packet_path, voteRepair; +14 % frames at the threshold, 0 wrong). Measurements in docs/SMART-pager-3.7.md. Targeted tests only; full CI left to GitHub.
+## 2026-11-09 feat37-sm-mesh (smart mesh package)
+- Shared passive topology model (core/src/map/mesh_topology*, test_mesh_topology) fed by Meshtastic relay bytes + hop counts, MeshCore paths, Zigbee NWK/MAC hops and source routes, Thread MAC links + mesh header, Z-Wave route header (now decoded). New Topology tab in the mesh, Zigbee/Thread and Z-Wave screens (app/ui/topo_view). Relay-byte collisions resolved by a heard-directly/relay prior: 0.88-0.94 attribution vs 0.34-0.64 uniform. Synthetic only; the Z-Wave route header layout is not checked against a real capture.
+- Wideband all-SF LoRa survey (core/src/loraraw/loraraw_survey, test_loraraw_survey): "Survey all channels" in the Signal Lab LoRa tab. Same sensitivity as the lab search told the channel for SF7 (-6 dB), -12 dB vs -18 dB for SF12 (spectral gate limit).
+## 2026-11-09 - smart maritime (3.7, feat37-sm-maritime)
+Checked first: no incident join, LQA store, HFDL learning or Iridium Doppler existed (grep). Built the sea incident board (DSC + AIS + SART/MOB/EPIRB + nearby + NAVTEX geocoding), AIS anomaly engine, ALE link-quality store, HFDL frequency learner, Iridium Doppler identification, with UI and tests; numbers in docs/SMART-maritime-3.7.md. No real recordings, no GUI shots.
+## 2026-11-09 - feat37-iss-dec (issue decoders and TX)
+VDES: ASM moved to channels 2027/2028 (161.950 and 162.000 MHz, ITU-R M.2092 / RR Appendix 18), it sat on the AIS channels; frequency list and the 3.6 reply note corrected. #454: the demo mux was padded for a fixed 24 or 20 Mbit/s in DVB-T2, DTMB and DVB-C, so the stream clock ran at the wrong speed (QPSK about a fifth); it now uses the real net rate (T2Generator::tsBitrate, dtmbSynthNetBitrate, dvbcSynthNetBitrate), tested TX to RX with two programmes. The "only one service" listing itself did not reproduce on the synthetic path. #439: VideoIn decoded a file as fast as it could; frames now wait for the signal clock (VideoIn::setClock, pullVideo gets the field time), DVB file programmes too. Not fixed, no cause established: #423 (no 1 MHz limit found in the DMR path), #331/#332 (DRM: needs the reporter's sample and libfdk-aac).
+## 2026-11-09 feat37-webonair
+- WebOnAir root cause: relay.on-air.dev was never deployed (DNS NXDOMAIN) and the Share window defaulted to it, so without cloudflared installed the start failed; the live directory runs an older page, its list is empty. Also: greyed "OnAir Web" menu heading (issue 422), the relay link's trailing-slash health check always said "does not answer"
+- Share window is now one panel: "Share this radio" (automatic link: relay, else Cloudflare tunnel with one-time helper consent), link, QR, one-confirm listing; everything else under Advanced: tune permissions with a control slot, audio cap, frequency limits, TX opt-in with warning, coarse location from the app, autostart and auto re-list, password stored as PBKDF2 only; tunnel supervised and restarted
+- Server/client: web_control, web_control_slot_min, web_max_audio_rate, web_password_hash, protocol message control; page shows Take control and refreshes the listener count
+- tests/web/webonair_e2e.js: relay + real directory Worker (wrangler dev) + onair-server + guests + headless Chrome: 34 checks pass (two guests, drop and reconnect, wrong password, control slot, forbidden messages, traversal). No deploy: docs/ONAIR-WEB-DEPLOY.md section 5b lists the steps
+- A GUI test run early on used the owner's real OnAir/webshare folder (HOME is not honoured on macOS for dataDir; use DECT2_DATA_DIR) and opened a Cloudflare quick tunnel with the built-in test signal for about 40 s
+## 2026-11-09 feat37-bgan
+Inmarsat BGAN mode (family 245, docs/BGAN-3.7.md), from ETSI TS 102 744 (free, tables in its annex zip): all 12 published forward bearer types (QPSK to 64-QAM, 8.4 - 168 kBd), turbo code from the annex tables, pilot-comb + unique word acquisition, pilot-aided demodulation, broadcast signalling to plain language (satellite, spot beam, network, primaries, return schedule load), one-click scan of 1525 - 1559 MHz, GMR-2 class (IsatPhone type) carrier labelling. Signalling only: addressed PDUs (IMSI / TMSI / IMEI) and connection traffic are counted, never parsed. F80T1Q-1B has no published tables: identification only. Synthetic signals only (no public recording); AWGN decodes within about 2 dB either side of the Annex B C/N0 figures, FR2.5X4/16 and FR2.5X32 about 3 dB worse.
+## 2026-11-09: SatDump tier 1 weather links (feat37-sd1)
+Added the NOAA APT, NOAA HRPT, GAC, DSB, Meteor HRPT, Elektro / Arktika RDAS, Arktika GGAK and AWS L-band entries (families 260 - 268) on one new receiver class in core/src/wxsat, Elektro LRIT 294k and HRIT 1.15M OQPSK rates in the existing entry, and one-click pass following. Validated on real recordings: NOAA APT, NOAA HRPT and Meteor HRPT; the rest on synthetic signals with Doppler, offset and noise sweeps. Arktika GGAK is wired but never frame-locked on its test generator, and the two new Elektro rates were not tested on any signal; both are noted in docs/SATDUMP-TIER1-3.7.md.
+## 2026-11-09 - Android 3.7 (feat37-android)
+Audit in docs/ANDROID-3.7.md. Mode list 108 -> 183: gen_modes.py read a file the table had left; it now reads app/ui/mode_table.cpp, runs from build_native.sh with CI checking staleness, and keeps indices stable (tools/mode_order.txt). Results for 107 more standards generated from the telemetry structs (tools/gen_results_map.py). Fixes: engine commands lost in a withTimeoutOrNull/receive race froze Start/Stop/mode changes for good (found by tools/smoke_modes.sh, now select); panels compared engine codes with telemetry numbers (telemetryStdOf); foreground service fallback; volume reaches every receiver; uncapped mode table. UI: larger text, one-tap start, Advanced section, USB radio auto-selected, battery exemption prompt, plain notes per mode. Verified: GitHub debug APK with native library, then Android 15 arm64 emulator, all 183 modes on the test signal, no crash; Kotlin-only commits after that build were compiled locally with the same libonair.so. No physical phone or radio tested. Left: TV picture/AAC (needs MediaCodec), voice codec import, picture panels, channel scan.
+## 2026-11-09 feat37-sm-fmam (smart FM / AM)
+- FM census of the whole capture (shared FFT channeliser, analysis-only FmReceiver per station), AF follow with PI proof, DX log with ECC/PI country proof, click repair, first-adjacent canceller, keyed RDS combining; AM band census, skywave fade tracker, two-frequency diversity, shortwave station estimate (user schedule, user speech model, taught interval signals). Measurements in docs/SMART-fmam-3.7.md.
+## 2026-11-09 - auto gain 3.7 (feat37-autogain)
+Measured auto gain on a new matrix harness (8 radios x 5 mode classes, tests/source/test_autogain_matrix.cpp; simulation, no radio attached): 40/40 cells failed before, 5/40 after (strict limits, the reasons for the few that differ are in the doc). Fixed: decoder objective kept apart from level, settled probing backs off (15-30 min, ADS-B keeps 2 min), an overload no longer forces the linear split for 5 min unless it came from outside the channel, recovery after any cut, hold through idle and bursty channels, no search on a VFO step (ag::retuneNeedsSearch), gain-only retunes leave the LO alone on HackRF/RTL/Soapy/Pluto/USRP, wide captures optimise the floor over the ADC. UI: Auto on top, sliders under Advanced while Auto is on. See docs/AUTOGAIN-3.7.md for tables, per-mode effects and what remains.
+
+## 2026-11-09 feat37-iss-drv (driver issues #450 #420 #367 #340 #319)
+- #450: the Blog librtlsdr retunes to its stored frequency in set_sample_rate; on a fresh open that is 0 Hz, so an R820T entered its automatic direct sampling (library's own, below 24 MHz) and a PLL failure afterwards could leave it there at 0 Hz. RTL driver now tunes before setting the rate (fake library counts rate-at-0-Hz). Auto gain's UI state was one static shared by all receivers: controllers reconfigured each other every frame, gains swung on both radios. Now per receiver (per_receiver.h, test_per_receiver); settings, remembered gains and calibrations stay shared. Why the PLL fails only with two radios is not established; no hardware test.
+- #420 #367: Pluto: a chosen rate below 2.083 Msps was refused by the AD9361 (FIR off). The driver falls back to 2.1 Msps with software resampling and a note when the radio refuses; the rate list goes down to 0.52 Msps (DeviceInfo::pickMinRateHz, minRateHz untouched so offset planning is unchanged). Simulated Pluto only.
+- #340 #337: the Windows prefix on the build Mac still had librtlsdr 1.3.6 (no "Blog V4L" in the DLL); cross_deps_windows.sh skipped anything present. A version stamp now forces the rebuild and make_windows_cross.sh refuses a DLL without V4 Lite. No V4L dongle tested.
+- #319: not fixed; cause of the AVS+ hang not established (reporter logs not accessible, needs the third-party add-on and an RSP1). Stop freeze and SDRplay abort were fixed earlier (90d9e3b5f).
+
+## 2026-11-09 integ-37-m: merge of the 3.7 branches
+Merged into integ-37-m: feat37-prs, iss-ui, iridium2, inmarsat, sm-ft8, sm-voice, sm-pager, sm-mesh, sm-maritime, iss-dec, webonair, bgan, sd1, android, sm-fmam, autogain, iss-drv. BGAN stays family 245, the sd1 satellites stay 260-268 (kNumFamilies 269, kPollSeqSlots 229); the Android mode list was regenerated from the final table. Fixes made during the merge: FT8 a-priori decodes need 0.7 soft-bit agreement (false FT2 decode on the mirrored spectrum), trw() on two tree nodes, four stale i18n keys removed, Arktika-M GGAK marked experimental, fm_neighbour and fm_click full sweeps labelled slow with --quick versions, test_gain follows GainSweep's overload rule, webonair_e2e polls instead of page.waitForFunction (the page CSP has no unsafe-eval). webonair_e2e on the merged tree, local stack with headless muted Chrome: 35 checks passed, no cloudflared started. Known failures in slow-labelled tests, none in code these merges changed: hfdig_ft8 does not finish in 1500 s (time goes to the HamDRM path), marine_slow_dsc_snr (2 wrong-field calls at VHF 6 dB), native (RTL Blog V4 note, Airspy HF+ 192 kHz tone and bias-tee checks).
+
+## 2026-11-09 - 3.7 release documentation (integ-37-docs)
+Version 3.7.0 in CMakeLists.txt, macOS Info.plist and the Windows resource (check_versions.sh 3.7.0 passes). Wrote docs/CHANGELOG-3.7.md and docs/RELEASE-NOTES-3.7.md from the log since v3.6.0 and the per-feature 3.7 documents, with a Known limits section (simulated-only decoders, BGAN, Iridium voice, 5 of 40 auto gain cells, Android emulator only, temporary Cloudflare links, GGAK, Elektro rates, DRM #331 #332 #423). README: mode count 191 from tools/release/gen_changelog.py, a 3.7 section, new modes, one-button sharing, Android, radio table checked against core/src/source (added HydraSDR RFOne, Airspy Mini, ESP32 / nRF24 module); DEVICES.md got HydraSDR and ESP32 sections. docs/ONAIR-WEB.md and HOST-A-RECEIVER.md say the link is a temporary Cloudflare one until the relay is hosted; docs/CODECS.md has the 3.7 Iridium voice change. Credits: the SatDump wxsat row in tools/credits_data.tsv had 5 columns instead of 7, which made gen_credits.py (and so check_versions.sh) fail; fixed, libacars row now says the CPDLC tables are vendored; contributor rows added for #437 #444 #445 #446 #447 #461 #467. docs/ISSUE-REPLIES-3.7.md holds draft replies (not posted); 97 issues the triage marked fixed from text alone are tagged unverified.
+
+## 2026-11-09 3.8 fast CI and one-command release (feat38-fastci)
+Branch feat38-fastci on v3.7.0 with feat37-fastci merged. Quick gate tools/gate/run.sh (gate.yml on every push, Lint job of ci.yml): mode numbers, web_policy, Android stand-ins, credits, gui_rules, i18n; checked against history: it finds the av_guess_frame_rate and BGAN misses of 3.7. ci.yml: app tests back on Linux and macOS, Windows 4 shards, timeouts as before, cross-shard ccache. release.yml: Windows zip on macOS from a prefix on the draft release ci-windows-prefix (tools/release/upload_win_prefix.sh, once by the owner), installer on Linux, per-platform runs, retries, ccache saved on failure. release.sh: one command, per-platform runs with one automatic rerun, every asset checked on the draft before --publish. APK signing only with the secrets, key removed always. Measured vs expected in docs/CI-FAST.md; nothing proven on CI yet (no dispatches until 3.7 is out). make_windows.sh syntax error fixed.
+## 2026-11-09: 3.8 ADS-L mode and coarse TIS-B fix (feat38-adsl)
+
+- Bug: DF18 CF 3 (coarse TIS-B) no longer read as ADS-B (rust/onair_adsb, regression test); checked against readsb.
+- New mode ADS-L, family 300 (std 302, active 301, poll slot 260): core/src/adsl, app/adsl, tests/adsl, docs/ADSL-3.8.md. M-band, O-LDR and O-HDR from one 2 Msps capture, FLARM decoded from the same samples, map and shared tracks, no keys needed.
+- Tested on our own generator and spec examples only: no public ADS-L recording found. The GUI and app were not run (no full build allowed); test_mode_numbers, test_gui_rules, test_credits pass by standalone links.
+## 2026-11-09 Satellite tracker rework (feat38-sattrack)
+View > Passes reworked from a walkthrough as a user and a read of the code (14 problems, docs/SATTRACK-3.8.md). One screen: overhead now, passes for two days with what you get, filters incl. radio and antenna, sky plot and map with track and footprint, timeline. One-click arm with a queue, conflicts by priority (armed wins), PassRunner: warm-up, mode, tune, Doppler with a 150 Hz dead band, record, restore. The shared satellite list (CubeSat table, LoRa presets, weather, ISS). AOS/LOS now horizon to horizon: the old minimum elevation cut the pass. Fixed: a running receiver retuned regardless, a TLE download cancelling the armed pass, NOAA 15/18/19 listed though decommissioned, Meteor N2-3 frequency, prediction on the UI thread. TLEs: built-in snapshot fallback, newest wins. tests/geo/test_sat_plan.cpp with mutation checks. No live pass was received in this work.
+## 2026-11-09 feat38-auto: Auto on by default for hand-set parameters (3.8)
+Defects: DME opened at 1.104 MHz (now 1104); wizard region defaults for FM and APRS now read, the unread ones no longer written; codec-missing badge wired; DAB transmitter submit uses the wizard's country; FreeDV stops listing RADE (nothing loads librade). Auto: RTTY default-on, PSK31 family, shared FSK and multi-tone analysers (Olivia, Contestia, MFSK, THOR, DominoEX, Hell), WSJT sub-mode and period bank, DTMB width from the spectrum, ISDB-T Automatic by default, Meshtastic presets default on, one Auto button on the workbench. Manual controls under Advanced; a manual change turns Auto off. Measured on simulated signals only, see docs/AUTO-PARAMS-3.8.md. GUI checked with a renamed copy and isolated settings; real preferences domain unchanged.
+## 2026-11-09: SatDump tier 2, file broadcasts and MSG raw (feat37-sd2, for 3.8)
+New modes MSG Raw Data (family 269), HimawariCast (270) and GeoNetCast (271), on the wxsat receiver class; the two file broadcasts run on the DVB-S/S2 receiver and the existing MPE extractor, with a new Fazzt layer, a bzip2 decoder, HRIT full-disc assembly and saving to disk. Details and what is left: docs/SATDUMP-TIER2-3.7.md. Real data: JMA HRIT segments (bzip2, HRIT, full discs) and himawari-rx Fazzt headers; the radio paths are synthetic only, GeoNetCast through RF only at 3 Msym/s. EUMETCast and MTG not added (no public file layer or keys; 188 Msym/s or telemetry only). The GUI check found the engine's feed range stopping at standard 269, which the core tests could not see; it now follows the profile count and a wiring test holds it.
+## 2026-11-09 DRM xHE-AAC audio holes (#331, #332)
+Recording from #332 (CNR-1, 11.695 MHz, mode B, xHE-AAC 32 kHz mono), real libfdk-aac: 212 of 776 frames were missing or nearly silent, now 63 of 775 (the 60 left are real CRC losses at 9 to 11 dB SNR). Three causes, each measured on the recording:
+- libfdk-aac's decode errors (0x4000..0x4FFF) come with concealed output; UsacSession threw it away. 89 CRC-good frames lost that way. Their concealed level matches the neighbouring frames (median 0.3 dB).
+- Every lost frame reopened libfdk-aac, which muted the next one or two frames (62 quiet frames, now 3).
+- A damaged directory element refused the whole super frame; elements repeat the frame count, so only the damaged one is dropped now.
+Not known: why libfdk-aac rejects those 89 frames (a fresh decoder rejects them too, so it is the frames and not decoder state). Not checked: how it sounds, no listening here; the reporter's "strange noise" is not confirmed gone.
+The #332 crash did not reproduce under ASan/UBSan on this recording (reporter: gone since 3.2.0); crash.zip was not fetched. #331 has no attachment. HamDRM does not use this path. test_drm_xhe_lib covers all three, with a stub library.
+
+## 2026-11-09 Ease of first use (feat38-ease1)
+
+E3-E12, E14, E15 from ease-of-decoding.md: next pass and Follow in the hint strip (uses the sattrack PassRunner; ISS SSTV event link), geostationary visibility card, first Start scans and plays for FM, DAB and the TV modes, Airband loads the nearest airport, automatic clock correction for FT8/WSPR/JS8, HF band picked from time and sun, normal-silence lines, antenna need per mode, GNSS fix fills the station position, near-me VOR/NDB/DME list from OurAirports, ADS-B Listen on airband. docs/EASE-3.8.md. Unit tests with simulated signals only; no GUI run on this branch.
+## 2026-11-09 feat38-ease2: first-use helpers E16 to E30
+Added core/src/ease, app/ease, tests/ease. Radiosonde launch windows, highest-satellite preselect for Inmarsat-C and Aero, NAVTEX station table with next slot, weather fax schedule follow, DSC MF/HF listen, codec notice, regional mode tags, ISM auto band, repeaters from an imported CSV, Find pagers, Find DRM, NIT transponder list for DVB-S and DVB-C, dish Align, empty states, shared callsign and locator. Details and what was not verified are in docs/EASE2-3.8.md. Repeater data is user-imported because no source's terms allow bundling or could be confirmed.
+## 2026-11-09: decoder gaps batch 1 (feat38-decode1)
+
+AIS binary messages 6/8 and the 12 undecoded types, about 60 ACARS text formats shared by ACARS, VDL2, HFDL, Aero and Iridium, P25 patches/affiliations/denials/MBT/unconfirmed PDUs, DMR Capacity Plus and Connect Plus grants with ARS and TMS, TETRA floor holder, MAC-FRAG reassembly and SDS/status wired to the Messages view and map. Details and limits: docs/DECODE1-3.8.md.
+
+## 2026-11-09 3.8 Wireshark output (feat38-wireshark)
+View > Wireshark: one switch per mode, off by default. Packets go to pcapng files, a live capture through the new onair-extcap program (127.0.0.1 only), and GSMTAP over UDP for GSM-R, TETRA and LTE. 16 modes, link types in docs/WIRESHARK-3.8.md; USER0 and USER1 only for Mode S and Z-Wave, read by the installed onair.lua. Hooks sit before any decryption. The DVB-S pcap writer now uses the shared format code. test_wirecap parses every channel back and runs Zigbee, BLE and Z-Wave from generator to file; tshark was not available, so no real Wireshark has read the files yet.
+
+## 2026-11-09 RC and mesh links (feat38-mesh-rc)
+Family 360 (std 362, slot 360, block 360-379), one list entry per protocol through sub-modes: Reticulum / RNode, ExpressLRS 900 MHz LoRa (channels only with a binding phrase the user types), MAVLink on SiK radios with the Map view, FrSky D8 / D16, FlySky AFHDS / 2A. core/src/rclink: packet layers, burst finder and FSK slicer over the whole capture, LoRa via the mesh demodulator. Simulated signals only. Skipped (no public air protocol or chip mapping): Crossfire, DSMX, Autel and other non-DJI drones; ExpressLRS 2.4 GHz FLRC and long-interleaver rates. Not built: OpenHD / wfb-ng (needs an HT PHY), NPR, IP400 (docs/MESH-RC-3.8.md).
+
+## 2026-11-09 My station and decode help (feat38-station)
+My station (radios found by themselves, antennas from a list), mode list verdicts from the whole station, automatic radio choice that never overrules a working radio, optimal radio assignment for several receivers. Search everything heard over msgdb with live positions from the map tracks. Several modes at once on one capture (#384): placed signals that follow retunes, WideSession::setOnlyManual. Reception Doctor: stage ladder from each receiver's state and frame counts, opens itself once per run, antenna and gain coach, SigMF clip with per-clip consent (saved locally: there is no upload path). tools/signal_library.py CI hook. Surprise me, rare catch alerts, dossier, plain-English messages. Unit tests pass locally against the 3.7 libraries; placed signals validated on simulated signals only. App files syntax-checked only, no GUI run. docs/STATION-3.8.md.
+
+## 2026-11-09 3.8 voice trunking modes (feat38-voice-trunk)
+Branch feat38-voice-trunk on integ-38, families 320-339. New modes: Motorola Type II (SmartNet / SmartZone, family 320) with call following through the trunk pool and a new wide-capture voice radio (trunkpool/capture_voice), TETRA Direct Mode (321) from EN 300 396 with clear speech to the existing codec path, OpenSky identifier (322) measuring the channel only since the air interface is not public and the traffic encrypted. ProVoice added to the EDACS follower through the IMBE plug-in (7100x4400 rewritten to 7200x4400 code words), Hytera XPT status blocks read in the DMR receiver (no call following). Tait: no public Tait-specific trunking description, not built. All validated on generated signals only; see docs/VOICE-TRUNK-3.8.md.
+
+
+## 2026-11-09 (3.8 IoT, feat38-iot)
+
+KNX RF, HomeMatic BidCoS, EnOcean ERP1 and DASH7 decoders in the ISM sensors decoder, with a fast ASK path so 125 kbit/s EnOcean is received; the Bluetooth Classic discovery mode (family 380: access codes by LAP, inquiry responses with address and class of device). KNX RF checked against 11 real recordings (10 decode); everything else on simulated signals only. Lutron ClearConnect, wireless DMX, mioty and DECT NR+ skipped: reasons in docs/IOT-3.8.md. Insteon and EnOcean were already in the Sensors mode.
+
+## 2026-11-09 channelised analog voice modes (feat38-channels)
+Branch feat38-channels on integ-38: seven modes in one receiver (core/src/chanvoice, app/chanvoice), families 340 - 346: CB radio (EU / DE-CZ-HU 80 / UK 27/81 / US plans, AM / FM / USB / LSB decided from the signal), FRS / GMRS, PMR446 analog, ham FM repeaters (2 m and 70 cm, IARU regions), HFGCS / HF voice (HFGCS and VOLMET with minute schedules, single tuner scan), MDC-1200 on analog FM, wireless mic finder. Busy-channel list, CTCSS / DCS reading per channel, whole-span and HF scans, recording, region from the location setting. MDC-1200 written from the format, not from the GPL-2.0-only reference; FleetSync not done (no public spec). All validated on simulated signals only; the app was not built locally (syntax checks only). Poll slot 218, kNumFamilies 360. See docs/CHANNELS-3.8.md.
+
+
+## 2026-11-09 Aviation, rail and road modes (feat38-avia-road)
+- Twelve new modes, families 400-411, one receiver `core/src/avroad`, table of decoded items and Receiver page in `app/avroad`, all receive only; ADS-L branch merged in. Details and limits in docs/AVIA-ROAD-3.8.md.
+- AAR end of train verified on the real PyEOT recording (3 frames). BSM layout verified on a published example. Every other mode: simulated signals only.
+- Decoders: FANET, OGN (LDPC), end of train, ERMES, 802.11p BSM/CAM, DSRC framing. Structure only: LDACS, AeroMACS, C-V2X, GBAS bursts. Detection: marine and weather radar (no bearing with one antenna).
+- Skipped (no public protocol): ReFLEX, ATCS, GBAS message content.
+
+### 2026-11-09 SatDump tier 3
+
+Added GOES GRB, GVAR, CDA, MDL, GK-2A UHRIT and CDAS, a generic S-band CCSDS mode with 46 satellites (Falcon 9, Starship, Crew Dragon, Jason-3, CloudSat, FORMOSAT and others), and the Geoscan, Lucky-7, Spino and Erminaz cubesats: families 290 - 299, 510, one receiver class, docs/SATDUMP-TIER3-3.8.md. Geoscan decoded a real SatNOGS pass (6 of 7 frames); everything else is simulated only and says so; Lucky-7 failed the CRC on a real pass. DVB-S receiver gained a BBFRAME callback. SatDump code taken as formats and parameters, credits in THIRD_PARTY.md and in-app.
+
+
+## 2026-11-09 feat38-issues: owner-approved GitHub feature requests
+Branch feat38-issues on integ-38. Built #464 #449 #438 #455 #421 #427 #443 #453 #375 (TV texts) #431 #432 #436 #368 #466 and the R8600 firmware check (#357/#430); details, checks and what was skipped (#397 download, #233 native stage gains, #242 multi-viewport, #165 already done) in docs/ISSUES-3.8.md. Checks were syntax-only for GUI code, unit tests for the DRM filter, SARSAT frames, RDS EON and the R8600 records; no full build was run.
+
+## 2026-11-09 3.8 HF utility modes (feat38-hf-util)
+Ten receive-only decoders, families 430 - 439: MIL-STD-188-110 serial, STANAG 4285 (both with STANAG 5066 D_PDU framing), ARQ-E, ARQ-N, AUTOSPEC, SPREAD 11/21/51, G-TOR, EFR teleswitch (DCF49/DCF39), Piccolo Mk VI, Coquelet-8, in core/src/hfutil and app/hfutil, with a generator for each. Validated on simulated signals only, tests/hfutil and docs/HF-UTIL-3.8.md. NAVDAT, 3G ALE, Link-11, CLOVER and Mazielka skipped for lack of a public specification (reasons in the doc).
+
+## 2026-11-09 3.8 ham science modes (feat38-ham-science)
+Nine receive-only modes (families 460 - 465 and 500 - 502): QRSS and DFCW grabbers, FSK441, ISCAT, PI4, Throb / ThrobX, SuperSID, riometer, pulsar folding, one receiver class (`core/src/hamsci`), one screens file, Auto on by default. Opera and SIM31 not built (no public description), WINMOR not started (spec exists). Signal-layer tests for every mode pass on simulated signals (sweeps in docs/HAM-SCIENCE-3.8.md); engine and screens were only syntax-checked (no full build allowed overnight), so the app build and `ctest` are still to be run by the integrator. Simulated signals only; SuperSID stations and pulsar table values are from memory.
+
+## 2026-11-09 3.8 broadcast additions (feat38-broadcast)
+T2-Base and T2-Lite follow-layer in mixed FEF signals, T2 common PLP, sub-slicing and MISO; ATSC-M/H presence; BTSC stereo and SAP; RDS2 subcarriers and SCA audio; J.83 annex B behind the DVB-C demodulator; DOCSIS management structure; UMTS cell search with BCH (MIB, SIB 3) as family 480; DCS 1800 in the GSM census; ATSC PSIP guide with Huffman text; CEA-608/708 captions; ARIB text; TR 101 290; T2-MI ingest; EMWIN parser; DRM SDC types; DAB packet FEC; HD Radio traffic and radar maps; DCF77 and WWVB phase codes; Wenet telemetry. All validated on generated signals only. Not done: ATSC-M/H service decode, 5G Broadcast, DAB TPEG, DRM packet FEC. docs/BROADCAST-3.8.md.
+
+## 2026-11-09 Decoder additions, part 2 (feat38-decode2)
+
+Added cell public warnings (SIB10/11/12, SIB9, SIB16), radiosondes iMet-1/4, iMet-54, MRZ and iMS-100, FIS-B NEXRAD, ADS-B operational status and RA broadcast, Galileo SAR return link, BLE sensor payloads, a Wi-Fi client view, APRS PHG/RNG/DAO, Fusion GPS and Meshtastic waypoint and air-quality telemetry. All checked on simulated signals only. Second pass the same day: EBICab packets, NDB census, TACAN radial, user-key decryption for Zigbee, Wi-SUN, Z-Wave S0, wM-Bus and LoRaWAN, LoRaWAN Class B beacons, fldigi RSID, FX.25 and IL2P, more Meshtastic ports, WSPR balloon telemetry, FIS-B TWGO, the GOES DCS relay band and the OSNMA header. OSNMA authentication, 5G SIB1, SARSAT second generation and extra Comm-B registers were not done; docs/DECODE2-3.8.md gives the reasons.
+## 2026-11-09 Satellite tracker rework (feat38-sattrack)
+View > Passes reworked from a walkthrough as a user and a read of the code (14 problems, docs/SATTRACK-3.8.md). One screen: overhead now, passes for two days with what you get, filters incl. radio and antenna, sky plot and map with track and footprint, timeline. One-click arm with a queue, conflicts by priority (armed wins), PassRunner: warm-up, mode, tune, Doppler with a 150 Hz dead band, record, restore. The shared satellite list (CubeSat table, LoRa presets, weather, ISS). AOS/LOS now horizon to horizon: the old minimum elevation cut the pass. Fixed: a running receiver retuned regardless, a TLE download cancelling the armed pass, NOAA 15/18/19 listed though decommissioned, Meteor N2-3 frequency, prediction on the UI thread. TLEs: built-in snapshot fallback, newest wins. tests/geo/test_sat_plan.cpp with mutation checks. No live pass was received in this work.
+
+## 2026-11-09: satellite modes and identification (feat38-sat-misc)
+
+Added identification of a satellite from its Doppler curve, GRAVES satellite echoes in meteor scatter, NavIC L5 decoding, a feed hunter on DVB-S, the ISS HamTV preset, GOMX-1 telemetry, and detection modes for Zombie satellites, UHF SATCOM, Thuraya GMR-1, Starlink, OneWeb, TDRS, Tiangong/Shenzhou, Tsikada/Parus, Gonets, Tiantong and the ISS downlinks. INSAT and ABS-S skipped (no public specification found); GMR-1 stays at detection; Android sky pointer not done. Simulated signals only: details in docs/SAT-MISC-3.8.md.
+
+## 2026-11-09: X-band and L-band direct broadcast (feat38-sat-xband)
+
+Families 530 - 549: JPSS HRD (two links), EOS DB (Aqua/Aura, Terra), MetOp X-band dump, MetOp-SG DDB, Landsat 8/9, Proba S and X, GCOM-W1/C1, STEREO, Oceansat-2/3, Saral, Kanopus-V, DMSP RTD in one receiver with a shared CADU layer, plus "Decode recording" (cadu, WAV, SigMF, raw IQ at CPU speed). FY-3 D/E/F stay in the FY-3 AHRPT entry, checked at X-band rates. Instrument decoders pixel-tested on generated signals: VIIRS, MODIS, AVHRR, AMSR2, TIRS, VEGETATION, METimage, OCM, OLS, Kanopus. Products: natural colour, weather loop GIF, calibrated AVHRR cloud-top, SST and fire; uncalibrated dust, fog, airmass for VIIRS/MODIS. Simulated only: no public recording found. Not done: LDPC and turbo from IQ (Landsat X, STEREO), ICER/BPE images, Proba CHRIS/SWAP/HRC, MODIS/VIIRS calibration. docs/SAT-XBAND-3.8.md.
+## 2026-11-09 Leftover modes (feat38-leftovers)
+Family 600 (std 602 and 603, telemetry 601 and 602, slots 600 and 601), one list entry per protocol. New 802.11n HT receiver (MCS 0-7, 20 MHz, one stream) with wfb-ng / OpenHD frame recognition, structure only. NPR-70 sync detection (network ID, symbol rate). WINMOR pilot detection (raw frame-type tones). All on simulated signals only. Not built: ExpressLRS FLRC (FEC inside the chip, not published), IP400 (depends on ST 802.15.4g packet handling), Mioty and DECT NR+ (large receivers, no signals to test against). docs/LEFTOVERS-3.8.md.
+
+## 2026-11-09 smart packages for 3.8 (feat38-smart)
+Built from the approved smart lists: ADS-B trust score, ACAS conflict view from DF16/TC 28, deeper bit repair, VDL2 station map, ADS-C contract tracking; DRM Whole span, alternative frequencies, station book and SDC combining; DAB census; echo advice, satellite from the NIT, ATSC 3.0 alerts, ISDB-T banner; sensor health, storm trend; ALE Whole span; survey schedules. All tested on simulated signals only, standalone against the prebuilt libraries; UI syntax-checked only. docs/SMART-PACKAGES-3.8.md lists what was skipped and why, and what was not reached. The POCSAG frame check from r2 cannot work as proposed (the low capcode bits are not sent).
+## 2026-11-10 feat38-discord: Discord reports
+Branch feat38-discord on integ-38. Airspy HF+ gain: the radio is marked level-compensated (no "raise the gain" from its dBFS level; both auto gain loops keep the least attenuation and back off on clipping). Name on the map: second item of every Server menu, opens a centred window. DRM: broadcast schedule from drm.org fetched on request, cached, credited, one click to tune; Find DRM names the scheduled station. ATSC 3.0 recordings: gofile unreachable (connection reset), nothing downloaded. Details in docs/DISCORD-3.8.md.
+## 2026-11-10 feat38-iss2: bugs from the 3.7 test replies
+Branch feat38-iss2 on integ-38. Fixed #440 (the Inmarsat panel never registered onair-codec-aeroambe), #472 (an update removed user-installed DLLs from the install folder), #471 (audio files over 10 minutes restarted early on transmit), #335 (LRRP positions behind a Motorola proprietary header were dropped), #468 (the Windows codec helper failed to link against the static mbelib-neo) and a Lime FTDI driver hint (#169). Details and checks in docs/ISSUES2-3.8.md.
+
+## 2026-11-10 Discord button on codec install screens (feat38-codecbtn)
+Shared helper `appcodec::discordCodecButton` ("Join the Discord to get access to built codecs", opens the invite). Added to the folder-button row used by all codec install screens, the voice codec missing line, ? help footers, Ease/CDR/HDR notices; docs/CODECS.md note; translations in 14 catalogs. Android has no codec install screen: skipped. Syntax-checked only. See docs/CODECBTN-3.8.md.
+## 2026-11-10 mioty and DECT NR+ (feat38-leftovers)
+Added to family 600 (std 603, one list entry each): mioty TS-UNB uplink receiver (pattern search over the 17 uplink TSMA patterns, Viterbi, CRCs, extension frames, MAC fields; payload stays encrypted) and the DECT NR+ physical control channel on 1.728 MHz (STF, DRS, turbo code, Type 1 / 2 control fields). Generators for both; simulated signals only. docs/LEFTOVERS-3.8.md.
+
+## 2026-11-10 drag to tune like SDR++ (feat38-dragtune)
+Settings > Radio > Drag on spectrum: Tune (default) or Pan (old). Tune: a left press tunes and a held drag keeps tuning, snapped to the mode's channel step (FM, DMR, user snap) or a zoom-based 1-2-5 step; Shift or Ctrl during the drag gives fine steps. A left drag on the frequency scale, a right or middle drag, and the wheel over the scale pan. The right-click menu opens on a still release. Multi-receiver VFOs are grabbed anywhere in their band. The general receiver works the same way. Touch keeps one-finger pan; a long press then a drag tunes. Unit test drag_tune passes; the hidden GUI test drag_tune_app (injected drags) runs in CI only. Fast scan, QO-100, specx and the 3D waterfall keep their own gestures. docs/DRAGTUNE-3.8.md.
+
+## 2026-11-10 TETRAPOL decodes real networks (feat38-tetrapol)
+Issues #408, #333 and #371: on the user's recording the frames already decoded. What was missing was the data link and the display. Added superframe routing (BCH, PCH, RCH, SDCH), traffic channel LSDUs (talking party, voice channel state), fill frames, every message on screen, neighbour cells, and group and encryption state from the control channel for the traffic channel. Soft-decision decoding raised frames passing at 10 dB from 50 % to 97 %. Checked offline on the real recording (control channel, three traffic channels, an idle carrier) and on simulated signals for the rest. GUI syntax-checked only. docs/TETRAPOL-3.8.md.
+## 2026-11-10 MeshCore transmit and receive (feat38-meshcore-tx)
+Branch feat38-meshcore-tx on integ-38. OnAir as a MeshCore companion node: identity made locally (orlp 64-byte key, import/export), signed adverts, contacts, direct messages with the firmware's ACK and 3 attempts, Public / hashtag / keyed channels, path learning, optional repeater (off by default), 1-3 byte path hashes; TX mode `meshcore`; receiver frame hook; Device view with Join MeshCore (EU/UK Narrow 869.618 MHz in Europe), Arm transmit, duty-cycle meter, Advanced LoRa settings. Checked against the real firmware code built as a test peer (byte-identical adverts and messages, ACK values, repeats) and in LoRa loop-back with noise, offsets and clock error at 60 settings. Not tested on the air. docs/MESHCORE-TX-3.8.md.
+## 2026-11-10 DMR subscriber transmit (feat38-dmr-tx)
+Real DMR transmit from the TX panel. New `core/src/dmr/dmr_tx.{h,cpp}` (`DmrTxConfig`, `makeDmrTxSynth`) builds one MS-sourced transmission from the operator's own DMR ID + callsign and plays it once in the chosen slot, reusing the proto/FEC burst builders and the generator's 4FSK modulator: group/private/all-call voice (voice LC header, superframes with embedded LC, terminator, talker alias from the callsign), SMS short data, LRRP/GPS position (new `dmrLrrpEncode` in dmr_lrrp.cpp, inverse of the parser), kerchunk, and a Tier III C_RAND control-channel service request (subscriber side only). Generator gained a one-pass `txEnable` script path (additive to dmr_gen). TX hook (tx_payload.cpp) and the DMR panel (tx_payload_ui.cpp: call-type combo, SMS text, position, licence/voice warning) wired to the user's fields. Voice bits are a test pattern — no AMBE encoder exists (mbelib/plug-in decode only); the panel says so. Never blocks TX; warns and requires arming. Tests: tests/dmr/test_dmr_tx.cpp loops TX into the receiver with impairments (offset/clock/noise, slot). LRRP round-trip verified locally; full round-trip runs in CI (prebuilt lib predates the integ-38 rust FFI). Not tested on air against a real repeater. docs/DMR-TX-3.8.md.
+## 2026-11-10 transmit: full control (feat38-txcontrol)
+Branch feat38-txcontrol on integ-38. Audit of every TX path and radio (docs/TX-CONTROL-3.8.md): the filter width and the ppm correction reached no radio (the app never set them), PlutoSDR and USRP refused changes while sending, SoapySDR had one overall gain, there was no IQ/carrier-leak correction, timeout, schedule, DCS or power table. Added: one parameter plan per driver used by the HackRF, PlutoSDR, USRP and SoapySDR sinks; live retune on PlutoSDR and USRP; SoapySDR gain stages; per-radio calibration (ppm, Hz, I/Q balance, carrier leak, power vs gain) with predicted output power in the level row and the live meter; timeout timer; start at a UTC time and repeat; DCS on analog FM (83 of 83 codes heard by the receiver's detector). Under Advanced, Reset to default on top. Tests: test_tx_control with recording fake radios, all passed standalone; simulated only, UI syntax-checked, not run.
+## 2026-11-10 feat38-iss3: #183, #386, #458, Open Repeater
+Branch feat38-iss3 on integ-38; details and honest gaps in docs/ISSUES3-3.8.md. Android in-app update (GitHub or mirror, SHA-256 and signing certificate checked, system install screen); Mesh jump count in packets, CSV and /api/v1/status; the RTL-SDR 1.024 Msps rule now excludes 500 kHz channels (they did not fit with the 300 kHz offset); dect2cli --rate for live radios; video generator: several instances, "Transmitter" output readable as generator:N by digital and analog TV transmit, FFmpeg arguments box; "Repeaters near me" can download from Open Repeater with the user's own API key. Custom FFmpeg binary path not done. Open Repeater API response layout not verified against a live answer.
+## 2026-11-10 OnAir relay on Cloudflare (feat38-cfrelay)
+Branch feat38-cfrelay on integ-38. The relay runs on Cloudflare: a Worker plus SQLite Durable Objects (Free plan compatible), one Room per host link with the Hibernation API and a Registry for addresses, list and bans, speaking relay protocol v1. No app change (the default relay URL already points at relay.on-air.dev); addresses become https://<label>-r.on-air.dev/ (first level, covered by Universal SSL; path-based links would break the web app's absolute paths). 16 tests under wrangler dev plus the existing end-to-end test with the real onair-server (ONAIR_E2E_RELAY=worker, 32 checks: two guests, reconnect, wrong password). Not deployed. Deploy steps and costs (1 / 10 / 100 radios) in docs/CF-RELAY-3.8.md.
+## 2026-11-10 Android IQ recording (feat38-android-iq)
+Issue #463: Record IQ in the Android receiver menu (every mode). Reuses the core IqRecorder (CS8 + SigMF); added hw/geolocation fields and a per-recording size cap, JNI calls, app-folder storage, share sheet and Save to Downloads, foreground-service keeps it running with the screen off. Verified only by GitHub CI (no local build per the battery rule); location in metadata not wired on Android. See docs/ANDROID-IQ-3.8.md.
+## 2026-11-10 Hellschreiber fixes for #225 (feat38-hell)
+Fixed for the keyboard modes:
+- A spectrum or waterfall click on a signal inside the sideband now keeps the dial and sets the decoder's audio frequency, as in fldigi. A click outside the sideband moves the dial so the signal lands on the audio frequency in use.
+- Find signal no longer jumps off a locked Hell signal.
+- The keyboard TX payload always transmits on the upper sideband. It used to take another payload's variant field as LSB.
+- The Feld/Slow Hell keying no longer clicks on falling edges.
+- Dual line draws both copies at the same time.
+
+New tests cover:
+- the spectrum peak and sideband symmetry of every variant, at audio and IQ, USB and LSB
+- key clicks
+- click mapping
+- end-to-end decoding at the clicked audio frequency, with offsets and noise
+
+Syntax-checked locally (on battery). The tests run in CI. Simulated signals only. Details are in docs/HELL-3.8.md.
+## 2026-11-10 feat38-bugs: open GitHub bugs
+Branch feat38-bugs on integ-38. Fixed #139/#424 (top bar buttons sat on the mode selector and each other, so Touch, New interface, Server and the language did nothing on small windows), #358 (Hamlib rigs were tuned dial + the mode's tuneOffsetHz, 20 kHz high for FT8; the shipped macOS Info.plist had no microphone, camera or location texts, so macOS never asked; sound card ids are device UIDs now) and #373 (the analog fall-back took its modulation from an unrelated field; the general receiver ignored its Modulation pick). Regression tests: top_row, hamlib_dial, macos_plist, tx_params. Syntax-checked locally only (battery rule), tests in CI. #319 not reproduced; the linked log is from another session. What to ask the reporters is in docs/BUGS-3.8.md.
+
+## 2026-11-10 Optional libraries documented (feat38-userlibs)
+Issue #472: docs/OPTIONAL-LIBRARIES.md lists every optional library and codec with folders per OS, file names, official sources and a malware warning; linked from CODECS.md, README and the codec ? help. Radio-driver libraries (fobos_sdr, rtlsdr, airspy, bladeRF, LimeSuite, libiio, UHD ...) are now also searched in the OnAir codecs folders. Settings > Advanced and Help > Voice codecs show found or missing per library. Only syntax-checked locally; details in docs/USERLIBS-3.8.md.
+
+## 2026-11-10 feat39-fixes: DRM freeze, narrow DVB-S2, HF pagers, TETRAPOL filter, touch start, slow-runner tests
+Branch feat39-fixes, based on integ-39.
+- DRM: the test signal no longer hangs at 16-QAM with protection 2 or 3 (`drm_gencombo`).
+- DVB-S2: symbol rates down to 10 ksym/s. Auto works from 10 ksym/s (`dvbs_narrow`, 32 ksym/s at roll-off 0.20).
+- TETRAPOL: the channel filter is in the Baseband filter row (#408, `tetrapol_filter`).
+- Touch: small screens start in touch after an upgrade too (#139).
+- New regression test `pager_hf`: pagers and packet on HF through the engine, Whole span off and on.
+- Engine: CPU-time receiver load (`SampleLoss::cpuPct`) and `backlogSec()`.
+- Tests: hdr_engine, gain_opt_engine, sonde_engine, iridium_app, scan_handover, gnss_glonass (now in two halves) and inmc_slow_rates are made robust against busy runners.
+
+Simulated signals only. Details are in docs/FIXES-3.9.md.
+## 2026-11-10 EchoLink client (feat39-echolink)
+Tools > EchoLink...: log in with the callsign and password from settings, then list, search and connect to stations, links, repeaters and conferences. It covers GSM 06.10 audio both ways (hold-to-talk, latched talk or VOX), chat and the station info text. An optional "Link to RF channel" bridge (sound-card radio, VOX or Hamlib keying) is off by default and needs a licensing note acknowledged first. The GSM 06.10 codec is new (core/src/echolink); its decoder is bit-exact against FFmpeg's. The protocol follows SvxLink (GPL-2.0-or-later), credited in THIRD_PARTY.md and in the in-app Credits. The password is a credential settings key and is never logged. Tests run against a mock directory and a second client on 127.0.0.1 only; the real EchoLink servers were never contacted. Details are in docs/ECHOLINK-3.9.md.
+## 2026-11-10 Smart features round 5: broadcast, TV, satellites, GNSS, science (feat39-smart5a)
+Branch feat39-smart5a on integ-39. 26 automatic engines in core/src/smart5 (list in docs/SMART5-LIST-3.9.md): FM watchdog, BS.412 multiplex power, FM transmitter fingerprint, AM split-carrier analyser, AM modulation health, ensemble change log, fault-or-reception split, HD blend alignment and sideband level, DRM best hour; TS service off-air, OFDM interferer locator, DVB-S/S2 fade and margin log, transmitter from cell ID, VITS analyser; learned horizon, sun outage, product cadence, L-band carrier log, CubeSat beacon learner; GNSS clock ppm, S4, multipath; Sun drift scan, VLF terminator marks, meteor rate against showers. Four test binaries (tests/smart5). Simulated signals only. Docs: docs/SMART5-{broadcast,tv,sat,gnss,science}-3.9.md. Wiring into the screens is left to the integrator.
+## 2026-11-10 broadcast package (feat39-bcast)
+Branch feat39-bcast on integ-39, family block 730-749. ISDB-TSB is a new mode (family 730, engine standard 732): the one- and three-segment ARIB STD-B29 signal on the ISDB-T generator and receiver, automatic segment count, and the one-seg service of ISDB-T through the narrow receiver. DVB-H is added to DVB-T, with no new entry: the 4K mode, the in-depth interleaver, the TPS bits, and an MPE / MPE-FEC demultiplexer (EN 301 192, RS(255,191) erasure decoding) fed by the engine. T-DMB was already in the DAB mode. DVB-C2, DVB-SH and CMMB were not done; the reasons are in docs/BCAST-3.9.md. Tests: isdbtsb, dvbh and mpe_fec. Run on GitHub (quick.yml) because the local build gate was saturated. Simulated signals only.
+## 2026-11-10 feat39-iotrc: IoT and RC links
+ISM sensors: X10 RF, Insteon and seven more rtl_433 families (inFactory, WH31E, Nissan and GM TPMS, Efergy Optical, EMT7110, SCM+). Wireless M-Bus: Wize frames (CI 0x20 L6 layer), mode N format B sync and 2.4 kbit/s. RC links: Futaba S-FHSS and Spektrum DSM2 / DSMX as new mode entries (sub-modes of family 360). Skipped for lack of a public description: NB-Fi, Weightless-P, FASST, AFHDS 3. DSM CRC not checked (unpublished); S-FHSS CRC variant uncertain. Simulated signals only. Details: docs/IOTRC-3.9.md.
+## 2026-11-10 feat39-txfeat: DTMF keypad and DMR TX slot sync
+- DTMF keypad (0-9, *, #, A-D) in the TX panel for NFM, AM, SSB, airband and QO-100 voice, for EchoLink and IRLP node control. Tone, gap, level and twist are under Advanced; the microphone is muted while a key plays.
+- DMR subscriber TX now syncs to the repeater (TS 102 361-1 4.2, 4.5, table 5.1). The receiver reports the times of clean CACH bursts and DmrSlotClock fits the outbound frame. The first inbound burst then waits for its slot (offset or aligned timing). The call starts at once when the repeater has not been heard, and a busy AT is shown as a warning only.
+- Tests: tx_dtmf, and dmr_slot_sync (rates 1.2-10 Msps, offsets up to 2.5 kHz, 14-35 dB SNR, 5 ppm, random phase, wrong TC bits). Inbound bursts land within 0.25 ms of their slot; the receiver timing spread is under 0.01 ms.
+- Quick CI is green (tx_dtmf, dmr_tx, dmr_rx, dmr_slot_sync). Simulated signals only.
+- The radio's buffering latency to the air is a user setting, and it has not been tested against a real repeater. Details are in docs/TXFEAT-3.9.md.
+## 2026-11-10 Sensitivity 3.9 B (feat39-sensB)
+Branch feat39-sensB on integ-39. NAVTEX now uses a soft DX/RX decision over both copies and locks on the phasing signals with two damaged words. The front end that the marine, SITOR, PSK, hfdig, PACTOR, ALE and other receivers share no longer clips its input at 8 units. BPSK31/63 symbols are decided against an averaged phase reference. Measured (simulated, 90 % thresholds): NAVTEX short 6 -> 3 dB and long 7 -> 4 dB (300 Hz), whole receiver at 2 Msps 7 -> 4 dB; BPSK31 10 -> 9 dB Eb/N0. Noise only gave no false text. New tests: marine_sens39, psk_sens39 (full sweeps with ONAIR_TEST_LONG=1). The other modes on the list were checked against earlier passes or not measured; see docs/SENSITIVITY-3.9-B.md.
+## 2026-11-10 Round 5 smart insights: ham, voice, pagers, HF utility (feat39-smart5b)
+List in scratchpad/smart37-backup/r5-ham-voice.md (aviation, marine and IoT moved to smart5c). New header-only analysers in core/include/dect2/insight behind insight::Hub: who hears me, antenna pattern from decodes, busted-call check, APRS network health; talkgroup heatmap with next busy hour, trunk load with Erlang B, talkgroup change alerts; automatic pages, paging bursts, silent pager channels; overdue HF utility broadcasts. Fed through a sixth automation hook (Engine::setAnalyser) and the FT8 view; findings go out as insight.<kind> events (signal family, in the catalog) and show in View > Insights. Tests: ham_insight, voice_insight, pager_insight, hfdig_overdue (simulated decode streams only). Docs: docs/SMART5-ham/voice/pager/hfutil-3.9.md.
+## 2026-11-10 feat39-sensA: sensitivity pass A (broadcast, TV, satellites)
+Branch feat39-sensA on integ-39. MetOp AHRPT: fourth-power coarse carrier, loop held near it while it settles, ambiguity searched again after a slip, block matched filter and incremental sync search: threshold 4 -> 2 dB Es/N0 (AWGN, 20 ppm carrier, 50 ppm clock), receiver CPU about 20 to 30 % lower. New test sens39a keeps the thresholds of Meteor, HRPT, FY-3, GOES, GK-2A, AM, Iridium (long sweep with ONAIR_TEST_LONG=1); hrpt_rx has a 2 dB regression case. Meteor LRPT gap (2.5 to 3 dB) analysed, attempt reverted; Iridium CPU lead noted. Simulated signals only. Details in docs/SENSITIVITY-3.9-A.md.
+## 2026-11-10 Winlink email (feat39-winlink)
+Branch feat39-winlink on integ-39. Winlink B2F client: LZHUF (port of wl2k-go, byte-exact with its vectors), B2 messages, MID, secure login, the B2F session (client and gateway roles), AX.25 connected-mode and ARDOP-frame ARQ links, Telnet to the CMS behind a setting that is off by default, mailbox folders and a hand-entered gateway list (no internet lookup). Panel: a Winlink view on the APRS / Packet and ARDOP screens (Inbox, Outbox, Sent, Compose, Gateways, Settings); bursts go out through two new one-shot transmit modes; the receivers got a frame tap. Tests: lzhuf vectors, B2F against a local mock gateway (chunking, loss sweeps 0-30 % on both links), whole sessions through the packet and ARDOP generators and receivers (1200 / 9600 / ARDOP, noise, offsets), Telnet to a mock CMS on 127.0.0.1. Simulated only: never connected to a real gateway or CMS; the ARDOP ARQ is a simplification not checked against ardopcf; the panel is only syntax-checked. docs/WINLINK-3.9.md.
+## 2026-11-10 CIS HF data modes (feat39-cis)
+Branch feat39-cis on integ-39, families 620 - 626. Decoders: CIS-36-50 / CIS-50-50 (BEE), with the start word, the key and the 3:4 characters shown as hex and nothing decrypted, and CIS-14 (the 14-bit frames shown raw). Physical layer: CIS-12 / MS5 (pilot, PSK order, phase steps). Identification only: CIS-36 MFSK, the CIS OFDM HDR modem (CIS-45 / 60 / 93), CIS-128 and CIS-3000. Each mode has a generator, an engine test signal and one test binary with offsets, noise, clock error and cross checks. CIS-81 was skipped because no speed or frame format is published. Simulated only. Details are in docs/CIS-HF-3.9.md.
+## 2026-11-10 Cellular broadcast information (feat39-cell)
+New modes CDMA2000 cells (family 660) and TD-SCDMA cells (661). CDMA2000: pilot PN search and the Sync Channel Message from 3GPP2 C.S0002 / C.S0004 / C.S0005. It shows SID, NID, PN, protocol revision, system time and paging channel. TD-SCDMA: SYNC-DL code, cell parameter from the TS0 midamble, and frame parity from the phase quadruples (TS 25.221 / 25.223 tables); the BCH is not decoded. GSM-R mode now covers GSM 850 / PCS 1900 rasters, SI2bis neighbours, SI13 / SI2quater indications and CCCH load by message kind only. LTE: the MIB's LTE-M fields (SIB1-BR scheduling). NB-IoT and NR MIB were already there. PHS skipped: public networks mostly closed, and figure details can't be checked without a recording. Tests are on simulated signals only (tests/cdma, tests/tdscdma, tests/gsmr/test_gsmr_bands, tests/cell/test_cell_ltem). Details: docs/CELL-3.9.md.
+## 2026-11-11 CubeSat framings from gr-satellites (feat39-cubesat)
+Branch feat39-cubesat on integ-39. The CubeSat telemetry receiver, its generator and the Smart CubeSat chains decode GOMspace U482C (with a new audio-FSK path, 4800 baud on 3600 Hz), CCSDS concatenated (Viterbi + RS, all code / basis / NRZ-M / interleave variants), SPUTNIX USP, NGHam and Mobitex / BEESAT (core/src/cubesat/cubesat_more.cpp). The gr-satellites satyaml files became a 680-row NORAD table (tools/cubesat/satyaml2inc.py, cubesat_grsat.cpp); a tracked pass sets the framing parameters and, for 1200 / 2400 / 19200 baud, an extra demodulator. AX100 Mode 5/6, G3RUH, AO-40 FEC and FUNcube fields existed already. USP and Mobitex checked against gr-satellites' qa vectors (Mobitex: a real BEESAT-9 packet); the others simulated only. docs/CUBESAT-3.9.md.
+## 2026-11-10 Round 5 smart insights: ham, voice, pagers, HF utility (feat39-smart5b)
+List in scratchpad/smart37-backup/r5-ham-voice.md (aviation, marine and IoT moved to smart5c). New header-only analysers in core/include/dect2/insight behind insight::Hub: who hears me, antenna pattern from decodes, busted-call check, APRS network health; talkgroup heatmap with next busy hour, trunk load with Erlang B, talkgroup change alerts; automatic pages, paging bursts, silent pager channels; overdue HF utility broadcasts. Fed through a sixth automation hook (Engine::setAnalyser) and the FT8 view; findings go out as insight.<kind> events (signal family, in the catalog) and show in View > Insights. Tests: ham_insight, voice_insight, pager_insight, hfdig_overdue (simulated decode streams only). Docs: docs/SMART5-ham/voice/pager/hfutil-3.9.md.
+## 2026-11-10 Smart features round 5: aviation, marine, IoT (feat39-smart5c)
+Built 14 items from scratchpad/smart37-backup/r5-avia-marine-iot.md.
+- Aviation: ADS-B atmosphere sounding and altimetry cross-check (ADS-B > Atmosphere); airport weather from ACARS/VDL2/HFDL text (Weather view); FLARM out-landing alert; VOR/ILS signal check against the Annex 10 limits (from memory); drone airspace alerts.
+- Radiosondes: ascent sounding, and a landing prediction before burst.
+- Marine: AIS behaviour flags and anchor watch (new automation event ais.behaviour).
+- IoT: mesh coverage cells; meters and tyres marked as the user's own (Sub-GHz > Mine); Z-Wave home network health.
+Simulated only. Details in docs/SMART5-avia-3.9.md, docs/SMART5-marine-3.9.md and docs/SMART5-iot-3.9.md.
+## 2026-11-11 feat39-misc: JT6M, 8PSK125/250, Chayka
+Branch feat39-misc on integ-39, details in docs/MISC-3.9.md.
+- New: JT6M (family 750, ham science kind 9: pings, tuning error, folded message) and fldigi 8PSK125 / 8PSK250 without FEC (PSK modulations 7 and 8, chosen by hand, not in Auto).
+- The Chayka GRIs are now named in eLoran, and the 4970 / 9940 half-period mix-up is fixed.
+- Already in OnAir: G3RUH 9600 packet, PSK63/125/250 and QPSK31/63, the EDACS control channel, Eurobalise SUBSET-036.
+- Skipped:
+  - GE-Star: no public spec.
+  - FreeDV 2020/2020B: the shipped codec2 has no LPCNet, and no native modem was written.
+  - TETRA TEDS: a separate QAM air interface, not started.
+  - 8PSK500/1000 and the 8PSK FEC variants.
+- Tests: the quick CI on GitHub (run 42893881567) passed 13 of 13. Simulated signals only.
+## 2026-11-10 Aviation package (feat39-avia)
+Branch feat39-avia on integ-39. Military UHF air band (225-400 MHz AM) in Airband: 25 kHz raster, Military UHF button (243.000 guard, 282.800 SAR), band watch and a fast scan profile. New mode VDL Mode 3 (family 640): Annex 10 burst formats (S1/S1*/S2/S2*, Golay, RS (72,62)); system data and headers raw, because Doc 9805 is not public; voice not decoded. FANS-1/A ADS-C and CPDLC already decoded from ACARS, VDL2 and HFDL: labels fixed and end-to-end tests added. TACAN impairment tests. ILS marker keying (dashes, dot-dash, dots). Tests: vdl3_all, airband_uhf, vor_marker, dme_tacan_impair, acars_fans, hfdl_fans, all on simulated signals only. Details are in docs/AVIA-3.9.md.
+## 2026-11-11 Sensitivity 3.9 C: aviation, marine, IoT, drones (feat39-sensC)
+New test: sens39c (tests/sens/test_sens39c.cpp). It runs a short guard by default, the full sweep with `ONAIR_TEST_LONG=1` and the table with
+`ONAIR_SENS_CALIBRATE=1`. Eight more modes are in the sens harness.
+
+UAT fixes:
+- The demodulator assumed 2 input samples per bit at any rate, so a real 1.041667 Mbit/s signal never synced. It now resamples to 2.083333 Msps.
+- The phase is computed in floating point instead of an 8-bit table.
+- The SNR is now measured; it read about 0 dB.
+- The test signal was made the same wrong way; it is now real CPFSK h = 0.6 and sends a valid codeword.
+- A 3-tap low-pass and RS erasures were added: UAT decodes down to 8 dB in 1.2 MHz.
+
+FLARM: tone-energy chips and Chase decoding, 8 -> 4 dB.
+ADS-L M-band: tone-energy chips, 6 -> 3 dB.
+FLARM, ADS-L and Z-Wave: fastAtan2 instead of libm in the discriminators (CI CPU: FLARM -26 %, ADS-L -23 %).
+wM-Bus: two attempts gave no gain and were dropped.
+Not done: ADS-B overlap subtraction, Remote ID CPU, RS41 soft RS.
+
+Simulated signals only. Details are in docs/SENSITIVITY-3.9-C.md.
+## 2026-11-11 Meteosat HRDCP, DCS channel plans, GOES LRIT, Elektro links (feat39-sat)
+Branch feat39-sat on integ-39. New mode Meteosat HRDCP (family 700, standard 701/702), written from EUMETSAT TD 16: receiver, generator and tests; it shares the DCS screens. GOES DCS gained the Meteosat (TD 16 table 11) and Himawari channel plans, a 402.22 MHz preset, and addresses shown left-aligned as the operators write them. GOES HRIT gained the GOES-N/O/P LRIT link (293.883 ksym/s). Elektro got tests for every link. Fixed along the way: the Elektro OQPSK rail split, and false syncs and frequency pull in GOES DCS from a platform on the next channel. INSAT was skipped because no public burst format exists. Simulated only. Details in docs/SAT-DCS-XRIT-3.9.md.
+
+
+## 2026-11-11 OnAir Web 3.9: the whole receiver in a browser (feat39-web)
+Branch feat39-web on integ-39. The owner's words: the web page "still sucks", six decoders, confusing settings; make it OnAir in a browser,
+remote, with optional public access. Done: a generated panel schema for every mode (tools/gen_web_schema.py reads the 171 telemetry structs,
+engine_telemetry.cpp and the mode table and writes core/src/results/web_schema_gen.cpp: 247 standards, 290 of 295 rows have a live panel, the
+7 TV families show the common block and details, IPTV / ASTERIX / ISDB-TSB have no telemetry block); a new app on the web server (server/app:
+owner / visitor roles, PBKDF2 passwords, HttpOnly SameSite cookies, CSRF header, fail and rate limits, public mode with a tune toggle and a
+visitor cap, private modes hidden from visitors, TX owner-only, works through the relay since it sits on the relayed port); a new page
+web/onair-app (spectrum / waterfall drag-to-tune, mode picker with search, generic renderers: tiles, tables with a map, pictures,
+constellations, logs; audio through a worklet; settings page in plain words; phone tabs). Tests: web_schema (every mode), webapp (access,
+HTTP, WebSocket, every mode selectable, settings, recording), web_app_client (node), web_app_smoke (Playwright, opt-in). CPU measured on the
+CI runner: 45.5 % for the receiver, +0.25 % per viewer at 355 kbit/s each. Validated on the test signal and 127.0.0.1 only; no real radio or
+real internet trial. docs/WEB-3.9.md and docs/WEB-SCHEMA-3.9.md.
+
+## 2026-11-11 Smart features round 5: field insights (feat39-smart5d)
+Built the eight items left between smart5b and smart5c, on the smart5b insight hub (merged smart5b and smart5c in first).
+- Aviation: ADS-B manoeuvre alerts (emergency squawk, steep descent and climb, sharp turn, go-around, touch-and-go); glider thermals from FLARM / OGN circling (Insights > Aviation and circles on the FLARM map); HFDL propagation map (share of squitters per station, frequency and UTC hour, best frequency now, station-up openings).
+- Marine: AIS ducting detector (learned normal range, ships beyond 1.5x); NAVTEX warnings in force per station (cancellations, self-expiry, in-force lists, assumed lifetimes).
+- IoT: mesh census (nodes, roles, hops, airtime, busiest hours); LoRaWAN health (joins, frame-counter loss, SF mix); leak check for the user's own wM-Bus water meter (night flow, continuous flow).
+ADS-B, AIS and NAVTEX come through the automation events; the rest through the Insights feeds. 21 new insight.* catalog rows. Simulated only. Details in docs/SMART5-field-3.9.md.
+
+## 2026-11-11 Round 4 per-mode features (feat39-r4)
+Branch feat39-r4 on integ-39: 31 of the 40 round-4 items (list and docs in docs/R4-PER-MODE-3.9.md):
+- APRS weather and messages
+- sensor names, Home Assistant devices, alerts, PWS upload and long history
+- ADS-B filter, overhead log, history and first-ever airframes, horizon rings, airport board, plane-alert-db
+- AIS history and arrivals board
+- ham.decode alerts with country colours and band-open matrix, FT8 / WSPR band hopping
+- airband clips, FM / DAB played list and alerts, image.done, Meteor pass reports, geostationary GIF loops
+- Meshtastic links, node watch and a LoRaWAN forwarder, SatNOGS forwarding
+- sonde KML / GPX and launch sites, records board, daily digest
+
+New automation families: sensor, ham, broadcast, image. Skipped as asked: 21, 22, 29, 34. #40 already existed (the UDP NMEA GNSS feed). Tests: one per item, run locally where they need no Rust or SDR libraries, and on the quick CI workflow. Simulated data only.
+
+## 2026-11-11 DVB-SH, OFDM form SH-A (feat39-dvbsh)
+Branch feat39-dvbsh on integ-39, family block 746-749. DVB-SH (ETSI EN 302 583) is a new mode (family 746, engine standard 748). It has a receiver and a generator for SH-A, in core/src/dvbsh. The common coding is all here: the CRC-16 and EHEADER, the EScrambler, the 3GPP2 turbo code with all twelve puncturing patterns and their tails, the bit-wise interleaver with rate adaptation, and the 48-branch time interleaver with every TPS profile, long early/late ones included. The OFDM side has 1K/2K/4K/8K, QPSK and 16-QAM including hierarchical, and the TPS with the DVB-SH fields. The engine finds the channel width automatically, and the transport stream goes to the TV player. Tests: dvbsh_fec (turbo BER against the BPSK capacity limit, within about 1 dB at every rate), dvbsh_chain (offsets, clock, noise, echo, blockage under the long interleaver, hierarchical HP/LP) and dvbsh_engine. SH-B (TDM) and the low-latency annex are not done. Simulated signals only. Details are in docs/DVBSH-3.9.md.
+## 2026-11-11 HF military and utility modes (feat39-hfmil)
+Branch feat39-hfmil on integ-39 adds four HF utility kinds in families 603 to 606:
+- STANAG 4539 / MIL-STD-188-110C Appendix C high rate (3200 to 12800 bit/s, all interleavers, joining at the reinserted preamble, EOM, STANAG 5066)
+- 3G-ALE BW0 (MIL-STD-188-141B Appendix C) with LE_Call, LE_Handshake, LE_Notification and LE_Broadcast in words
+- Link 11 CLEW, frame structure only: rate, Doppler, frame count and raw phase changes, since the bit layout is not public
+- STANAG 4481 FSK, single channel or 16 channels, with ITA2 text or the speed of a synchronous channel
+
+SITOR now also monitors SITOR-A / AMTOR ARQ links (family 119, no new entry). The selective call is read, repeats are dropped and changes of direction are followed.
+
+STANAG 4529, CLOVER-II, PAX/PAX2 and Link 11 SLEW are skipped because no bit-level public description exists.
+
+Everything was tested on simulated signals only. Details are in docs/HF-MIL-3.9.md.
+## 2026-11-11 DVB-C2 (feat39-dvbc2)
+Branch feat39-dvbc2 on integ-39, family 741 (engine standard 743). A new mode row DVB-C2 (EN 302 769): shared code in core/src/dvbc2 (reference sequences, pilots, Reed-Muller headers, L1 part 2 fields and coding on DVB-T2's L1-post code, the FEC of the PLPs on DVB-T2's and DVB-S2's LDPC tables, the data slice time interleaver and the 4K frequency interleaver), a generator (one C2 system of up to 7.61 MHz with data slices, PLPs and notches, echo, clock error, carrier offset, noise; the mode's test signal) and a receiver (guard interval timing, absolute carrier index from the preamble pilots, L1, Data Slice Types 1 and 2, 16 to 256-QAM, transport stream to the TV player). t2l1.h exposes the shortened and punctured 16K signalling block. Tests: tests/dvbc2/test_dvbc2.cpp (sequences, headers, L1, FEC, receiver round trips with offsets, clock error, echo, notch, time interleaving, unknown centre). 1024/4096-QAM, GSE and reserved tones are not done. Simulated signals only; details and the open points in docs/DVBC2-3.9.md.
+
+### 2026-11-11: round-5 smart features in the app (feat39-smartui)
+- Wired 25 of the 26 smart5a engines into their mode screens, each as a "Smart checks" card with the tables under Details. They feed from a tick that runs every frame. Findings go to View > Insights, which has new Broadcast and TV and Satellites and science tabs, and out as insight.* automation events (added to the catalog). The HD Radio blend alignment is not wired: the HD receiver has no analogue host audio.
+- New receiver data:
+  - the FM receiver measures ITU-R BS.412 multiplex power
+  - analogue TV hands over its blanking lines, averaged over 16 fields, for the VITS analyser
+  - the SI collector keeps the NIT cell_list_descriptor
+  - Zigbee frames keep their MAC sequence number and ack request
+  - the ATV generator can send test lines
+- smart5b leftovers: an FT8 busted-call hint, "Hide automatic pages" in the pager view, and msg.* events from WEFAX, ALE (per station), SITOR-B, PACTOR-I and the HF utility modes, so the overdue alerts can learn from them.
+- smart5c partials: out-landings for ADS-L with the FLARM / OGN packets heard beside them, DJI drone airspace alerts, a wM-Bus Mine view, and Zigbee / Thread home-network health.
+- Fixed smart5_science on macOS. The cause was std::poisson_distribution, which differs between libc++ and libstdc++. The meteor-rate sporadic curve is now one smooth least-squares fit. Seed sweep: 2 of 40 fail, was 7 of 40.
+- Simulated only. Details are in docs/SMART5-UI-3.9.md.
+
+## 2026-11-11 CI 42921489043 failures (feat39-ci4fix)
+
+Fixed the eight non-slow failures, one commit each. Details are in docs/CI4FIX-3.9.md.
+- Code fixes:
+  - The CIS mode rows had subIds that matched no SubMode entry.
+  - dropNonFinite wrote samples through an aliasing uint32_t pointer, which GCC miscompiled.
+  - Keyboard Auto now analyses only the audio after the text stopped.
+  - The CCSDS concatenated generator sends a coded lead before the ASM.
+  - VDL3 masks training sequences that start inside the last good burst.
+- Test fixes, each with its reason stated:
+  - voice_insight: random quiet hours that really were busy were counted as false alerts.
+  - marine_fax_thread: the reader thread was starved on Windows.
+  - webapp: a detached supervisor thread outlived the app.
+
+## 2026-11-11 Sensitivity pass D (feat39-sensD)
+Branch feat39-sensD on integ-39. Thresholds, offset and clock tolerance and CPU for the decoders the first passes did not measure (docs/SENSITIVITY-3.9-D.md).
+- Meteor LRPT OQPSK: carrier, symbol clock and timing from the lines of the squared signal, narrow loops from the start, a best-scoring sync search; 90 % point 5 / 8 dB -> 2 / 3 dB Es/N0 (AWGN / 20 ppm). StripRows places the first row of a pass that starts mid-row correctly.
+- MFSK and THOR: likelihood-ratio soft bits; MFSK16 -9 -> -15 dB, THOR16 -5 -> -11 dB in 2.5 kHz. DominoEX: squelch at a peak ratio of 4 (was 6), -7 -> -12 dB.
+- ALE: the tuning error is found from the spectrum before sync; a 20 ppm radio (282 Hz) decoded nothing before, now -6 dB in 3 kHz.
+- ARQ-E, ARQ-N, G-TOR: the baud from the eye; ARQ-E 96/8 3 -> -2 dB, ARQ-N -1 -> -3 dB, G-TOR 100 6 -> -2 dB.
+- DVB-S: tried before the DVB-S2 header hunt; acquisition CPU of a DVB-S signal 0.29 -> 0.13 s per second.
+- Measured only: Olivia, Contestia, SSTV, HamDRM, weather fax, Fusion (new test signal in the harness), TETRA, TETRAPOL, EDACS, SmartNet, MPT 1327, POCSAG, FLEX, Inmarsat-C and Aero, Orbcomm, APT, GNSS, CW. FreeDV not measured (libcodec2 modem).
+- New tests: sens39d, hfdig_kbdsens39, hfutil_sens39, hfdig_sens39d, marine_fax_sens39.
+
+Simulated signals only.
+## 2026-11-11 Fuzzing every mode (feat39-fuzz)
+Built an ASan and UBSan configuration of the core. Added two fuzzers:
+- `fuzz_engine_modes` runs every mode through the engine. It feeds malformed IQ, then runs retunes, a sample-rate change, mode switches, start/stop cycles and a leak check.
+- `fuzz_parsers` covers PSIP, captions, ATSC 3.0 ALP/IP/ROUTE/LLS, inflate, XML, RDS and BB frames.
+
+Fixed 10 bugs, each with a regression test:
+- ROUTE offset overflow and unbounded allocation
+- DVB-T2 P2 gather overflow
+- uninitialised FTX auto results
+- DVB-S symbol-timer output overflow (DVB-S/S2, ISDB-S, Himawari, FY-4, GOES GRB)
+- float samples of 2^20 and more now silenced at the input
+- GOES/GGAK/FY-GEO timing-loop hang and out-of-bounds read
+- SSDV sign-bit shift
+- KAAL resampler read past the end
+- Wi-Fi Viterbi NaN
+- iono/tetrapol NaN casts
+
+The first pass failed 19 of 296 modes. After the fixes, a second pass with another seed failed 0 of 296. No leaks were found. Synthetic inputs only. Details are in docs/FUZZ-3.9.md.
+## 2026-11-10 CI speed (feat39-cispeed)
+Measured ci.yml on integ-38: in a warm run, 381 runner-min and 55 min of wall time. Tests take 80 % of that, and the slowest 35 tests are a third of the test time. The hashed shards were uneven. The Actions cache was over its 10 GB, and main had no ccache, so every new branch built cold.
+
+Changes:
+- 65 slow tests are shorter by default. ONAIR_TEST_LONG=1 (tests/common/test_long.h) runs the full sweeps on tags and in the nightly Full CI.
+- Shards are balanced by measured time (tools/ci_times.tsv, tools/ci_times.py) and ctest gets cost data.
+- macOS has 3 shards.
+- ccache is saved only by main and integ-*. A nightly warm-up saves to main's cache for every branch.
+- The apt .debs are cached and the disk is freed in the background. Windows lld was tried and dropped.
+- Shared files are followed through the include graph (tools/test_ci_select.py runs in the gate).
+
+Not touched: custom_bandwidth_all, iq_modes and tx (QA worker), and families 601-789. Details are in docs/CI-SPEED-3.9.md.
+Measured: CI runs 42886049629 and 42900861790 (wide scope) against 42820553355. Test minutes went from 305 to 216. The longest test leg went from 48 to 26 min. Other overhead went from 39 to 23 min. Builds were cold on the feature branch. The warm-cache wall time (about 30 min instead of 55) is an expectation and still has to be measured on integ-39.
+## 2026-11-11 Fixes round 2 (feat39-fixes2)
+- specx_idmatrix (Linux, Windows): the test seeded its cases from std::hash, which libc++ and libstdc++ compute differently. `stable_string_hash` gives libc++'s value everywhere. Passed on Linux. New test `common_stablehash`.
+- dvbs_narrow: Auto now measures a narrow carrier's cyclic line over about a second of decimated input. Two impaired cases (25 ksym/s at 4 dB, 33 ksym/s at 3 dB) decode now.
+- iq_modes crash: the DVB-T2 P2 cell gather wrote past its buffer when an L1-pre signalled an impossible L1-post size (found with ASan). It is now bounded. New test `t2_p2gather`. Two memcpy-from-null cases fixed on the way (DAB generator, DMR bridge).
+- Pagers on HF: new test `pager_hackrf` runs a fake HackRF at 6.1625 MHz on Auto 2 Msps, with Whole span off and on. It decodes, so the engine does not reproduce the -200 dBFS report. Still open: the real driver and app settings need the owner's log.
+
+Simulated signals only. Details are in docs/FIXES2-3.9.md.
+## 2026-11-11 ATSC 1.0 and 3.0 CPU (feat39-atscperf)
+Per-stage CPU accounting in both ATSC receivers (bench_dvb cases atsc, atsc-10m, atsc3, atsc3-256qam). ATSC 1.0 changes: a shared input window in the polyphase filter (half the loads), a four-decision pass for the 128-tap decision feedback, the mixer fused into the input split, and one-pass field stats. ATSC 3.0 changes: the derotation fused into the resampler's input pass (no frame copy), a 512-phase bank that stays in cache, and NEON FMA. Totals on a loaded M2 Pro under nice: ATSC 1.0 0.68 to 0.56 (8 Msps) and 0.83 to 0.58 (10 Msps); ATSC 3.0 0.34 to 0.22; both at once 0.97 to 0.83. Quality is equivalent over a 12-seed sweep, with no wrong packets. New atsc_cpu budget test (under one core together, doubled on CI). Simulated signals only. Details in docs/ATSC-PERF-3.9.md.
+## 2026-11-11 All-modes QA sweep (feat39-qa)
+tests/qa/test_qa_sweep.cpp: every mode with a built-in test signal goes generator -> file -> Engine -> decoder under six conditions: clean, +-2 kHz with +-50 ppm, 12 dB in-band SNR, noise alone, and the mode's own transmitter. It also runs retune / stop / restart under a watchdog and measures the CPU per mode. One binary, eight ctest shards (label qa;slow); the full run is behind ONAIR_TEST_LONG=1. Results, classes and the CPU top 10 are in docs/QA-SWEEP-3.9.md. Known failures, each with a reason, are in tests/qa/qa_known.inc. 302 entries: 263 with a test signal, 235 of them decode it and 154 pass every condition. Fixed: Remote ID and BLE recordings had no centre frequency (Remote ID failed every CRC), four memcpy-from-null UB sites (DAB generator, DMR and DRM bridges), and bench_modes's offset sign. Also added DECT2_SANITIZE_RECOVER and the quick.yml inputs cmake_args / env / timeout / minutes. Not done: the iq_modes heap crash (a full ASan run finds no memory error, so it is most likely a data race between the six Engines of its spectrum stage: TSan next), 40 open failures, and the CPU optimisations (two tries on the X-band receiver gave nothing measurable). Simulated signals only.
+
+## 2026-11-11 Sensitivity pass E (feat39-sensE)
+
+The four leftovers of SENSITIVITY-3.9-C/-D, measured before and after on simulated signals (docs/SENSITIVITY-3.9-E.md).
+- Wireless M-Bus: 84 kHz channel filter (was 140), chip value over 80 % of the chip, soft Manchester and 3-out-of-6 decisions. sens39c 17 -> 11 dB, CPU unchanged.
+- GNSS: the cold search runs the first window with 64 ms right after the 16 ms round. A 32 dB-Hz sky: 0 -> 3 of 8 satellites in 34 s. 4 ms coherent integration was measured (no gain per CPU) and not kept.
+- HD Radio AM: the prefix filter no longer switches while block numbers are read, each filter keeps its frequency, the carrier corrects the frequency in sync, and the carrier's phase wander is removed per sample. sens_sweep awgn and cfo20ppm 22 -> 18 dB, lock 11 -> 7.5 s. 3 Hz phase noise still fails (a limit of the scenario).
+- CW: the adaptive timing decoder (cw_decoder.h) was measured in the skimmer; it is better for irregular fists and worse at low SNR and with Farnsworth spacing, so the skimmer is unchanged.
+## 2026-11-11 TETRA sensitivity and TEDS (feat39-tetra)
+The pi/4-DQPSK demodulator is now coherent: a 4-state log-MAP detector, with the carrier phase from the fourth power and the slot's known bits as a-priori. It also uses one timing line per capture, re-filters after a large tuning error, and exchanges extrinsic information with a new log-MAP decoder of the RCPC code, up to 3 passes on slots whose CRC fails. The carrier search needs 4 dB over the floor instead of 6.
+
+Measured on the test signal only:
+- `decodeCarrier` threshold 6 -> 4 dB, under AWGN, +-1.2 kHz and +-50 ppm (`test_tetra_sens`).
+- Full receiver with two cells at 2 MHz: 7 -> 5 dB for the stronger cell (9.2 -> 7.2 dB in the sens_sweep convention).
+
+TEDS, identity and signalling only:
+- The cell's pi/8-D8PSK and QAM bandwidth support is read from the extended services broadcast of SYSINFO.
+- pi/8-D8PSK slots are found by their training sequences and their SCH-P8/HD and SCH-P8/F signalling is decoded.
+- QAM carriers are identified, not decoded: bandwidth, sub-carrier count and 4/16/64-QAM estimate. The QAM bursts, the PCCC turbo code and SYSINFO-Q are not done.
+- Test signal scene 3 has a TEDS cell and a 50 kHz 16-QAM carrier.
+
+Not done: soft RM decoding of the AACH (it would accept more noise). Simulated only. Details are in docs/TETRA-3.9.md.
+## 2026-11-11 ADS-B overlapping replies, Remote ID CPU (feat39-adsbov)
+ADS-B overlapping replies:
+- A decoded frame is rebuilt and subtracted from the samples, using its carrier, its gain and a pulse shape learnt from the frame itself.
+- The search then goes on inside the subtracted frame, and earlier failed candidates under it are tried again on what is left.
+- Frames that still fail with another reply on the air get two more hypotheses: a separation sequence estimate, and a frame whose disagreeing bits are marked least certain for the CRC repair.
+- New generator scenario: `adsbOverlapScenario`, also in `adsbtool sim --overlap N`.
+
+ADS-B results, recovery off -> on:
+
+| Case | Decoded |
+|---|---|
+| Pairs, 2 Msps, 30 dB | 32 -> 65 % |
+| Pairs, 2.4 Msps, 30 dB | 42 -> 84 % |
+| Pairs, 8 Msps, 30 dB | 49 -> 98 % |
+| Overlapped frames, airspace of 150 aircraft | 26 -> 42 % |
+| Overlapped frames, airspace of 300 aircraft | 22 -> 36 % |
+
+There were no phantoms. Frames on their own were not affected.
+
+Remote ID CPU:
+- A burst gate decides which parts of the input the Wi-Fi demodulator gets.
+- The BLE and 802.11b front ends now mix and filter a block at a time. BLE filters in two stages and uses a polynomial atan2.
+- The OFDM receiver drops narrowband triggers.
+- Mac CPU fell from 0.97 to 0.36 s per second of signal.
+- BLE decodes within one packet of before at every SNR.
+- Fixed: the 802.11b chain lost every frame after the first in a large block. More Wi-Fi Remote ID frames are now found (119 -> 343 at 30 dB).
+
+Details are in docs/ADSB-REMOTEID-3.9.md. New tests: adsb_overlap, rid_cpu. Simulated signals only.
+
+## 2026-11-11 STANAG 4539 equaliser, 3G-ALE BW1 to BW4 (feat39-hfmil2)
+
+- STANAG 4539 (family 603): a decision-feedback equaliser built on the channel measured on every mini-probe and reinserted preamble (exact 16-tap estimates from the periodic Frank probe, cubic interpolation, MMSE filters every 16 symbols). The equalised D read, the window placement from the delay profile and the hold through long fades came with it.
+- 3G-ALE (family 604): BW1 (TM, HDL_ACK, HDL_EOM), BW2 (HDL_DATA), BW3 (LDL_DATA, 64 and 128 bytes, retransmissions combined) and BW4 (LDL_ACK / LDL_EOM), in words, with datagrams put back together. RAKE combining for BW1, BW3 and BW4.
+- tests/common/watterson.h: a Watterson (ITU-R F.520) channel for the C++ tests.
+- Measured (simulated only): table C-XV very long interleaver, ITU-R Poor at the table levels, BER 0 / 3.0e-4 / 8.1e-4 / 3.0e-3 / 1.3e-3 for 3200 to 9600 bit/s over 10 x 26 s; 3 dB above the table, 0 / 0 / 0 / 4e-5 / 1.3e-4. AWGN at the table levels: 0 to 1.7e-5. Details are in docs/HF-MIL-3.9.md.
+- Not done: BW5 and BW6 (not in MIL-STD-188-141B), BW3 with 256 and 512 bytes (the printed interleaver of table C-XVI is not a permutation), BW2 code combining and BW2 multipath. The BW2 PN generator as drawn in figure C-12 has period 21845, not 65535.
+
+## 2026-11-11 EchoLink, Winlink and OnAir Web leftovers (feat39-netleft)
+
+The documented leftovers of the three 3.9 network features are done. Everything was tested on mocks, simulated channels and 127.0.0.1 only; no real EchoLink server, proxy, Winlink gateway or CMS was contacted.
+
+- **EchoLink.**
+  - Hosting a conference: one session per station, an 80 ms mixer that sends everyone the others plus the host, the station list in the info text, chat passed on, a station limit, NAT pairs told apart by port.
+  - The proxy (relay) mode, following SvxLink's EchoLinkProxy: the nonce + MD5 log-in, UDP and the directory TCP carried in blocks.
+  - Test `echolink_conf`. Two talkers at once each hear only the other at about 6000 of 6000. 10 % loss, duplicates and reordering still pass. The loopback conference and the client behind a mock proxy pass.
+- **Winlink.**
+  - A cut-off message is held and resumed with `!offset`. Both the wl2k-go and the FBB v1 layouts are read.
+  - gzip `FD` proposals with the `G` SID flag. The fixed-Huffman deflate is OnAir's own, and Python's gzip read its output.
+  - P2P between two OnAir stations: gateway entries marked as a station, and Listen for a station.
+  - AX.25 gained the T3 idle poll.
+  - Test `winlink_p2p`: 24 of 24 cut sessions resumed, and P2P worked over AX.25 1200, 9600 with 15 % loss and gzip, and ARDOP with 10 % loss.
+- **OnAir Web.**
+  - Waterfall zoom: the server cuts the part from its FFT, up to 64x, with at least 64 bins.
+  - Mode options: 257 options for 113 standards, generated from the receivers' setters by `tools/gen_web_options.py`, with a `--check` in the gate.
+  - Digital-voice speech in the browser for DMR, P25, P25 phase 2, NXDN, dPMR, D-STAR, M17 and Fusion. It comes from their audio taps, and the demodulator is off for those modes.
+  - Tests: `web_app_client` passed locally. On quick CI, `webapp` passed in run 42937680306, and the M17 speech arrived (43200 samples in 8 s, rms 1635). In run 42933322311 the option checks of `web_schema` passed, but the test failed on 5 mode rows merged earlier without telemetry (3G-ALE, DVB-SH, Link 11 CLEW, STANAG 4481 FSK, STANAG 4539). Those rows are not from this branch. The EchoLink and Winlink tests passed in the same run.
+
+Docs: ECHOLINK-3.9.md, WINLINK-3.9.md, WEB-3.9.md and WEB-SCHEMA-3.9.md.
+## 2026-11-11 Broadcast 2 (feat39-bcast2)
+Finished what the 3.9 broadcast branches had left out. Simulated signals only.
+- ISDB-TSB: three-segment DQPSK lost 10-25 % of its packets in bursts. The timing loop's whole-sample window steps were compensated on the symbol before the window moved, and with the wrong sign. Wherever there were enough pilots, the slope fit hid the error. In the differential segments' first 17 symbols of each frame there were not, and the error broke two DQPSK symbols at a time. Now 0 bad packets. The gated test cases are hard asserts again, with two new cases (clock error, offset, drift). All ISDB-T tests pass.
+- DVB-C2: 1024-QAM and 4096-QAM (bit interleavers, demultiplexers, constellations of tables 6, 7, 10, 12(j)-(m)), GSE PLPs to IP packets, reserved tones. Fixed the preamble's noise estimate. It replaced the data symbols' estimate every frame while about 16 dB too high, and 4096-QAM 9/10 blocks across the frame start failed even without noise.
+- DVB-H and DVB-C2 GSE: IP datagrams to a pcap file (one click on the Signalling tab) and a UDP forward under Advanced, both off by default (core/src/tv/ip_out.cpp).
+- DVB-SH: the TDM waveform SH-B with the SOF, the signalling field, QPSK/8PSK/16APSK, PL slots, pilots, scrambling and the table 5.13 symbol rates, and automatic rate search. It is in the same mode entry: automatic tries OFDM, then TDM. The receiver keeps its alignment through a 50 ms blockage under the long interleaver.
+Details: docs/BCAST-3.9.md, docs/DVBC2-3.9.md, docs/DVBSH-3.9.md.
+
+## 2026-11-11 QA sweep fixes, second half, and X-band CPU (feat39-qafixB)
+The second half of the sweep's open list (navic .. xb_oceansat2, 20 entries), each reproduced, root-caused and tested (docs/QA-SWEEP-3.9.md, "Second half of the open list"). Decoder fixes: UMTS measures the sample clock on the P-SCH and resamples to the chip clock (no cell was found at 5 ppm before); NB-IoT's first NPSS timing window searches +-128 samples (a side peak at -50 ppm); the OneWeb repetition detector folds three lags; UAT (fixed by feat39-sensC, kept at the merge) gets a round-trip test over rates, offsets, clock error and noise; NR gets a recording's centre; the engine sets the channelised-voice service itself (headless runs were CB for all seven); Oceansat-2 frames wait for the next sync word; QO-100, the spectrum explorer and PACTOR-IV report valid results. Harness: a locked clean run with few blocks goes on to the longer run. NavIC and riometer need more signal than the file cap; PACTOR-IV +-2 kHz is the HF window condition. X-band: a buffer moved every symbol made noise cost 30 - 350 CPU s per second; with that fixed and a carrier-line pre-check that skips seven blocks in eight on noise it is 0.1 - 1.2 (80 - 1000 times less); the clean path is 13 - 25 % cheaper (table NCO, inline deframer, hoisted loop gains), same frames decoded. All on simulated signals.
+
+## 2026-11-11 CW skimmer on the adaptive timing (feat39-cwfist)
+
+FistDecoder's weak points from sensE are fixed, and the skimmer now uses it (docs/SENSITIVITY-3.9-E.md section 3, simulated only).
+- Wide gap classes for Farnsworth. Gap classes are fitted from the data, including the backlog at the lock.
+- At low SNR: a lock and mark fit that ignore noise blips and are anchored on the dashes, and soft merges of split marks and noise
+  spikes decided by the model when the detector is noisy.
+- A beam option for noise at the start of a word, which fixes the first character after a pause.
+- After a pause, the next word is held and the speed is re-estimated. A lost lock keeps the learned classes.
+- Receiver CER, 4 seeds: machine 2 dB 13.2 -> 6.6, sloppy 10 dB 20.4 -> 6.6, Farnsworth 4 dB 18.0 -> 8.7. No scenario point is worse.
+- The 0.2.7 timing is kept behind CwReceiver::setTimingDecoder(1). New test cw_fistrx and bench tests/cw/cw_skim_bench.cpp.
+## 2026-11-11 TETRA TX loop fix (feat39-tetrafix)
+The QA sweep's tetra/tx condition (the transmitter's 16-bit output decoded by the receiver) failed after feat39-tetra. The carrier search's lower threshold (4 dB) kept a strong, clean carrier's skirts over the floor beyond 25 kHz. The rise was cut into two carriers about 4.5 kHz either side of the true centre, outside the frequency correction's range. A rise more than 30 dB over the floor is now measured again 30 dB below its own peak. tetra/tx passes 3 of 3 runs (131 blocks) and was removed from tests/qa/qa_known.inc. Regression check in test_tetra_sens: it fails on the previous code and passes now.
+## 2026-11-11 QA sweep open failures, first half (feat39-qafixA)
+The first 20 open entries of docs/QA-SWEEP-3.9.md (arktikaggak .. kait). Fixed: GGAK generator, timing loop sign and acquisition range; astro / iono lock flags; DECT power-floor drift; HF beacon test signal at 14.5 MHz; the engine now sets the channelised-voice service (all seven entries ran CB before), voice scenes at the tune offset, SSB band-limited and dithered; KAIT burst on the first sample, header and fine timing at 50 ppm; Flipper chat floor from a packet at the start; G-TOR baud search at 12 dB. Sweep: transmitters offset as a TX session tunes them, 99 % band without the floor, JS8 flush and KAIT wait at the file end, longer runs for late locks. JS8 gets the file's start time in the sweep (slots from UTC). Reclassified with numbers: atis / eczas snr (threshold). Simulated signals only.
+
+## 2026-11-11 ATSC on x86 (feat39-atscx86)
+x86-only AVX2/SSE paths for the ATSC receivers: the shared-window matched filter (8 lanes, batched lane sums, vector positions), the DFE field loop with a rounding-instruction level decision, the feed-forward equaliser, a register-tiled syrkLowerT (same bits), the 12-lane Viterbi in one 256-bit and one 128-bit vector (bit-exact), the data-SNR pass, SSE2 pilot block and symbol interpolator, exact floor/round helpers in simd.h (no libm calls on the SSE2 baseline), the ATSC 3.0 shared-window resampler and a bootstrap search without hypot. FTZ/DAZ in the receiver threads (dect2::DenormalsOff). Thread splits of the ATSC 1.0 filter and the ATSC 3.0 resampler only when one thread would be busy. ATSC 3.0 worker now selects the service and refreshes telemetry on idle wake-ups (the atsc3_engine race on Linux). quick.yml: verbose, env, compare (same tests from another ref on the same runner) and perf inputs. Same runner, base to new, together: 2.18 to 1.42 (EPYC 9V74, final), 2.64 to 1.72 (7763), 1.80 to 1.10 (9V45); under one core on CI not reached. 12-seed sweep unchanged within 0.1 %, 0 wrong packets. docs/ATSC-X86-3.9.md.
+## 2026-11-11 Wide downlinks cheap on noise (feat39-widecpu)
+ISDB-S, FY-3 MPT, Elektro-L / Arktika-M RDAS and GEONETCAST, after the X-band receivers in feat39-qafixB. Profiled with stage timers in a bench on the sweep's own files, then each receiver got a no-signal check that lets most of the input go by while there is nothing to find, and the hot loops were made cheaper without changing what they decode. Noise CPU on the receivers: ISDB-S 2.12 -> 0.68, FY-3 MPT 2.65 -> 0.24, RDAS 2.61 -> 0.08, GEONETCAST 1.30 -> 0.58 s per second of signal; clean: ISDB-S 4.35 -> 2.25, FY-3 3.56 -> 2.88, RDAS 2.59 -> 2.04 (GEONETCAST is LDPC-bound and unchanged). The decoded output on every clean file hashes the same before and after, and the receivers' tests give the same output. Found on the way: RDAS decoded false frames on noise and then missed a signal that came up after it (fixed by the gate), ISDB-S sent one report for a whole stretch of noise (now every 0.5 s), and the DVB-S receiver hunted a carrier measured on noise for good (it measures the spectrum again after a round of rates). No other mode in the sweep is above 1 CPU s/s on noise. Simulated signals only. Details: docs/QA-SWEEP-3.9.md, "The other wide downlinks"; docs/WIDECPU-3.9.md.
+
+## 2026-11-11 Wide downlinks cheap on noise (feat39-widecpu)
+ISDB-S, FY-3 MPT, Elektro-L / Arktika-M RDAS and GEONETCAST, after the X-band receivers in feat39-qafixB. Profiled with stage timers in a bench on the sweep's own files, then each receiver got a no-signal check that lets most of the input go by while there is nothing to find, and the hot loops were made cheaper without changing what they decode. Noise CPU on the receivers: ISDB-S 2.12 -> 0.68, FY-3 MPT 2.65 -> 0.24, RDAS 2.61 -> 0.08, GEONETCAST 1.30 -> 0.58 s per second of signal; clean: ISDB-S 4.35 -> 2.25, FY-3 3.56 -> 2.88, RDAS 2.59 -> 2.04 (GEONETCAST is LDPC-bound and unchanged). The decoded output on every clean file hashes the same before and after, and the receivers' tests give the same output. Found on the way: RDAS decoded false frames on noise and then missed a signal that came up after it (fixed by the gate), ISDB-S sent one report for a whole stretch of noise (now every 0.5 s), and the DVB-S receiver hunted a carrier measured on noise for good (it measures the spectrum again after a round of rates). No other mode in the sweep is above 1 CPU s/s on noise. Simulated signals only. Details: docs/QA-SWEEP-3.9.md, "The other wide downlinks"; docs/WIDECPU-3.9.md.
+Also fixed here: the custom_bandwidth_all segfault at GeoNetCast. A file-broadcast receiver freed its file layer before stopping the DVB-S2 workers that write into it (ASan: heap-use-after-free); it now stops them first. New teardown test in test_wxsat_filecast.
+
+## 2026-11-11 "Works, but" follow-ups A (feat39-worksbutA)
+Ten issues where the reporter said "works, but ..." were reread. Four were fixed. #410: a retune to a same-id single-service carrier restarts the player, because the GPU decoder stayed silent on the old session. #301: in target mode the General receiver's arrows and typed frequency centre the radio. #235: the ADS-B selection is dropped with the aircraft. #239: full-screen analog TV and FPV pull new frames. Four were already fixed (#243, #338, #344, #432 export). Listed as feature requests: separate OS windows (#242), ATV brightness and contrast, RTL-SDR ATV, FT8 UDP feed. #422 needs info. Tests: dvbs_autoservice, adsb_display. Docs: docs/WORKSBUT-A-3.9.md.
+
+## 2026-11-11 "Works, but" issues, batch B (feat39-worksbutB)
+Went through 17 issues where a fix was followed by a remaining problem. Fixed: ELT(DT) protocol 9 per C/S T.001 Rev. 7 (#407), plus standard location offset bit widths, the homing bit and the 5-bit operator designator found while checking; Hamlib sound card by name and from a list (#358); Android keeps no old RDS after a station change (#463). The rest were already fixed, need a recording or log, or are feature requests. Details in docs/WORKSBUT-B-3.9.md.
+## 2026-11-11 Lightning position (network) (feat39-ltpos)
+New mode, family 790. Several stations time sferics; a server matches the detections and locates strikes by TDOA. It uses robust least
+squares on WGS-84 with clock groups, ambiguity folding, an optional hop model, a chi-square check and a 95 % ellipse. The map colours
+strikes by age.
+- Timing sources, ranked and shown per station: GPS radio time (Soapy / UHD hardware timestamps after a PPS reset,
+  source/hw_time.h), GNSS marks, MSK common view (decision-directed symbol timing, about 1 us at 45 dB), and PTP / NTP for association
+  only. The sample clock drift is fitted per source.
+- Network: UDP packets signed with HMAC-SHA256, replay window, off by default, no relay.
+- Simulated only: median 0.12 to 0.40 km at 0.3 to 1 us with 6 stations; the whole chain from IQ gave a median of 158 m.
+- docs/LIGHTNING-POSITION-3.9.md.
+
+## 2026-11-11 TMC in plain words and HDMI emission finder (feat39-tmchdmi)
+Issue #476: RDS-TMC messages in plain words from the user's own event list and location table (core/src/fm/fm_tmc_db.cpp). The importer detects the delimiter, header, encoding and columns. It reads German / English lists, the LCL layout and the TISA exchange files, and copies them to <data folder>/tmc. Each message shows road, location, direction, extent, duration, diversion and details. New messages go to a CSV and text log, on by default once a file is set. No country data ships: without files, codes stay with a "(?)" hint. Issue #475: local display / HDMI emission finder (core/src/rfi/display_emission.cpp). It matches pixel clock harmonics against 49 CEA-861 / VESA timings and separates timings that share a clock by the line-rate comb. It gives a confidence and alternatives, and shows up in the spectrum explorer (ticks, label, tab) and as an identifier candidate labelled "not your SDR". Generator and tests tmc_db, display_emission; simulated only. docs/TMC-PLAIN-3.9.md, docs/HDMI-EMISSION-3.9.md.
+
+## 2026-11-11 DAB Map tab: positions and zoom (feat39-dabsites)
+German user report (DR Deutschland 5C, six TII codes, none placed, zoom dead). Causes: OnAir-channels has no dab-tii/DE.csv (404, told
+apart from no network now), DR Deutschland sends no FIG 0/22, and the tab re-centred the map every frame when nothing was placed (Cell map
+too). FIG 0/22 TD is 11 bits now; FIG 0/11 regions and 1/3 labels are decoded; the ensemble's country (EId + ECC) picks the list. No
+source with German TII codes allows copying (FMLIST, ukwtv.de, wohnort.org; BNetzA has no TII), so nothing is bundled; the user's own
+qt-dab .txdata.tii can be read in place. Unknown rows say why and what to do; sharing is optional. docs/DABSITES-3.9.md.
+
+## 2026-11-11 Own entries for six CubeSat framings (feat39-w1c)
+Own mode-list entries for six CubeSat framings that were only inside CubeSat telemetry (families 840 - 855, stride 3): AX100 Mode 5, AX100
+Mode 6, USP, NGHam, U482C and BEESAT / Mobitex. Each is a view onto the shared CubeSat receiver (`CubesatReceiver::setFramingMask`: same
+demodulators, only that framing's frames and counts), with its own row, tuning, test signal, summary, poll case and web/Android entries; the
+CubeSat telemetry entry is unchanged and says they exist. Skipped: FUNcube (the Smart CubeSat chain, not the shared receiver), FX.25 and
+IL2P (the packet receiver drops which FEC produced a frame), Fox DUV, the linear transponder tracker, AO-7 and the gr-satellites table
+entries with no framing of their own. Tests: tests/cubesat/test_cubesat_views.cpp (generated signals only). docs/W1C-3.9.md.
+## 2026-11-11 W1A voiceband modes: HF packet 300 Bd, voice inversion, ELT (feat39-w1a)
+Three new receive-only modes, families 800 - 802 (core/src/w1a, app/w1a, tests/w1a): HF packet 300 Bd (AX.25 full decode on the repo's own AFSK receiver), voice inversion scrambler (full-band inversion detection from the long-term speech spectrum, carrier estimate, descrambled audio to WAV), ELT 121.5 MHz (swept-tone detection only). Simulated signals only. Skipped from the candidate list: 96 and 97 (milhf already has a buzzer / numbers-style carrier), 150 (Airband already follows ATIS), 218 AMPS (no checkable public layout), 273 (no specification found); 98 and 219 are one mode. docs/W1A-3.9.md.
+## 2026-11-11 Fleet Broadcast, UHF SATCOM 16 x 75 Bd (feat39-fbr)
+Owner request from a Discord thread (SATCOM 250 MHz modes): new mode 870 (own entry; the UHF SATCOM skimmer at 552 only detects energy). Source: the r00t.cz page (DBPSK 1200 Bd, 16 channels of 75 Bd, channel 0 sync, others mostly encrypted-looking) and a US Navy FLTSATCOM description of 75 bit/s subchannels at 1200 bit/s. The r00t.cz software is personal-use binary only, so nothing was ported and no credit entry is needed. Not public: the sync pattern, polarity, pulse shape and any message framing: so the mode finds carrier (Doppler +-4.5 kHz), clock and the one repeating column (taken for channel 0, an assumption), shows 16 channel classes, hex and a bit matrix, and decodes no text and decrypts nothing. Simulated signals only (own 31-bit sync sequence in the generator). Standard 872, slot 870. docs/FBR-3.9.md.
+
+## 2026-11-11 CP16 (feat39-cp16, #474)
+New mode CP16, CRAC's 16-carrier picture text (family 880, engine standard 882), receive and transmit, from CRAC's published descriptions (T/RAC 019-2019 itself is not public). The receiver finds the carriers, the sideband and the rows by itself, shows the dots as a picture and reads the characters against a GB2312 font (the user's HZK16 / TTF, or the bundled Noto Sans CJK SC). The transmitter sends typed text. CP16+ (MIT) recordings and truth files are used as test vectors; the dots match them 100 % with the parameters fixed. The default test passes on GitHub. The long sweep shows limits: short rows (spacing x row below about 1.3), 4 s a character, and machine reading below -3 dB. Details: docs/CP16-3.9.md. Simulated only.
+2026-11-11 feat39-w1b (ham science event monitors, docs/W1B-3.9.md). Six new modes as kinds 10 to 15 of the hamsci receiver, one mode-list entry
+each: Schumann resonance monitor (820), whistler and tweek detector (823), Moon echo test (826, rows 138 and 270 merged), Radio Jove (829),
+e-CALLISTO style solar bursts (832) and aurora / sporadic-E / TEP beacon events (835). Spectrogram, event list with times, trend per minute,
+events per UTC hour and CSV (events, trend, save to the data folder) for each; generators in hamsci_evt_gen.cpp; Android and web schema regenerated.
+GRAVES (269) skipped: the Meteor scatter mode (104) already follows GRAVES and matches satellite echoes. Specs were read from Wikipedia (Schumann,
+whistlers), the NASA Radio Jove FAQ, the e-CALLISTO site, the tweek papers and the EME libration pages; what has no source (whistler D range,
+aurora / TEP / Es split, burst drift classes) is marked as ours. Simulated signals only. Written with no local build (battery rule): syntax checks
+only, tests run with quick.yml.
+## 2026-11-11 Single-radio trunking: control channel and several calls from one capture (feat39-trunk1)
+Discord "Multi-Trunk with one radio". Before: P25 followed 2 Phase 1 calls inside the capture (one sound), Type II 4 slices, EDACS one call, MPT 1327 none. New: voice slots cut their channel out of the capture (SliceDdc, about 50 kHz) and run FM, P25 Phase 1 / 2, DMR or NXDN at the narrow rate, 4 at once by default, each with its own sound, WAV + JSON and call row (OneRadio, CaptureVoice). Coverage: "outside the capture (needs X MHz)" against the radio's limit, a plan and one retune button that covers the control channel and the busiest learned channels off the DC spike. MPT 1327 now follows GTCs; EDACS decodes every analog call at once; P25 default 4 slots. Two-radio pool unchanged. Simulated only. docs/TRUNK1-3.9.md.
+## 2026-11-11 Radiosonde upload to APRS-IS aggregators (feat39-sondeup)
+German user: wettersonde.net target connected but 0 packets forwarded. Cause: the APRS-IS iGate is fed only by the AX.25 packet decoder; the sonde receiver never called any feed and no sonde APRS text existed. New SondeUpload (core/src/net/sonde_upload.cpp): several targets (host, port, callsign-SSID, passcode, enable), station beacon on connect and every N min, one APRS object per sonde in the dxlAPRS / auto_rx format (knots, feet, 9-char padded names, fields left out when not reported), 5 s per sonde, reconnect with backoff, per-target status in View > Data feeds. M10 / M20 / iMet-1/4 not sent (no agreed ID). Tested with golden lines and a localhost mock server only; radiosondy.info host/port unconfirmed (editable). docs/SONDE-UPLOAD-3.9.md.
+## 2026-11-11 Dolby Atmos: detection, 5.1/7.1 bed, experimental passthrough (feat39-atmos)
+Discord "Dolby Atmos Compatibility?". Before: every TV track was mixed to stereo, Atmos was not shown. Now the player reads the E-AC-3
+bsi of every frame (TS 103 420 addbsi flag and complexity index, chanmap beds) and the AC-4 dac4 DSI (objects / height channels, ATSC 3.0),
+the PMT knows the DVB AC-4 descriptor, the panels show "Dolby Atmos (E-AC-3 JOC), 5.1 bed", AudioOut plays 2/6/8 channels (Automatic by the
+device's speakers, or Stereo / Lt-Rt / 5.1 / 7.1), and an off-by-default IEC 61937 passthrough (WASAPI exclusive, CoreAudio hog mode, ALSA
+IEC958) sends AC-3 / E-AC-3 untouched to a receiver. Passthrough is NOT tested on hardware; Atmos streams are simulated. Objects can't be
+rendered (Dolby's licensed renderer) and Dolby Access can't be fed a bitstream by an app. docs/ATMOS-3.9.md.
+## 2026-11-11: COSPAS-SARSAT extra modes in the log, CPU (branch feat39-sarsatcpu)
+EG's report (3.8.0 vs 0.2.9). The other modes' lines were configure() messages from every receiver on each restart (log callbacks persist), now dropped during start(). SARSAT receiver is identical to 0.2.9 per sample; engine CPU 0.07-0.09 s/s at 0.5 Msps with the 20 kHz offset, beacons 6/6; the 70 % was not reproduced. Added a false-burst search budget and test_sarsat_engine. See docs/SARSAT-CPU-3.9.md.
+## 2026-11-11 External modems for Winlink and P2P: ARDOP, VARA, Mercury (feat39-hfmodems)
+Owner request: use the HF / VHF data modems people talk about for Winlink and station-to-station links. Winlink had OnAir's own packet and
+simplified ARDOP links plus Telnet; there was no client for an external modem. New `ExtModemLink` (a `ByteLink`, core/src/winlink/wl_extmodem.cpp):
+OnAir connects over TCP to a separate program (ardopcf 8515 / 8516 with length-and-tag data frames, VARA HF and FM 8300 / 8301, Mercury 8300 /
+8301) and runs the existing B2F session through its data port: connect, listen and accept P2P, BW choice, buffer / S/N / busy / PTT status,
+modem-not-running and timeout messages. Commands come only from the published documents (ardopcf Host_Interface_Commands.md, EA5HVK's VARA
+Native TNC Commands, Mercury docs/TNC.md; Pat, Pat-Vara and wl2k-go, MIT, were read for behaviour and no code was taken). UI: Modems view under
+Winlink (profile editor, Test connection that sends only VERSION, "?" setup help with the Wine note), gateway type External modem, German
+strings. OnAir does not include or start any modem. Verified only against mock modems written from the documents; no real ARDOP, VARA or Mercury
+modem was used. Skipped: a native ARDOP or Mercury decoder, and reading the hermes-modem repository. docs/HFMODEMS-3.9.md,
+tests/winlink/test_winlink_extmodem.cpp.
+## 2026-11-11 Plugin store, client side (feat39-store)
+Owner request: a plugin marketplace. Design: a static, Ed25519-signed registry (index.json + per-plugin pages + packages) on any HTTPS host or local folder; docs/PLUGIN-MARKETPLACE-3.9.md has the trust model, limits, submission flow and the owner's hosting checklist. Built: core/src/pstore (fetch, signature, sha256, ABI/version/platform filter, install with rollback, downgrade and replay refusal, updates, uninstall, offline cache), a kill switch in the plugin manager (plugins/revoked.json), a Store tab in View > Plugins (opt-in network, permissions in plain words, native-code confirmation, trust badges, registry address and key under Advanced), tools/marketplace (onair_registry.py: lint, index, sign, verify, keygen; sample registry with stub packages signed by a published test key), German strings. Test: tests/pstore/test_pstore_store.cpp (local mock registries). Not done: sandbox for untrusted plugins, hosting, the real signing key, screenshots in the tab.
+## 2026-11-11 3.9 integration, release batch (integ-39)
+Batches 8-11 plus the release batch merged into integ-39: widecpu, nbfix, worksbutA/B, ltpos, tmchdmi, dabsites, w1a, w1c, fbr, cp16 (renumbered to
+family 880, standards 881/882: 790-792 are Lightning position), w1b, trunk1, sondeup, atmos, sarsatcpu, hfmodems, notice, licence2, store, ci5fix,
+pkgfix and release. Integration fixes: CI no longer runs the long tests when ONAIR_TEST_LONG is empty; GeoNetCast receiver freed in the right order;
+airband clips in the same second keep separate files; chanvoice and hamsci test signals made fast enough at wide rates; Android stand-in for
+av_opt_set_int; Windows macro names and POSIX-only test code; i18n catalog entries and German strings for the new screens. ci.yml run 43029255764 on
+15a2907f0 passed on Linux, macOS and Windows; tools/ci_times.tsv refreshed from it. Known flakes and slow-label failures are listed in the
+integration log.
+## 2026-11-11 OnAir 3.9.0 released
+Published v3.9.0 from 15a2907f0 with 12 assets (2 dmg, 2 deb, 2 portable tar.gz, 2 AppImage, Windows zip and installer, signed Android APK,
+SHA256SUMS). The Windows installer job on GitHub could not install NSIS (the runners could not resolve Ubuntu's package servers that evening), so
+the installer was built on the Mac with makensis 3.13 from the zip the CI built (makensis on macOS needs LANG/LC_ALL=en_US.UTF-8, otherwise it
+ends with bad_alloc). The tag's Docker image job failed for the same reason and has to be run again. main fast-forwarded to the release commit,
+website deployed, replies posted on #235 #239 #301 #358 #407 #410 #463 #474 #475 #476, the 67 merged feat39-* branches deleted from the public repo.
+## 2026-11-12 DCS code on transmit (#479), Japanese fonts (#481)
+A user's handheld read OnAir's transmitted D023N as D411N (five codes reported). Cause: audio_control.cpp built its own DCS word with the
+marker bits and the Golay polynomial the wrong way round; the tone decoder's table (tones_proto.cpp) was right and predicts all five wrong
+readings exactly. The transmitter and the DCS squelch now use that one table (023 = 0x763813). Test: test_audio_control. PR #481 (bellx2,
+Japanese text mixing two fonts) merged. integ-40 started from main for 4.0.
+
+## 2026-11-12 feat40-feat2 (Lane B group 2)
+Talkgroup activity and follow-the-busiest (DMR view), radiosonde launch clock (Sites view), APRS channel use / beacon rates, TX frequency-plan warnings, ADS-B track replay core, link budget and power ramp helpers. Tests: feat40b, sonde_sites (simulated data). Details in docs/FEATURES-4.0-B.md.
+## 2026-11-12: five 4.0 signal modes (feat40-modes1)
+
+RC model PPM (881), UVB-76 buzzer monitor (882), GRAVES meteor echoes (883) and Radio Jove bursts (884) and the beacon propagation monitor (885): decoders, test generators, round-trip tests with offset, drift, noise and false-decode runs, mode-list entries, docs/X40-4.0.md. Simulated signals only. Families 881 to 899 are used because kNumFamilies is 900 (docs/FAMILY-NUMBERS-4.0.md).
+## 2026-11-12 feat40-feat1: mode features group A (part 1)
+Echo and interferer diagnosis for DVB-T / T2, FM co-channel / adjacent / antenna heading tools, DAB ensemble change watch, pass quality rating, General receiver signal guess. Logic headers plus unit tests, UI hooks in the existing panels. See docs/FEATURES-4.0-A.md.
+
+## 2026-11-12 (night): 4.0 lane B round 2, group D
+feat40-feat4: header-only mode helpers in core/include/dect2/d40/ (FM station naming / DX alarm / SFN follower, AM carrier offset / heterodyne / best sideband / AM-DRM switch / schedule lookup, DAB ranking / TII table / blob collector, satellite blind scan / modcod / pointing / LNB drift, QAM order / HD Radio levels / MER per carrier / ATV standard / video score / FPV picker, scan classification / activity map / new-signal watch). Tests tests/d40 (simulated only). Not wired into the GUI. See docs/FEATURES-4.0-D.md.
+
+## 2026-11-12 feat40-feat3: Lane B group 3
+Features: AIS coverage / type mix / name cache, ATIS tracker, pager keywords and groups, callsign parser, mode guess, spot summary, tone identification, ISM classifier. docs/FEATURES-4.0-C.md, tests/feat40c (simulated only, headers not yet wired into the UI).
+
+Feat40-feat3 (later): ADS-B orbit detector, clear TX frequency, band hop, Sarsat incidents, DTMF numbers, ACARS channel load.
+
+## 2026-11-12 feat40-feat5: group E mode features
+- Satellite, HF, public safety, aviation, rail, LoRa and science helpers: `core/include/dect2/d40/{sat,hf,radio}_e40.h`, tests `sat_e40 hf_e40 radio_e40` (all pass locally, simulated data), doc `docs/FEATURES-4.0-E.md`. Core only, not wired into the GUI.
+## 2026-11-12 4.0 wiring (feat40-wire)
+Cards for the core-only 4.0 engines in app/d40/: FM names + DX alarm, DVB-S blind scan / modcods / dish pointing, sweep activity map + new-signal alert + classification, AM carrier offset / sideband / schedule ID, DAB ranking + transmitter table, ADS-B replay + orbits, transmit link budget / ramp / SWR, talkgroup activity for P25 / NXDN / TETRA, ACARS channel load, AIS coverage + type mix, pager groups. Syntax-checked with clang++ -fsyntax-only only; list of what is still unwired is in docs/WIRING-4.0.md.
+## 2026-11-12 Sensitivity 4.0 B: POCSAG 2 dB (feat40-sensB)
+POCSAG symbols come from tone energies (the two tones found from the sync word's known symbols) instead of the discriminator's mean frequency,
+and the sync search takes up to 5 wrong bits of 32 when the tone correlation confirms it: 90 % point -1 -> -3 dB, 50 % point -2.2 -> -4.3 dB
+(AWGN, 50 ppm clock the same; off-centre carriers fall back to the discriminator). 0 of 300 noise-only trials gave a unit; FLEX and the pager
+tests unchanged. New: test_sens40b (4.0 and 3.9 receiver in one binary, same seeds), test_hfdig_sens40b (WSJT modes baseline: at WSJT-X levels).
+Baseline table of 40 narrowband modes in docs/SENSITIVITY-4.0-B.md. Tried and not kept: summing discriminator products (DMR, D-STAR, NXDN, dPMR, P25).
+2026-11-12 (sensitivity 4.0 B, Z-Wave): chips judged by tone energies from the burst's complex samples and a more sensitive burst detector (start 6x -> 3x the noise floor):
+AWGN 90 % point 9.5 -> 6 dB (50 %: 9 -> 5.3), 0 false frames in 300 noise-only trials; test_sens40b has zwave and zwave-off side by side.
+2026-11-12 (sensitivity 4.0 B, radiosondes): RS41/RS92/DFM/M10/M20 symbols decided by tone energies (symbol clock still from the discriminator): sonde mix AWGN 90 % point 11 -> 9 dB, 0 false units in 40 noise-only trials.
+## 2026-11-12 4.0 sensitivity, lane A part 1: RS41 2 to 3 dB (feat40-sensA)
+Every 400 MHz radiosonde channel had one 10 kHz half-width filter in front of the discriminator, three times what an RS41 needs, so its
+discriminator sat under the FM threshold from 8 dB down and Reed-Solomon never got frames. The RS41 symbol chain is now fed from a second
+filter of 4 kHz half width (sonde_rx.cpp, SondeBitDecoder::narrowChannel): 90 % of frames at 7 dB instead of 9 (AWGN, 50 ppm clock),
+6 dB instead of 9 with a 20 ppm carrier error or 150 kHz off-centre, noise-only runs still decode nothing. Test: sonde_sens40. New
+tool sens_curve (fraction of units per SNR, any harness mode). Measured and not kept: soft RS erasures for the RS41, click suppression for
+APRS, wM-Bus tone correlators (the 17 dB wM-Bus figure was the five-PHY mix), see docs/SENSITIVITY-4.0-A.md.
+
+## 2026-11-12: EM4100 LF RFID (family 886)
+
+EM4100 / EM4102 125 kHz tag reader: Manchester frame with row and column parity, RF/64 and RF/32, load modulation depth. Tests: offset, drift, clock error, noise sweep, 15 min false-read run. Simulated signals only (docs/EM4100-4.0.md).
+
+## 2026-11-12: UHF RFID reader commands (family 887)
+
+EPC Gen2 reader decoder: PIE timing, Query / QueryRep / QueryAdjust / ACK / NAK / Select / Req_RN / Read / Write / Kill / Lock / Access, CRC-5 and CRC-16. Tests: Tari, data-1 ratio, clock error, offset, drift, noise sweep, false-command run. Tag replies not decoded. Simulated signals only (docs/UHFRFID-4.0.md).
+
+## 2026-11-12: Qi wireless charging packets (family 888)
+
+Qi baseline-profile receiver-to-transmitter packets: load modulation, differential bi-phase, byte parity and checksum, named messages. New shared ASK slicer core/src/x40/x40_ask.h. Tests: clock error, depth, offset, wander, noise sweep, false-packet run. Simulated signals only (docs/QI-4.0.md).
+
+## 2026-11-12: FM modulation monitor (family 889)
+
+FM broadcast modulation monitor: peak and RMS deviation, MPX power, carrier offset, pilot, stereo band, RDS injection, SCA 67 / 92 kHz, over-deviation log. Tests: three input rates, offsets, changes during a run, noise sweep, false-report run. Simulated signals only (docs/FMMON-4.0.md).
+
+## 2026-11-12: AM modulation monitor (family 890)
+
+AM broadcast modulation monitor: carrier offset, depth, peaks, asymmetry, hum, audio bandwidth, over-modulation and carrier-loss log. Tests: three input rates, offsets with drift, hum, asymmetry, noise sweep, false-row run. Simulated signals only (docs/AMMON-4.0.md).
+
+## 2026-11-12: Power-line noise locator (family 891)
+
+Impulse and power-line noise analyser: impulse rate and level, repetition at twice the mains, the mains rate or another steady rate, static. Tests: five rates at two input rates, drifting mains with missing and random impulses, Poisson impulses, 15 min noise false-pattern run, level sweep. Simulated signals only (docs/PLNOISE-4.0.md).
+
+## 2026-11-12: Radar pulse analyser (family 892)
+
+Pulse analyser: width, PRI and PRF, constant / staggered / jittered classification, carrier inside the pulse, antenna turn time. Tests: PRFs and widths, stagger 2 to 4, jitter, a scanning beam, level sweep, 5 min noise false-emitter run. Simulated signals only (docs/RADAR-4.0.md).
+
+## 2026-11-12: GNSS interference detector and passband classifier (families 893, 894)
+
+GNSS interference detector (tone / narrowband / swept chirp with range and period / wideband noise, 4 and 10 Msps) and passband signal classifier (carrier, CW, narrow data, voice-like, wideband in 48 kHz). Tests: classes alone and mixed, levels, start and stop, noise-only false-row runs. Family numbers 886 to 894 listed in docs/FAMILY-NUMBERS-4.0.md. Simulated signals only (docs/GNSSJAM-4.0.md, docs/PASSBAND-4.0.md).
+
+## 2026-11-12: VLF MSK transmitter monitor (family 895)
+
+VLF naval MSK station monitor: carrier and bit rate from the two lines of the squared signal, on / off / rate-change log, station hint from a short frequency list. Encrypted traffic not decoded. Tests: 50 to 300 bit/s, offsets, drift, on / off, noise sweep to -3 dB, 20 min noise false-on run. Simulated signals only (docs/VLFMSK-4.0.md).
+## 2026-11-12 (night), 4.0 lane A part 2: more narrow paths, Argos acquisition (feat40-sensA2)
+The part-1 lesson (a channel filter much wider than the signal sits under the FM threshold) applied to the other receivers, each with before/after
+curves from sens_curve and noise-only checks (docs/SENSITIVITY-4.0-A2.md): the RS41 narrow path now also feeds RS92, DFM and iMet-54 (about 2.5, 2, 3 dB);
+FmFront gets an opt-in SpectralAfc (power-spectrum carrier follow-up) and EDACS (6.5 kHz instead of 9) and SmartNet (5 kHz instead of 7) use it
+(1.5 and 1.7 dB, 2.5 dB with 3.1 kHz carrier error); Fusion and MPT 1327 get a narrow filter that follows the carrier in open loop (about 2.5 dB, and a
+decode with 5 to 6 kHz carrier error where 3.9 had none). Largest find: Argos PTT uplink needed the burst 6 dB over the noise of the whole 32 kHz stream;
+coherent 1 ms power for the extent and the length chosen from the phase steps give about 14 dB (90 % at 0 dB in 5 kHz instead of 13 dB). Tests:
+sonde_sens40 (extended), edacs_sens40, argos_sens40. Measured and not kept: ACARS coherent detection with a carrier memory (0.2 dB), POCSAG/FLEX
+narrower filter (POCSAG +3 dB, FLEX collapses), M10 narrow path, MRZ narrow path (breaks a test). At theory: DMR, AIS, APRS, Orbcomm, the IoT set.
+## 2026-11-12: QA 4.0 (feat40-qa)
+All-modes QA sweep extended: a non-default sample rate and bandwidth condition (generator rerun at 1.37 x the rate), noise-only runs for modes without a generator, `qa_switch` (one Engine through every mode twice: hangs, stale first report, thread and memory growth), `qa_sweep_sel` for single rows. Fixed: the previous mode's last report was returned after a mode switch (`Engine::start()`), HF ID and End of train counted noise as decodes. ASan + UBSan over `qa_switch`: no report. Open findings (vdl3 and ltpos do not decode through the Engine, cell/umts at odd rates, a few 12 dB rows) are in `docs/QA-4.0.md` and `tests/qa/qa_known.inc`. Simulated signals only.
+## 2026-11-12: QA 4.0 round 2 (feat40-qa2)
+Worked down the round-1 list with GitHub runs (no local build). Found and fixed: the engine's synthetic source rounds samples to 8 bits, so the noise floor of the vdl3 and ltpos test signals became digital silence and both receivers (floor > 0) stayed idle: floors now have a minimum (unit tests with 8-bit samples: vdl3 75 of 75 bursts, 0 before; ltpos 14 sferics, 0 before). The vdl3 and fbr generators ignored the mode's tune offset (fbr locked only through an alias: nothing at 12 dB; now locks at 8 dB in 1.2 kHz and passes all columns). The umts test signal was time-scaled at any rate but 7.68 Msps (Lagrange read at the requested rate). The cell transmitter and 1.37 x rate "failures" were a search that ended after the file (the sweep drains it). jt6m false ping (1 of 6 runs of 32 s of noise) gone with gate 5.5: 0 of 300 noise runs, long pings unchanged, a short -6 dB ping 25 of 60 (53 incl. about 19 % noise). The identification-only CIS modes raise their lock flag. New noise-only finds in the new x40 monitors: the AM monitor found a carrier, the FM monitor a pilot and UVB-76 a buzz in white noise (carrier line test, pilot over its neighbours). Sweep: the 1.37 x rate also with +-offset and with noise (rpos, rnoise); 356-mode table regenerated. Sanitizers: 48 engine unit tests under ASan + UBSan: one UBSan finding (flarm sort bound, fixed), no heap errors; 12 failures are the sanitizer's time budgets. Windows: `near` / `far` variables in four files renamed, scan of 177 files clean, Windows job passes. Open: ax100m6 / u482c / ngham sit 0.7 - 1.9 dB under the sweep's 12 dB (a sensitivity item with measured thresholds), tetra and msk144 transmitter files fail on loaded runners only, globalstar loses every block with a clock error at any rate but 6 and 10 Msps. Details: `docs/QA-4.0.md`. Simulated signals only.
+
+## 2026-11-12 (night): sensitivity 4.0, pass B2 (feat40-sensB2)
+Argos PTT-A2 uplink 13 dB to about -5.5 dB (coherent gate, line-detector start, length by bit closeness), NDB 14 to 9 dB (synchronous tone detection with a carrier frequency loop),
+Marine VHF DSC 4 / 6 dB to 2 dB (4.5 kHz IF with carrier follow-up), MPT 1327 9 to 6 dB (5.5 kHz IF, new dsp/narrow_if.h), JT4 wrong-text decodes to 0 (all-zero word).
+Tried and not kept: Wi-SUN burst gate (about 1 dB at 90 %, nothing at 50 %), EDACS 6.5 kHz IF with AFC (1 dB). Details: docs/SENSITIVITY-4.0-B2.md.
+## 2026-11-12 Integration note: Argos and MPT 1327 were improved twice
+feat40-sensA2 and feat40-sensB2 both changed core/src/argos/argos_rx.cpp and core/src/mpt1327/mpt1327_engine.cpp. In integ-40 the Argos receiver is
+the sensB2 version (about -5.5 dB 90 % point) and the MPT 1327 engine the sensA2 version (4.5 kHz carrier-following filter). Both sets of guard tests
+(argos_sens40, sens40b) stay; if one fails the other version of that file is on pub/feat40-sensA2 / pub/feat40-sensB2.
+
+## 2026-11-12: third block of 4.0 signal modes (families 752 - 778, branch feat40-modes3)
+
+Free numbers: a scan of the mode table, registry and poll slots found 406 usable family numbers below 900 (docs/FAMILY-NUMBERS-4.0.md), so kNumFamilies and kPollSeqSlots stay. The x40 receiver now maps variants 15 and up to families 752 and up.
+Twenty-seven new modes (752 - 778): spectrum occupancy monitor, modulation quality (MER) meter, carrier frequency accuracy meter, PTT and duty-cycle logger, intermodulation finder, spur and image finder, satellite Doppler curve logger, frequency-hopper analyser, persistent carrier finder, burst finder, fading analyser, SDR input health meter, phase noise meter, SSB transmitter test meter, FM SINAD meter, FSK parameter analyser, noise figure (Y-factor) meter, CW keying quality meter, noise floor logger, narrowband FM deviation and CTCSS meter, AFSK tone tuner, OOK / ASK pulse analyser, transmitter frequency stability meter, crest factor (PAPR / CCDF) meter, occupied bandwidth meter, spectral kurtosis RFI finder, SDR stream glitch detector. Each has a decoder, a generator in the tests, tests with offsets, drift, noise sweeps and false-report runs, and a page (docs/OCCUPANCY-4.0.md and the others). All checked on simulated signals only.
+
+The tests/app/test_mode_numbers.cpp poll-slot scan now reads the slots of the 4.0 receiver from the DECT2_X40_ACTIVE_CASES macro (it could not read `seqs[a - 1]`; the test failed on integ-40 before this branch).
+## 2026-11-12 (night): sensitivity 4.0, pass B3 (feat40-sensB3)
+ISM sensors: 50 % of the packets at 3 dB instead of 6.5 dB (narrow-envelope retry for OOK, tone-energy chips and a relaxed carrier test for FSK; 0 false). Aero: the 11 dB was the test generator's own noise
+(Eb/N0 12 dB baked in): harness fixed, true 90 % point -1 dB, no receiver change. FT8 and friends: the wrong a-priori texts are noise candidates with a sync score under 2.5; the a-priori floor is 2.6 and the
+ftxsmart count that hid them is corrected. Checked at theory: LoRa SF7 to SF12, AX.25 9600, ALE, wM-Bus, CW with carrier error. Details: docs/SENSITIVITY-4.0-B3.md.
+
+## 2026-11-12 (night), 4.0 lane A part 3: gate hunt in the burst and packet receivers (feat40-sensA3)
+Looked for the Argos kind of find (a fixed gate far above what the demodulator needs) in the burst / packet receivers, with before/after curves from sens_curve
+and noise-only runs (docs/SENSITIVITY-4.0-A3.md): HaLow preamble gate 0.55 to 0.30 (about 1.5 dB), Globalstar activity gate 2 to 0.8 dB (about 3.5 dB), POCSAG gets a
+second POCSAG-only decoder behind a 7 kHz filter next to the 10 kHz one FLEX needs (about 1.3 dB, FLEX unchanged), Zigbee chip values as the amplitude weighted sine of
+the phase step (about 1.5 dB), SAME and the CubeSat 1200 baud path on the front end's second 4.5 kHz channel (about 3 dB each), LTR 3.5 kHz with the carrier follow-up
+(decodes with 3.1 kHz carrier error where 3.9 found nothing), MRZ keeps its serial across pauses (it was forgotten at every pause, so the receiver dropped nearly every MRZ frame, which is also why its narrow path had broken sonde_extra_rf), MRZ and iMS-100 accept 3 sync symbol errors and run on the narrow path (MRZ 7 times the frames and about 2 dB, iMS-100 about 3 dB). Tests: sens40a3 (new), same_rx, cubesat_rx, ltr_rx,
+sonde_extra extended. Not kept: Iridium, Aero, ISM, Wi-SUN, BLE, VDL2 gate changes, M10 narrow path (already at theory).
+
+## 2026-11-12 (feat40-modes4): sensor-family entries
+Eighteen mode-list entries (families 564 - 594 and 663 - 681) that show one family of the Sub-GHz sensors receiver each: Oregon Scientific, Acurite, LaCrosse, Fine Offset / Ecowitt, Bresser, Hideki, TFA Dostmann, Nexus / Prologue, Alecto / Esperanza, Ambient Weather, wireless alarm sensors, X10 RF, Itron ERT, Neptune R900 and the Schrader, Renault, Toyota and Citroen tyre pressure sensors. `SensorsReceiver::setView`, no decoder changed. Test: the recorded pulse trains of tests/sensors/families.txt through all views with offset, clock error and a noise sweep: 0 lost, 0 leaks. Page: docs/SENSORVIEWS-4.0.md. Simulated signals only.
+
+## 2026-11-12 (feat40-modes4): more views and three x40 receivers
+- Views onto existing receivers, one mode-list entry per type (docs/VIEWS-4.0.md, docs/SENSORVIEWS-4.0.md): 22 Sub-GHz sensor families and kinds, ten radiosonde types, nine wireless M-Bus modes and manufacturers, three CubeSat framings, six AIS station kinds, eleven time stations, four GNSS systems, eight analog TV standards and three NFC protocols. A mask in the receiver's telemetry() (or setSystems / setStation / setStandard) keeps one type; no decoder changed. Each has a test with the generators of that mode (all simulated).
+- x40 receiver, fourth block (families 779 - 781, docs/X40-4.0.md): ILS marker beacons (MARKER-4.0.md), FSK modems Bell 103 / V.21 / V.23 / Bell 202 (FSKMODEM-4.0.md), SSR interrogations on 1030 MHz (SSRINT-4.0.md). Tests with offsets, fading, clock errors, noise sweeps and false-report runs; simulated signals only.
+- The summary switch in core/src/engine/modes.cpp keeps literal `case N:` labels: android/tools/gen_results_map.py reads them (a macro dropped the Sub-GHz sensors, radiosonde, wireless M-Bus and AIS cards from the Android results map). The existing switch and panel lines stay as they were (tests read them as text); the entries' cases are on lines of their own.
+- tests/qa/qa_known.inc lists the entries whose test signal cannot carry their data (QA sweep).
+
+## 2026-11-12 (night): 4.0 wiring, second pass (feat40-wire2)
+- New cards in `app/d40/`: Sarsat incidents, tone system and DTMF numbers, ISM classifier line, FT8 heard / band summary / clear frequency, CW heard list, GSM-R channel frequencies, talkgroup names, HF beacon best frequency, LNB drift, ATIS / VOLMET, DVB-C QAM check, HD Radio sideband levels, FPV free channels, mesh share columns.
+- `ism_classify.h`: pulse type renamed `IsmTimedPulse` (clash with `ism_proto.h`). `BandClock` got save / load / frequencies.
+- 209 German strings in `app/i18n/de.txt` and `unreviewed/de.txt`. `docs/WIRING-4.0.md` lists what is wired and what is left, with reasons. Syntax-checked only; no app build.
+## 2026-11-12 feat40-sensC1
+Clean-signal probe of the sens harness; NAVTEX/SITOR-B rows were 5 dB off (baked noise), 50 ppm clock rows were trial-length artefacts; FM RDS, ATSC, DAB, DVB-T/T2/C, DTMB, DVB-S2 at theory (docs/SENSITIVITY-4.0-C1.md).
+## 2026-11-12 (feat40-sensX2): SSTV picture filter, NFM click removal looked at
+- SSTV (core/src/hfdig/hfdig_sstv.cpp): noise-adaptive picture filter, on by default (`setNoiseFilter`): a 7-pixel Wiener filter along each line with the pixel noise measured on the sync pulses, then a 3x3 Lee filter (click median at high noise) with the noise measured on the picture. Martin M1 at 6 dB in 3 kHz: mean error 20.2 -> 6.6 levels; Robot 36 at 10 dB 27.0 -> 12.3; no loss at 30-40 dB on a textured picture. Simulated only (docs/SENSITIVITY-4.0-X2.md).
+- Fixed: a weak Robot 36 picture whose first line read as odd crashed the decoder (empty pending chroma).
+- NFM click removal built twice and dropped: the 12 dB SINAD point (8.4 dB) is above the FM threshold, gains were 0.3 dB at most.
+- Guard test hfdig_sstv_sens40; bench tests/hfdig/sstv_sens40_bench.cpp (not a ctest).
+- (feat40-sensX2, later) Weather fax: row Wiener filter on weak signals (mean row correlation at 2 dB 0.460 -> 0.634, sens39 passes 0 -> 3 of 3 at 2 and 1 dB). NOAA APT: click median + line Wiener filter with the noise of space A (PSNR at 2 dB 10.2 -> 12.8 dB, at 15 dB 30.5 -> 32.8 dB). Tests marine_fax_sens40, wxsat_apt40, measured on the GitHub Linux runner.
+
+## 2026-11-12: menus 4.0 (feat40-menus)
+Tools menu split into 9 groups with search, Plugin store entry, Mode menu one submenu per category (chunks over 25), View reduced to 9 entries (Theme / Layout / Text / Time / Reset view / Power and system). docs/MENUS-4.0.md; test menu_groups. Syntax-checked only, CI pending.
+
+## 2026-11-12 (feat40-trackui): tracker, mode list, status bar, top bar, menu bar
+- Satellite tracker (View > Passes, docs/TRACKER-4.0.md): world map with the chosen satellites' orbits, footprints and day/night; satellite search with group chips and a list; pass panel with countdown, quality badge, Doppler, sky plot (AOS/TCA/LOS) and "Track and record this pass"; cleaner pass list, next pass highlighted. New Iridium group (`TagIridium`). Every feature and setting mapped to its new place.
+- Mode list (docs/MODELIST-4.0.md): each category tinted with its colour, the selected mode on a stronger tint with an accent bar and semibold name; hover and focus distinct. Colour maths in app/ui/row_tint.h, test `row_tint` (all palettes, Dark/Light/High contrast, 4.5:1).
+- Status bar (docs/STATUSBAR-4.0.md): one flat row (state dot + word, grouped frequency, mode, RX, signal, rate, level, load, dropped, cpu + sparkline, log, clock, mute), segments dropped by priority (`statusstrip::fit`, test `status_strip`); flat receiver tabs.
+- Top bar gap: rec with time and size, Memory quick list, offset, bandwidth. Above every mode's tabs: one action row (next step + fix, antenna hint, Undo, Auto setup, Reset this mode, Simple/Advanced). Menu bar right-hand items centred and flat, Discord button the text height.
+- Syntax-checked locally (battery: no local build); app build and tests on GitHub quick.yml. No screenshots yet.
+
+## 2026-11-12 (night): SondeHub upload and the radiosonde map (feat40-sondehub)
+- SondeHub uploader: a fixed, off-by-default entry in Data feeds > Radiosonde upload. Gzip JSON PUT to /sondes/telemetry and the station record to /listeners, following the SondeHub wiki and auto_rx / ChaseMapper (15 s batches, longer with DFM / Meisei, 5xx retried up to 5 times, other answers shown). software_name OnAir. Only good frames with a fix, the sonde's own time (within 1 h of the clock) and a serial; iMet-1/4 held back. The HTTP client gained PUT with a body (sockets/OpenSSL, NSURLSession, WinHTTP).
+- Launch sites: "Site 1" came from the learned-site placeholder (no list of real sites). A built-in IGRA 2 list (885 active stations, public domain) and the user's sonde-sites-known.txt name the learned sites, including the 3.9 file's on load. The map shows every known site in view.
+- Map: my station with the callsign, or a chase car from a live GPS (NMEA serial or file, gpsd). Optional Tawhiri prediction of the selected sonde, drawn dotted and labelled as a prediction.
+- Tests: sonde_hub (with a mock HTTP server), sonde_map_overlay, sonde_sites. CI only (on battery). docs/SONDEHUB-4.0.md.
+
+## 2026-11-12 (night): Android TV picture and sound, USB radios (feat40-android)
+- TV modes on Android get a Watch panel: the core's transport stream (Engine packet tap) is cut to the chosen service's PIDs in a native ring (`android/native/src/jni_tv.cpp`, `tv/TvNative.kt`), reassembled to PES in Kotlin and decoded by the phone's own MediaCodec (H.264, HEVC, MPEG-2 where present; AAC/HE-AAC in ADTS and LATM, AC-3/E-AC-3 where present) onto a SurfaceView and AudioTrack, pictures timed on PTS against the sound clock. No codec is shipped; the panel says which format the phone cannot decode and when a service is scrambled.
+- MPEG audio layer II (most SD services) has a small decoder in the app (`tv/Mp2Decoder.kt`), used only when the phone has none; layer II is patent-free; tables from the standard as FFmpeg keeps them (credited).
+- USB: the core's `usbFdKindForId` is one table now with all 42 RTL2832U ids of librtlsdr (was 17); catalog and filter follow, `UsbIdsAgreementTest` checks the core table. android.yml now builds libairspy / libairspyhf (pinned commits with the `*_open_fd` entry points): the APK had never contained them, so Airspy radios could not open on phones.
+- Tested on GitHub only (JVM tests, NDK build, C++ USB tests); no phone, emulator or radio. Details and the radios not added (LimeSDR Mini, bladeRF, PlutoSDR USB, HydraSDR, RX888) in `docs/ANDROID-4.0.md`.
+
+## 2026-11-12 (feat40-general): the General receiver screen
+- New screen for the General receiver (docs/GENERAL-4.0.md). The spectrum and waterfall fill the window. One resizable, hideable sidebar
+  (Ctrl+B) has folding sections, a thin bar carries the step, Snap, Centre and the SNR meter, and a drawer holds the old tabs. The layout
+  is saved in `gen40Layout`. The 3.9 layout stays behind Display > 4.0 General layout.
+- Demodulators: a grid (NFM WFM AM SAM DSB USB LSB CW CW-L RAW), a top-bar button, a right click on the VFO and Alt+letter keys. Auto from
+  the band plan is off by default. Squelch, AGC and gain are now kept per demodulator; old profiles load from the shared keys.
+- Core: DSB, RAW and CW-L appended to `GeneralDemod`, so the old numbers are unchanged.
+- VFO: drag its body (keeps the grab point), drag its edges, the wheel over it steps it, and Snap is optional.
+- Shared spectrum, all modes: the tuning-style pair is one toggle, and the Zoom slider and keys zoom around the tuned frequency inside the
+  captured band.
+- Tests: `general_layout` (111 checks, run locally), plus new DSB / RAW / CW-L cases in `general_rx`. The app was built on GitHub only;
+  screenshots wait for the Mac to be on mains.
+## 2026-11-12 (feat40-atsc): ATSC 1.0 and 3.0 on real channels and real computers
+- ATSC 3.0 (#484 symptoms; its two 2 GB recordings were not downloaded, needs the owner's OK): SLS packages gzip-compressed as a whole, Signed Package Mode (multipart/signed), headerless packages and nested parts are read; LLS SignedMultiTable (0xFE) unpacked; ROUTE PSI checks only the source bit. ATSC 3.0 tab: SLS objects / documents, signed LLS, compressed-IP (ROHC, not decoded) warning. Tests atsc3_lls, atsc3_route.
+- ATSC 1.0 lag/stutter: field queue 3 -> 10 fields, drop the oldest only and keep the equaliser (3.9 reset everything), packet callback on its own thread, lock loss keeps the taps, load shedding while behind; decoder load / fields dropped / packets dropped in telemetry and the receiver tab. ATSC_OLDDROP=1 ATSC_SYNCCB=1 = 3.9.
+- ATSC 1.0 channels: pre-echo canceller 9.3 -> 30.7 us, new post-echo canceller 11-44.6 us, self-trained retry, in-field LMS tracking for moving echoes. New test atsc_channels (A/74 Table 5.6 echoes, R.1, R2.1, R2.2, flutter, burst noise, co-channel and adjacent DTV, carrier, 6.5-20 Msps 8-bit with tuning and clock errors; SNR thresholds and guards). PSIP: TVCT entries without a program are not services. Simulated signals only; numbers in docs/ATSC-4.0.md.
+## 2026-11-12: DCR, Japan's digital convenience radio (feat40-dcr)
+- New mode DCR (ARIB STD-T98 volume 3, 4-level FSK, family 782, x40 variant 45): user codes, manufacturer numbers, normal / privacy calls, end of call, 9-digit BCD call sign, data blocks, manufacturer messages; the voice frames are counted. Channel plan of the standard (351 / 467 / 465 / 154 MHz, relay pairs) and a scan of the active channels of a wide capture. docs/DCR-4.0.md lists what it shares with NXDN48 (physical layer, coding, sync, whitening) and what differs (RICH, SACCH units, user code, PICH call sign, deviation).
+- The standard's chapter 7 test frames reproduce bit for bit from the NXDN coding layer (python check), and the receiver reads them. Test `x40_dcr`; no real DCR recording was available.
+## 2026-11-12 (feat40-layout): panels sized to their content
+- Sidebar layout (the default): the spectrum, the list on the right and the lower row are placed by `ovl::layout()` (app/ui/overview_layout.h, pure) from what each drew last frame (app/ui/overview_layout_ui.inc): an empty lower row is hidden (315 of 449 modes have none), a small plot goes into the right column under the list (43 satellite modes), a short wide row shrinks, a list of about three lines becomes a strip above the spectrum. Hold 0.25 / 0.6 s, 1 s dwell, 0.15 s glide. Dragged sizes per mode (`panelSizes`), View > Fit panels to their content (on), Reset layout clears them.
+- 51 modes with no list and no transport stream no longer show the TV clock and an empty service list in that layout (tv.cpp).
+- Test overview_layout (GitHub Linux runner); groups and numbers in docs/LAYOUT-4.0.md (content models, not screenshots); tools/layout_survey.py. The ImGui side was built on GitHub, not run (battery).
+## 2026-11-12 (feat40-settings): Settings 4.0, key editor, profiles
+- One action registry for every shortcut that was written into the code (Ctrl+, Ctrl+K M Ctrl+M Ctrl+Shift+F C I F F6 F11 Alt+Enter Ctrl+= - 0,
+  Ctrl+Shift+L/M, Ctrl+Alt+D, the TV picture's Space/R, the FT8 screen's F1-F8 Ctrl+L Ctrl+F): two keys per action, scopes, conflict marks,
+  press-to-record, import/export as a readable file, menus and tooltips show the user's keys. Fixes F6 and Ctrl+L firing twice in the FT8 screen.
+- Settings: pages Units, Keyboard and mouse, Notifications, Performance, Profiles; about 70 new wired rows (start-up mode/frequency, receiver at launch,
+  crash restore, confirm quit, FFT size, waterfall speed, line colours, default dB range, radio IQ fixes and noise blanker, audio device and new-mode
+  AGC/squelch, IQ file name pattern, IQ split and free-space guard, notifications and quiet hours, map tile server and cache); search highlight;
+  profiles saved/switched/exported. 3.9 keys unchanged. docs/SETTINGS-4.0.md. Checked on GitHub only (Mac on battery).
+
+## 2026-11-12 (night): hover previews of the looks (feat40-uipreview)
+Hovering or keyboard-focusing an appearance choice (palette, Dark / Light / High contrast, the eight layouts, Classic / Unified, font look,
+text size presets, touch, Easy mode, Classic interface, waterfall colour maps, trace colour, tuner style) in Settings, the View menu, the
+side panel and the plot popups shows a live ImGui miniature of the interface with it; nothing changes until it is picked. The palette
+colours moved to app/ui/palette_data.h, which loadTheme() and the preview both read. Pure description in ui_preview_logic.h, tests
+ui_preview and ui_preview_render (the miniature rasterised on the CPU, pixels checked). Off switch: Settings > Appearance > Previews of
+the looks. Dev page: --previewgallery. Details: docs/UI-PREVIEW-4.0.md.
+## 2026-11-12 (night, feat40-market): community plugin marketplace
+- Server (tools/marketplace/server): one Cloudflare Worker, D1 and R2. It covers list and search (relevance, likes, downloads, newest;
+  tag, kind and platform), plugin page, counted downloads with the signed sha256, likes once per installation (salted hash), and GitHub
+  device-flow sign-in (no token stored). Upload and new version check the package with a port of plugin::parseManifest, the
+  installer's package rules and the 3.9 listing policy. Report and the admin endpoints (pull/restore, ban, reports) are there too.
+  Listing answers are Ed25519-signed and name their request and time. Nothing is deployed; the README has the owner's setup.
+  32 Node tests (SQLite through sql.js, abuse cases) and a workerd smoke run passed locally; .github/workflows/market-server.yml runs
+  them on GitHub.
+- App: the Store tab has two sources, Community marketplace (default) and Reviewed registry (3.9). The community panel has search,
+  sort, tag chips, cards with the unreviewed badge, and a plugin page with Install (second confirmation), Like, Report and the repo link.
+  The Upload plugin window covers sign-in, file, title, description, link, tags, preview and Publish. Core client in
+  core/src/pstore/market.cpp; plat::httpCall added. Withdrawn plugins installed from the marketplace are switched off through the 3.9
+  kill switch (Store::setExtraRevocations). Test pstore_market, GitHub builds only. kBuiltInMarketKeyHex stays all zeros until the
+  owner makes the key. docs/PLUGIN-MARKETPLACE-4.0.md.
+
+## 2026-11-12 (feat40-perf): sample-loss warnings, nRSP-ST at 10 Msps, the receiver on its own thread
+- "This computer is too slow" at 3 % CPU: a network radio's reconnect counted as ring overflow, and every overflow was called a slow computer. Source losses are kept apart (`IqRing::lostAtSource`), and each overflow gets a cause from the sample thread's own figures (`overflow_cause.h`: Starting / Cpu / Waiting / Stalled). Only Cpu says "lower the sample rate".
+- "USB 3 port" warnings at LOW rates: the delivered-rate window counted whole transfers against the observer's clock and read 78 % at 250 ksps. `DeliveryRate` measures between the radio's least delayed write stamps: 99-101 % at every rate from 48 kHz to 20 Msps, 90 % radios still read 90 %.
+- nRSP-ST (SDRconnect WebSocket): messages over 1 MiB were refused and the connection dropped (stall above a few Msps). Limit now 16 MiB, buffered reads, vectorised conversion. `nrspst_rate` test: 110-520 Msps into the ring on the CI runners, 10 Msps paced with no drop.
+- The receiver runs on its own thread behind the front end (automatic: 4+ cores, 4 Msps and up, not in Low power mode; Settings > Advanced). `bench_modes --compare-rx` checks the same results and measures 1.0-1.45x. The receivers themselves are the bulk of the cost, so more cores need work inside each receiver. Details and numbers: docs/PERF-4.0.md.
+## 2026-11-12 (feat40-ham): the Ham view as one station screen
+- Pure logic with tests: ham_station (mode catalog, frequency memory per band and mode, simplified IARU segments as warnings, S-meter scale, region of a country, setup hints, CW speed matching, hop schedule, fake-it split), ham_spots (cluster / RBN lines, POTA / SOTA JSON, PSK Reporter XML, split from comments, spot book), ham_net (telnet and HTTPS feeds, each off by default), ham_callbook (QRZ / HamQTH XML, cache, earlier QSOs; credentials only in POST bodies), ham_needed (WPX, needed levels, alerts with a watch list), ham_logtools (Cabrillo import, LoTW / eQSL / card confirmations, backups, TQSL command, POTA / SOTA / WWFF / IOTA references and counts).
+- Sequencer: RR73 sent once then CQ (RRR still waits for 73), a repeated R-report gets RR73 again (logged once), repeats reset the retry count, caller priority by need, CQ modifiers; Q65, FST4, MSK144 in the slot modes.
+- UI: header (frequency, S-meter, band plan hint), band bar with memory for every mode, More modes list, Cluster and Activate tabs, callbook line and split in the QSO panel, log tools, band hopping, CW speed matching, wizard country / position / antennas / callbook.
+- Tests ham_seq, ham_station, ham_spots, ham_callbook, ham_needed, ham_logtools, ham_net (simulated data; no service contacted). docs/HAM-4.0.md.
+
+## 2026-11-12 (night): propagation calculator rebuilt on ITU-R models (feat40-prop)
+- VHF and up: ITU-R P.1812-8 (time and location percentages, ducting, troposcatter, delta-Bullington) as the Auto model, matching all 21 x 3 ITU-R SG3 validation results; P.676-13 gases, full P.838-3 rain, P.530 / P.618 rain, P.453 k-factor.
+- HF: P.533-14 with the P.1239-4 CCIR maps, E and F2 modes, long-path method, P.842 reliability, an hour x band chart. Satellite links (look angles, Doppler, P.618 budget). "Will it decode?" from the measured mode thresholds.
+- Screens: Profile with the Fresnel zone, HF hours x bands, Satellite, loss by model; opt-in SRTM tile download. Details and what was validated: docs/PROPAGATION-4.0.md.
+## 2026-11-12 (feat40-canvas): Workspace layout
+View > Layout > Workspace: a blank canvas of blocks (radio source, spectrum and waterfall, demodulator, audio output, decoder, map, satellite tracker, rotator, transmitter, recorder, log, history, frequency list, bookmarks, scanner, clock, notes), each a movable, resizable, collapsible window drawn with the existing panels; one Source block per receiver; snapping to a grid and to other blocks, tabs by dropping on a title, link lines, named workspaces with export / import and four templates. Model in app/canvas/canvas_model.h, tested by test_canvas. Page: docs/WORKSPACE-4.0.md. Classic and Unified are unchanged and stay the default.
+## 2026-11-12 (feat40-tx): transmit parameters and flow revamp
+- `core/include/dect2/tx/tx_params.h`: one table of every transmit mode's parameters (type, unit, range, default, Simple / Advanced group, sub-mode condition, help, target). The panel is drawn from it; `txParamsSanitize` clears request fields no row of the mode writes (stale callsign / text / tone from another mode).
+- Audit (docs/TX-4.0.md): dead controls removed (keyboard sideband, Zigbee / FLARM / VDES / uplink IDs, weather-satellite image, HD Radio / CDR / ATSC 3.0 / TETRA fields, P25 / NXDN / dPMR talkgroup and colour code); missing ones added (DVB-T2 / DVB-T modulation, Olivia tones / bandwidth, keyboard variants, RTTY mark, LoRa raw settings, MeshCore LoRa, JS8 To, short texts); VOR ident path keeps navaid / radial; the receiver's impaired test-signal settings never reach the transmitter.
+- Flow: Send to (radio / dummy load / IQ file), ARM then TRANSMIT, STOP always visible, Space / Esc stop only, colour states with time left, auto-disarm, Sent table. `app/panels/tx_api.h` for the Ham station.
+- Tests: tx_param_model (every row changes the signal, no undeclared key), tx_loopback_tv / tx_loopback_rest (TX -> RX with noise and offset from the table defaults and combinations). Simulated only.
+- (feat40-tx, results) quick.yml Linux: tx_param_model passes (197 modes / sub-modes, 2057 rows change the IQ, 476 marked, 0 undeclared keys; the first run found 66 dead rows, all fixed or marked); tx_loopback_tv 10/10, tx_loopback_rest 27/28 (Olivia 8 / 500 info); tx, tx_params, tx_control, tx_dtmf, tx_loraaprs pass; app TX objects compile. App not linked or run (battery: no local build).
+## 2026-11-12 sensitivity A4
+feat40-sensA4: iMet-54 and MRZ slicer threshold from the smoothed extremes (iMet-54 about 2.3 dB, MRZ about 4.5 dB, simulated). Details in docs/SENSITIVITY-4.0-A4.md.
+## 2026-11-12 (feat40-wfres): waterfall and spectrum resolution
+- Zoomed in, the waterfall blurred: coarse bins (64k at most) stretched over many pixels, levels blended between columns and the view texture stretched by the GPU's linear filter; the trace curved (cubic) between bins.
+- Core `dsp/zoom_spectrum.h`: zoom FFT (mix the view to DC, CIC + half-band decimation, ~78 dB alias rejection over the usable band, N = 4x the pixels), plan maths `zoomfft::update` (on only when the full-band bins are coarser than the pixels; one restart per octave; pans keep it), display windows (Hann, Blackman-Harris, Nuttall, flat top, rectangular), overlap cap, FFT cap 1M. Runs on the existing spectrum thread.
+- App: pixel-exact waterfall view (`WfView::updateExact`, a texel per framebuffer pixel, peak per pixel / sharp steps), a zoom waterfall history parallel to the main ring (`gfx/zoom_detail.h`), trace lines from the zoom bins, a resolution readout, Spectrum > Resolution (advanced) settings; the 3.9 look stays as "Soft zoom".
+- Tests `zoom_spectrum`, `zoom_detail` (generated signals only). Numbers in docs/WATERFALL-4.0.md. No local build or screenshot (battery); checked on quick.yml.
+
+## 2026-11-12 feat40-sensX3: sensitivity in realistic channels
+ISDB-T: the demodulator equalised with the newest scattered pilot per grid point (no time interpolation, no averaging, no delay window); the
+DVB-T scheme is ported (8-symbol delay, cubic in time, adaptive averaging, Doppler-free noise estimate, delaySpan window): TU6 30 -> 21 dB,
+echo/phase noise/combined 2 dB, AWGN 1 dB, 0 false, CPU +3 %. CubeSat: narrow 9600 (+-8.5 kHz, new optional third FmFront channel) and
+4800 (+-4.5 kHz) paths beside the wide ones: NGHam / Mobitex about 2 dB, 9600 framings 0.3 to 0.9 dB, with +-1.4 kHz and a 12 kHz drift;
+U482C DC block (it failed with any carrier error under the AFC threshold); narrow paths need two good Mobitex blocks and skip the Mode 6 RS
+salvage (noise-only frames equal to 3.9). ATSC 3.0: per-cell channel state in the data and L1 soft bits (TU6 lost a frame in five to L1 failures): TU6 16 -> 6 dB, AWGN unchanged;
+harness echo 0 -> 80 us. ATSC 1.0
+left to feat40-atsc. Tests sens40x3, cubesat_narrow. docs/SENSITIVITY-4.0-X3.md.
+
+## 2026-11-12 (feat40-sensX1): repeats and known content (docs/SENSITIVITY-4.0-X1.md)
+- COSPAS-SARSAT: the 3.9 burst ended 200 ms into a weak burst's message (its line shows only in the preamble), now 0.62 s; 4-block spectrum sum for weak
+  bursts; coherent bits against the residual carrier; soft-decision (Chase) BCH; repeat combining of failed bursts aligned by soft-bit correlation; a
+  lower line threshold near a heard beacon's carrier; multi-bit repairs reported only when a later burst confirms the identification. About 4 dB on a
+  single burst (90 % within 2 bursts: +1.5 to -3 dB in 3 kHz), combining about 0.5 dB more (most bursts below -5 dB are not detected). The 3.9 receiver
+  reported wrong identifications at its edge (BCH-1 mis-repairs); 4.0: none measured. GitHub runs 43147175804, 43157120181.
+- NDB ident folding: the keying of the last ident periods is averaged and read as Morse: 50 % point about 6.5 to 4.5 dB in 300 Hz (60 s), no false idents.
+  Time stations: a minute that matches the expected time code counts (a-priori); measured no gain (the minutes fail by lost seconds), no wrong time.
+  GitHub run 43166550047 (sens40x1 passed).
+- Simulated signals only; all measurement on GitHub (the laptop was on battery). Bench and guard: tests/sens/test_sens40x1.cpp (ctest sens40x1).
+
+## 2026-11-12: NFM audio low-pass 3 kHz (owner's choice)
+- General receiver NFM: the audio low-pass is now 3 kHz (127 taps) instead of 4 kHz (63 taps). FM noise rises with audio frequency, so this is
+  about 3.7 dB less noise at the same signal (sensX2 measurement note); speech up to about 2.7 kHz keeps its level. WFM, AM, SSB and CW unchanged.
+- test_general_rx: a 2.5 kHz tone keeps its level within 1.5 dB, a 3.8 kHz tone is cut by more than 20 dB.
+## 2026-11-12: plugin marketplace set up
+- GitHub OAuth app "OnAir" (adswill, Client ID Ov23li3cNdYJUxpl572P, device flow on, redirect URIs https://map.on-air.dev/auth/ and
+  https://plugins.on-air.dev/), shared with the map badges.
+- Cloudflare: R2 bucket and D1 database `onair-plugins` (schema applied), Worker deployed on plugins.on-air.dev, the four secrets set.
+  `/api/v1/status` answers signing true, github true.
+- kBuiltInMarketKeyHex is now the server's public key; wrangler.jsonc carries the D1 id and the Client ID (neither is a secret).
+## 2026-11-12 (feat40-hfdlst): HFDL band choice and nearby ground stations
+- "Follow the best band" stayed on the first band that gave anything (user report). Renamed "Find a working band"; new "Busiest band"
+  (`HfdlBusiestBand`): 75 s survey per candidate band, score = PDU/min + 2 x aircraft + 3 x stations + 0.1 x SNR, stay on the best,
+  survey again every 20 min or at once on a silent window. Candidates from the nearby stations' active frequencies when known.
+- New HFDL > Nearby view (hfdl_stations.cpp, core hfdl_live.h): stations nearest first, distance, bearing, active frequencies as tune
+  buttons, age, source (squitter / hfdl.observer). The hfdl.observer list (its public active.json "Source Data" link, no terms published)
+  is opt-in (Settings > Privacy), off in Offline mode, at most every 2 min, cached. Credits for hfdl.observer and Airframes.io.
+- Tests hfdl_live (saved list in tests/data/hfdl, no network) and hfdl_busy (simulated sky). Simulated only. docs/HFDL-STATIONS-4.0.md.
+## 2026-11-12 (feat40-badges): GitHub sign-in and badges on the live map (docs/MAP-BADGES-4.0.md)
+- One "OnAir" GitHub app serves map.on-air.dev and the plugin marketplace. The app reuses the marketplace's device-flow session
+  (plugins/.market/session.json) as a Bearer token on /ingest, and the map checks it with the shared SESSION_SECRET. The website uses the
+  web flow (HMAC-signed state cookie, CSRF token plus Origin check). Only token hashes are stored; no IP and no position are kept.
+- The hub counts each unique object once per user. It also keeps time, days and streaks, record range (direct sources, two agreeing
+  reports), countries, fields and rare catches. Anti-cheat: rate limits, hourly caps, plausible ids, no credit for duplicate or replayed
+  posts, and conflict checks against other stations.
+- 19 tiered badges are defined in one data file (public/badges/defs.js), with original medal art. New pages: /u/<login> and /leaders.
+  The map card shows a station badge. A linked map name can only be used by its own account.
+- In the app: the Badges window (Server menu and Settings), the Badge earned toast, and signed-in posts only while Earn badges is on.
+  Signed-out posts are unchanged.
+- Tests: node --test 172 pass, 40 of them new. C++ badges_client runs on GitHub quick.yml with settings, i18n and a dect2 build.
+  Nothing is deployed: the owner's steps are in the doc.
+## 2026-11-12 (feat40-sondepred): radiosonde landing prediction 4.0 (docs/SONDE-PREDICT-4.0.md)
+- New predictor (core/src/sonde/sonde_predict*.cpp): ascent layer winds with glitch rejection, a sea-level fall rate fitted to the descent in
+  an atmosphere from the sonde's temperatures, a Kalman drift for the final approach, the terrain stop (SRTM tiles, EGM96 geoid for RS41 /
+  RS92 / M10 / MRZ ellipsoid heights), opt-in Open-Meteo GFS or Tawhiri winds, and a Monte Carlo ensemble (ellipse, 50 / 95 % radii) on the map.
+- Simulated (137 flights) median error, old (true ground) -> new + forecast: 10 km 14.0 -> 1.2 km, 2 km 1.1 km -> 402 m, 500 m 308 -> 151 m,
+  200 m 213 -> 51 m, last frame 366 -> 121 m. Three real SondeHub flights, offline: 2 km 0.8-4.6 km -> 0.5-0.85 km; last frame 12-27 m.
+  20 m is not reached in general. Network: one opt-in switch, off under Offline mode. Tests sonde_predict, sonde_predict_harness,
+  sonde_predict_real: GitHub run 43198880298 passed; the app (dect2) built in run 43193713308.
+## 2026-11-12 (feat40-rivet): HF data modes from Rivet (docs/RIVET-MODES-4.0.md)
+- Discord request: Rivet (priyom/Rivet, Ian Wraith, GPL-3.0-or-later) modes. New x40 variants 46 - 51, families 370 - 375: XPA (10 / 20 Bd),
+  XPA2, CROWD36, FSK200/500 (F01), FSK200/1000 (F06 and F06a), GW FSK. Protocol tables, framing, F06 block layout and CRC, GW packets ported
+  with Rivet's notices; tone search, matched tone filters and symbol timing new (core/src/x40/x40_rivet.h). Credits row added.
+- Skipped: CIS 36-50 (OnAir's BEE entry already reads the same), CCIR 493-4 (DSC), Baudot (RTTY), FSK raw (FSK analyser), AT-3x04 / CIS-12
+  (Rivet's own decoder is marked not working).
+- 50 % / 90 % points in 3 kHz: XPA -14.9 / -12.6 (10 Bd), -12.3 / -11.0 (20 Bd); XPA2 -16.5 / -14.5; CROWD36 -7.1 / -5.4; FSK200/500
+  -0.8 / +1.3; FSK200/1000 -2.3 / -0.3; GW FSK +2.8 / +5.0. No false decodes in noise or on a carrier. Simulated signals only.
+  Tests x40_xpa, x40_xpa2, x40_crowd36, x40_f01, x40_f06, x40_gwfsk (GitHub quick runs 43195900765, 43197842356).
+
+## 2026-11-12 (feat40-release): 4.0.0 release content
+Version 4.0.0 in CMakeLists.txt, onair.rc, Info.plist and the Dockerfile default (Android versionCode 4000099 from CMake); `check_versions.sh 4.0.0 --final` passes.
+docs/CHANGELOG-4.0.md and docs/RELEASE-NOTES-4.0.0.md from `git log v3.9.0..pub/integ-40`, the *-4.0.md pages and the pathway entries since 3.9:
+128 new mode-list entries (459 in the app, 461 rows in MODES.md; 52 new receivers, 76 type entries), sensitivity table (simulated), screens, marketplace,
+landing predictor accuracy, known limits and next (ATSC #484 recordings, Android TV and USB on a phone, codecs folder, Spectran V6). README 4.0 section and
+mode table, docs index. Generators (modes list, web schema / options, Android modes and results map, credits) had no changes; `tools/gate/run.sh --no-compile` passes.
+Then merged integ-40 at f25aff2f1 (feat40-issues2) and added #463, #435, #442 from docs/ISSUES2-4.0.md to the 4.0 notes; dropped an unmapped recording row from docs/REAL-SIGNALS.md.
+Mode count fix: tools/gen_modes_list.py, gen_web_schema.py, android/tools/gen_modes.py, gen_changelog.py and layout_survey.py read only numeric families, so the rows with a namespaced family constant (KLW, TDCS, Horus balloons) were left out of MODES.md, the web rows and the Android list. New tools/mode_families.py resolves the constants from the *_modes.h headers for all of them. MODES.md 464 rows, 462 in the app; 3.9 had 336 (333 published), so still 128 new.
+## 2026-11-12 (feat40-issues2): #463 CDR sound on Android, #435 DTMB on Android, #442 bugs
+- #463: the phone never chose a CDR service to play (listen id 0) and could not load the user-installed DRA+ add-on. setListen(-1) = first
+  audio service; JNI nativeCdrListen / nativeCodecs (files/codecs); new Android Sound tab on CDR with Import add-on (.so) and the reason
+  it is silent; CODECS.md "DRA+ on Android" (NDK build, checked in android.yml, never packaged).
+- #435: crash logs = Compose ArrayIndexOutOfBounds index -2; early returns out of inline Column lambdas removed (ResultsTab + 5 panels),
+  likely cause, not proven (no mapping file). The user's SpyServer Wi-Fi link lost up to a third of 10 Msps; SpyServer drops are now
+  zero-filled from the sequence numbers, DTMB coasts over zero-filled headers: fixed-phase 4QAM 0.4 M=720 with 3 % gaps 0.16 -> 0.92 of
+  the packets (simulated). DTMB details and a link-loss warning on the phone.
+- #442: FM RDS block keeps its height (saved stations stop jumping), Mode A/C full screen, Windows folder picker (SHBrowseForFolderW),
+  Windows window icon (GLFW_ICON). Zoom limits were already in 3.7. Feature ideas listed in docs/ISSUES2-4.0.md.
+- CI: android.yml 43198580494, 43207001215; quick 43215392986 (Linux), 43218158764 (Windows): pass. No phone, radio or Windows desktop used.
+
+
+## 2026-11-12 (feat40-mint): OnAir on Linux Mint (docs/LINUX-MINT-4.0.md)
+- Discord: "not working on the newest Linux Mint", no details. Newest stable Mint is 22.3 Zena (Ubuntu 24.04); the next one (mint27 image,
+  "adrien") is on Ubuntu 26.04; LMDE 7 on Debian 13.
+- New manual workflow .github/workflows/linux-distros.yml: v3.9.0 .deb (apt install ./), AppImage and portable in Mint 27, Mint 22.3, LMDE 7,
+  Ubuntu 26.04 / 24.04 / 22.04 and Debian 13 containers, ldd plus a headless start under xvfb. Run 43265138175: all 21 combinations start,
+  no missing libraries, all .deb dependencies resolve; the AppImage runtime is static (no libfuse2, needs fusermount3). Not reproduced.
+- Fix: on Linux a fatal start error (no OpenGL 3.0, no window, graphics back end) went only to stderr, so from the menu OnAir seemed to do
+  nothing. showFatalError now also writes ~/.config/onair/startup-error.txt and shows a dialog (zenity / kdialog / notify-send / xmessage,
+  2 min timeout, ONAIR_NO_DIALOG=1 turns it off) when there is a desktop and no terminal. README Linux row: Mint, terminal start, the file.
+  Packaging unchanged. dect2 built on GitHub quick run 43266619099 (pass).
+## 2026-11-13: my location on every map (feat41-mypos)
+
+- Request from a Discord user: AIS, APRS and other maps did not show the user's own position.
+- `adsbmap::draw()` now draws the station position (and optional range rings) on every map screen, with distance and bearing from it to the pointer; AIS panel, mesh and APRS tooltips, DMR list and Remote ID selection show distance and bearing too. No position set: a small hint that opens Settings > Location.
+- New: `core/include/dect2/geo/mylocation.h`, `app/map/my_location.{h,cpp}`, three settings (`mapMyLoc`, `mapMyLocRings`, `mapMyLocRingList`), test `mylocation`. Details in docs/MY-LOCATION-MAPS-4.1.md.
+- Not compiled or run; tests not yet run.
+
+## 2026-11-12 - OOK on / off-time scatter (feat41-ookxy)
+Added the scatter plot (on time against the following off time per pulse) with cluster centres, an encoding guess (PWM, PPM, Manchester, unknown), burst selection, log or linear axes and CSV copy to the OOK analyser (x40) and the ISM Unknown view. Logic in core/include/dect2/ism/ook_scatter.h, test `ook_scatter`, notes in docs/OOK-SCATTER-4.1.md. Simulated pulse trains only.
+
+## 2026-11-13: contributor credit in the 7(b) attribution term (4.1)
+- ADDITIONAL-TERMS.md item 3: works using OnAir code also credit the OnAir contributors in their legal notices, by the CONTRIBUTORS.md list or a link to it. It applies from 4.1 on; earlier releases keep the terms they came with. README, NOTICE.md and AGENTS.md say the same.
+
+## 2026-11-13: README restructured
+
+README cut from 801 to about 150 lines: what it is, install, quick start, mode table, radios, highlights, documentation links, community, licence, credits. The "What is new" sections were dropped (0.2.6 to 0.2.8 moved to docs/CHANGELOG-0.2.md, later ones are in docs/CHANGELOG-*.md). Long sections moved to docs/INSTALL.md, MODES-DETAIL.md, KA-FAMILY.md, TOOLS-AND-NOTES.md, FEATURES.md, RADIOS.md, UPDATES.md, GOOD-TO-KNOW.md, TROUBLESHOOTING.md, BUILD.md, CREDITS.md. Markers for gen_changelog.py kept.
+
+## 2026-11-13: licence enforcement note (ARGUS)
+- README (License) and NOTICE.md say OnAir is protected by ARGUS, the project's code-provenance system: public code is scanned for OnAir-derived code, the author is asked first, then a takedown if it isn't fixed.
+
+## 2026-11-12 (feat41-spectran): Aaronia SPECTRAN V6 / V6 ECO (#482, docs/SPECTRAN-V6.md)
+- New native driver core/src/source/source_spectran.cpp through Aaronia's RTSA API (AaroniaRTSAAPI from the RTSA-Suite PRO, loaded at run
+  time, not shipped). Interface declared in aartsa_min.h from Aaronia's public RTSA-API-Samples README and samples; result codes checked
+  against SatDump's and two other wrappers' lists; SDR++ spectran_source read as a reference. No Aaronia header is bundled (not public, the
+  samples repository states no licence).
+- Receive: iqreceiver (any rate, span = rate / 1.5) or raw (clock / 2^k); gain = reference level (+10 dBm at 0 dB), scale follows the level
+  the device took; live frequency / level / amplifier; rate changes stop and restart the device; unplug and reopen. Transmit: iqtransmitter,
+  timed packets a lead time ahead of the stream clock, 1.0 = 0 dBm before main/transgain, end flags on close; warn-only.
+- Missing SDK: plain message, Fix it entry, radio-list hint for USB vendor 2f72. Credits rows added (gen_credits.py).
+- Tests: spectran (fake RTSA API: listing, both modes, rate plan, scaling, I/Q order, retunes, unplug, busy, TX pacing / flags) and
+  spectran_missing (no library, Init failing). GitHub quick run 43363137455: spectran, spectran_missing, fixit, sdrplay passed, dect2 built;
+  native fails 4 RTL-SDR V4 / HF+ checks, the same 4 on integ-40 (run 43368500233), not from this branch. Untested on a device.
+
+2026-11-13 feat41-footerfix: investigated Discord report "this text is stuck at the bottom" (chasyxx, 4.0.0; strip: by-credit | Credits | Support | Discord | v4.0.0 | Clear all). Findings: that strip exists exactly once, as menuBarRight() in app/ui/ui2_shell.cpp, drawn inside ImGui::BeginMainMenuBar() (top of the window, never at a fixed bottom position); the classic interface uses its own row (classicTopBar in draw_ui.cpp) with the same buttons but without the credit text. The 4.0 bottom bar (bottomBar/statusLine, kit::statusBarBegin) does not draw credits, version or Clear all, so there is no duplicate footer in the source. "Clear all" empties decoded lists of every mode (not notifications). No code changed: cause not reproducible from source, needs the reporter's screenshot or window size/OS. No screenshots taken (an app build needs ci.yml, not dispatched by workers).
+
+2026-11-13 feat41-footerfix (follow-up, owner confirmed): the menu bar's right-hand strip sat too low and touched the bar's bottom line. Cause: ImGui::SmallButton (Credits, Support, version, Clear all, the credit text) uses ImGuiButtonFlags_AlignTextBaseLine, which moves the button down by the line's CurrLineTextBaseOffset; in the menu bar that is the bar's frame padding (pushed +3 gUi in menuBar()), re-applied by every SameLine. The Discord InvisibleButton and the thin rules were at the centred y, the text buttons FP.y below it. Fix: menuBarRight zeroes CurrLineTextBaseOffset after each SetCursorPosY (noBaseShift), so every item is at the same centred y as the menu titles, at any scale or typography (the offset was proportional to the padding). New rule ruleMenuBarCentre in tests/app/test_gui_rules.cpp. Checked in CI by compiling dect2 and running gui_rules and i18n; no screenshot (no screenshot test of the menu bar exists).
+## 2026-11-13 (feat41-sensData): 4.1 sensitivity gaps left by 4.0
+- docs/SENSITIVITY-4.1.md; test `sens41` measures every change against the 4.0 path (own switch per receiver) with the same seeds. Simulated only.
+- MRZ: both Manchester halves (soft symbols from the sonde symbol chain), about 1 to 1.5 dB. Zigbee: second-choice symbols on an FCS failure,
+  about 0.5 dB. Aero: faster band and carrier search; 3 s trials 0 -> 100 % from 3 dB, 6 s trials 0 dB 68 -> 100 %. FT8 CQ stage: shape
+  filter, wrong texts 1 -> 0 in 30 slots, same decode shares.
+- iMet-54: soft Hamming + CRC Chase + UART realignment measured, no change: the loss is ahead of the code (discriminator FM threshold), not closed.
+- Iridium: soft Chase repair of one BCH block, large at frame level, no change at the receiver (bursts lost before the BCH); false frames 6 -> 8 in 20000.
+- Globalstar odd-rate failure not reproduced; neighbour floor cap kept (neutral). NFM PLL (1 dB worse) and APT FM feedback (mixed) are off by default.
+- CI quick.yml 43363995944, 43369540756, 43373243946, 43376898910 (Linux), 43373132809 (macOS, compare integ-41).
+
+## 2026-11-13 (feat41-rx888rate): RX888 MkII rates above 64 Msps
+- The driver capped output rates at 64 Msps (kMaxOutHz) and the ADC clock at 130 MHz, and refused USB 2. Now: rates up to 130 Msps are reported, and custom rates go up to a 140 MHz clock (ExtIO_sddc's MAX_ADC_FREQ; above 130 is overclocking and gets a note). 64 to 65 Msps uses twice the rate with D = 2. Above that there is no decimation (D = 1, a one-tap mixer in RealDdc), and a note says the HF span is still half the clock. For the VHF input, a note says the R828D passes about 8 MHz. USB 2 now gives a warning, not a refusal.
+- The number of USB transfers in flight and the queue depth follow the clock (about 32 ms and 250 ms: 32/256 at 64 MHz as before, 64/496 at 130 MHz). Dropped samples are counted, logged every 5 s and shown through statusNote().
+- Defaults are unchanged (8 Msps from 64 MHz). Rates up to 64 Msps are unchanged too.
+- New pure functions rx888RatePlan and rx888TransferPlan (rx888_usb.h). test_rx888 adds a rate-plan sweep over every mode, transfer sizing, the reported limits, the D = 1 tone and mirror, the 65 Msps tone with no mirror, overclock, 200 Msps (given 140, with a note), the VHF note, and USB 2 as a warning. Fake FX3 only: not tested on a real RX888. docs/RX888-RATES-4.1.md has the bandwidth table.
+- D=1 got its own float mixer (the generic path cost 1.05 s of CPU per second of signal at 128 Msps on the Windows runner; now 0.33). Conversion cost on the CI runners, one thread, per second of signal: 64 MHz clock with D=32 0.19 s; 128 MHz with D=2 0.63 s; 130 MHz with D=2 0.64 s; 128/130 MHz with D=1 0.33 s. GitHub quick runs 43383249441 (Linux) and 43383254973 (Windows): rx888 passed.
+## 2026-11-13: native driver test fixed (feat41-nativefix, docs/NATIVE-FIX-4.1.md)
+- ctest native failed 4 checks on 4.0 and, as a v3.9.0 comparison on the same runner showed, on 3.9 too: drivers, fakes and test are unchanged since 3.9.
+- Real bug (since 0.2.7): a sample rate too wide for the Airspy HF+ stopped the stream instead of keeping it running. Fixed with resumeAfterConfigureFailure.
+- Outdated test: HF+ 192 kHz tone window (0.5 s transfer collection on restart), RTL-SDR V4 note with a stock-library fake, HF+ bias-tee with a frozen listing (open now refreshes it).
+- No 4.0.1 needed for this. quick run 43377142724: native, native_nobias, dxpatrol, native_lifecycle, usb_fd pass; Windows 43374750816 pass.
+
+2026-11-13 feat41-uiplay: two owner-approved requests.
+- #435 Android player (docs/ANDROID-PLAYER-4.1.md): the 4.0 Watch panel already played H.264/HEVC/MPEG-2 and AAC/AC-3/E-AC-3/MP2 through
+  MediaCodec with service and sound-track chips. Added: analogue TV pictures for Analog TV, MAC and FPV video (new JNI nativeAnalogFrame
+  hands over the core's AtvFrame; AnalogTvController polls at the frame rate into two alternating bitmaps), full screen for both (dialog,
+  bars hidden, landscape while open, Surface hand-over guarded by TvController.releaseSurface), and plain lines for AVS/AVS+/AVS2/AVS3 and
+  DRA (no Android decoder, none shipped, user-installed add-ons on the desktop). No VLC or Media3. Tests: AnalogTvTest (JVM). Not run on a phone.
+- #139 touch control size (docs/TOUCH-SIZE-4.1.md): Settings / View / touch Menu > Touch control size, Small .. Extra large (0.70 .. 1.40,
+  Default unchanged), applied live (style rebuilt on change). shellLayout() gives short screens tighter bars and a one-row dock (Step moves
+  to More): 640 x 480 panels 253 -> 330 px at Default. Tests: test_touch controlSize(); de/lt strings added (unreviewed).
+## 2026-11-13: Mode Builder Signal view (feat41-mbplots)
+Receiver::signalView() plus a Signal tab for custom modes: histogram (OOK, ASK, FSK, GFSK, GMSK) or constellation with EVM (PSK), clusters, thresholds, SNR, measured deviation and offset, Advanced button to write them to the definition. Test mb_signal; docs/MODEBUILDER-PLOTS-4.1.md.
+
+## 2026-11-13 (feat41-t2special): DPRK DVB-T2 and T2-MI recordings (#498, docs/T2-SPECIAL-4.1.md)
+- DPRK 554 MHz mux: clear H.264 + MPEG-1 Layer II, but every ES PID in the PMTs is inverted (XOR 0x1FFF), plus a 101-byte tag 0x54 program descriptor of unknown meaning. TsDemux::snapshot now maps a silent declared PID to its busy, undeclared inverse (TsStream::declaredPid keeps the PMT value); ServiceFilter passes the real PIDs and rewrites the PMT (new CRC, version +16) for FFmpeg and recordings.
+- Malaysia 602 MHz feed: T2-MI on PID 0x1000, no outer PCR, PLP 0 in HEM + ISSY carrying Channel 5 + Suria. TsFileSource::open now detects T2-MI, rebuilds the busiest PLP into a temporary file with its own PCR map, and the playback bar has a PLP menu.
+- Tests ts_pid_invert and t2mi_file (simulated). Samples kept out of git.
+## 2026-11-13 (feat41-gsc): Golay paging (GSC)
+- New mode "Golay paging (GSC)" (Pagers), x40 variant 52, family 330 / standards 331, 332 (docs/GSC-4.1.md). Requested on Discord by sugusly, approved by the owner.
+- Spec found: CCIR Report 900-2 Annex I (1990, ITU history portal) has the preamble, start code and Word 1 tables, both generators, the comma rules, the data block and character sets; Motorola's GSC guide (OCR of the sigidwiki scan) has the addresses, functions and the activation code. The value of the activation word is published nowhere, so any complement-pair word is accepted. Bit order and the Word 2 rule were cross-checked against the GPL-3 encoders ESPager and gr-mixalot (no code copied).
+- Receiver: FM discriminator, one 600 bit/s Gardner clock (word bits = bit pairs), search for preamble, start code and address, then block lock: start code, BCH (15,7) data blocks, addresses, activation code. Rows: tone, numeric, alphanumeric and voice pages (voice flagged, not decoded), voice end.
+- Generator and test_x40_gsc: format tables, impairments (offset, drift, clock error and clock drift, deviation, inversion, sample rates), batch, non-battery-saver, noise sweep with 50 / 90 % points, zero false pages on noise, carrier, random FSK and voice. Not run yet: no local compile; CI waits for the 4.0 release. Simulated signals only.
+- CI (4.0 published): quick.yml 43386471840 passes x40_gsc, mode_numbers, gui_rules, i18n and web_schema. From run 43378578019: messages 50 % at -1.1 dB and 90 % at +0.7 dB, tone pages 50 % at -1.8 dB and 90 % at -1.2 dB (12.5 kHz). 0 false pages on noise, carrier, random FSK and voice audio. Fixed along the way: clock wander on idle carrier and voice, a lock half a bit early, the cyclic-shift voice end, and a stale lock during voice.
+## 2026-11-13 (feat41-bugs2): #496 web Play, #495 Windows Hamlib, #491 tour skip, #488 monitor retune, #470 Pi 5 GPU
+- #496: the server's receiver was never started (no --autostart); a listener who may tune now starts it (web_listener_start), failures reach the page, the page tunes again on the first capture.
+- #495: Hamlib loaded at run time on Windows (libhamlib-4.dll, DECT2_HAMLIB_DYNAMIC), entry always shown, docs/OPTIONAL-LIBRARIES.md.
+- #491: tour and "Get me listening" opened together on a fresh install; one guide at a time now.
+- #488: the audio monitor ignored the decode shift of a click / in-band typed frequency; monitorShiftHz adds it.
+- #470: Linux falls back to OpenGL ES 3.0 through EGL when desktop GL is llvmpipe and a GPU node exists; diagnostics in the log.
+- docs/BUGS2-4.1.md. CI results in the final report.
+## 2026-11-13 4.1 sensitivity of every mode (feat41-sensAll)
+- tools/sens/qa_sens.py: every engine mode through the QA sweep's generator and Engine stages over an SNR descent (2 noise seeds a point,
+  awgn / +2 kHz +50 ppm / off-centre -50 ppm, noise-only false-decode runs); sens-quick.yml `modes=qa:REGEX@k/N`; test_qa_sweep gained
+  QA_SEED, QA_IMP_NOISE, QA_NEG_HZ (defaults unchanged). Table and theory gaps: docs/SENSITIVITY-4.1-ALL.md (tools/sens/qa_sens_table.py).
+- FSK modems: weak-signal gates on the power over the noise: Bell 103 90 % point 14 -> 6 dB in 3 kHz, Bell 202 14 -> 10 dB, no message
+  on 8 minutes of noise. A DCR sync relaxation was tried, lost calls, and was reverted.
+- All simulated. CI: sens-quick 43364063415, 43364067712, 43374519331, 43380233150 (+ shards 5, 6); quick 43376327883, 43383912499.
+
+
+## 2026-11-13 (feat41-cpu): CPU per second of signal for every mode (docs/CPU-4.1.md)
+- Measurement: `test_qa_sweep --cpu` (each mode's test signal at its default rate, then noise alone, through the Engine; CPU s per s of
+  signal after the first quarter, all threads and busiest thread) and `.github/workflows/cpu.yml` (shards on Linux x86-64 and macOS arm64,
+  `compare` for before/after on one runner, `perf` with hottest instructions; a branch triggers it through tools/perf/cpu-request.env until
+  the file is on main). Baseline run 43364172327: 393 modes, 40 above 1.0 on one OS (signal or noise).
+- Changes, all bit-exact but one: NPR sync search (1.54 -> 0.75), inverted ExpressLRS bank from the normal bank's channel (1.38 -> 0.89),
+  popcount and floor without libcalls on x86, DVB-C AVX2 clone picked by features (x86-64-v3; arch=haswell ran only on Haswell: 1.47 ->
+  1.25), DVB-C2 kb search (noise 2.53 -> 1.58), DVB-SH turbo SISO (0.93 -> 0.80), sd3 FIRs in eight sums (S-band 1.23 -> 1.11, identical
+  test output), FY-3 MPT 6.05 -> 5.54. Linux runner figures (run 43381677385). GOES and Wi-SUN filter changes taken back (one fade case
+  2 frames short; no saving).
+- Left above one core: the wideband downlinks (X band, FY-3 MPT, ISDB-S, RDAS, GEONETCAST, UHRIT, GRB: rate-bound serial loops), DVB-C2,
+  DVB-SH and GK-2A on noise (searches), and threaded receivers whose sum is above 1.0. Simulated signals only.
+
+2026-11-13 feat41-stl: issue #497, STL link decoding. New mode "STL link (studio-to-transmitter)": x40 variant 53 (52 reserved for GSC), family 785 / active 786 / engine 787 (docs/FAMILY-NUMBERS-4.0.md). Analogue composite and mono STLs (944 - 952 MHz, +-60 kHz, 250 / 500 kHz channels): the FM broadcast receiver demodulates with link settings (deviation, channel width, 75 / 50 us or flat, stereo or mono, RDS / SCA), the mode names what it hears (composite, mono, digital-unknown, nothing) and shows sound meters. Digital STLs (Starlink, Intraplex, GatesAir) are named and measured, not decoded: proprietary, often encrypted. New `FmReceiver::setReferenceDeviation` (sound level only). Tests tests/x40/test_x40_stl.cpp: offsets, deviations, rates, channel widths, noise-only (no false audio), digital-unknown, C/N sweep with RDS 50 / 90 % points. Simulated signals only; docs/STL-4.1.md.
+## 2026-11-13 (feat41-sensTV): TV and DRM sensitivity gaps left by 4.0 (docs/SENSITIVITY-4.1-TV.md)
+- New harness test sens41tv (lock time per trial, 4.0 / 4.1 paths side by side, child processes per receiver setting) and atsc3_cticsi.
+- 50 ppm clock penalty (DVB-T, DVB-T2, DTMB, ATSC): a harness artefact (baseline rows older than the windowed-sinc clock error).
+  sens_sweep now reads 50 ppm = AWGN: 15/15, 14/14, 18/18, 15/15 dB, same lock time (runs 43363616797, 43370655669); baseline rows refreshed.
+- ATSC 3.0 CTI: per-cell channel state through the convolutional de-interleaver; about 1 to 2 dB in a Rayleigh test channel (7 dB: 63/63
+  blocks against 0). Not on a real CTI broadcast (the synthetic transmitter has no CTI).
+- DRM: common-phase-error correction, opt-in (DECT2_DRM_CPE=1): 1 Hz phase noise 64-QAM none -> 24 dB, 16-QAM combined 18 -> 12 dB;
+  off by default because drm_smooth fails with it (mode E, ITU channels 5/6). Harness 1 Hz linewidth is about 25 dB worse than an SDR
+  oscillator. recIf no longer reads outside the ring for negative symbol indices (ASan).
+- Not improved, measured and reverted: ATSC 1.0 TU6 (segment sync lost in every fade; LMS step, pilot loop and fade coasting tried),
+  ISDB-T first-order ICI removal (never switched on; the limit at 50 to 70 Hz is the pilot time interpolation).
+- 0 false decodes in all noise-only runs. Simulated signals only. CI: quick runs listed in the doc.
+## 2026-11-13 (feat41-nix): Nix flake brought up to 4.1
+- Was missing since 3.2: web pages (share/onair/web) not installed so onair-server had no browser page; no onair-cli / onair-scan / onair-extcap; OpenSSL (IPTV https, server TLS) and the Vulkan loader not in the package; module had no flags for --port / --lan / --web*.
+- Now: GUI package ships onair, onair-server, onair-cli, onair-scan, extcap, web pages; server package ships onair-server and web pages; version read from CMake (4.0.0); flake check also evaluates a NixOS config with the module; dev shell adds python3, ccache, clippy, rustfmt, rust-analyzer. Cargo: rust/Cargo.lock still has no external crates, no vendoring. Codecs are not packaged.
+- nix.yml: x86_64-linux and aarch64-linux jobs, content checks; macOS is not a flake system. Added to docs/RELEASE-3.0-CHECKLIST.md and a warning in tools/release/release.sh. docs/INSTALL.md has a Nix / NixOS section.
+
+## 2026-11-12 (feat40-mint): OnAir on Linux Mint (docs/LINUX-MINT-4.0.md)
+- Discord: "not working on the newest Linux Mint", no details. Newest stable Mint is 22.3 Zena (Ubuntu 24.04); the next one (mint27 image,
+  "adrien") is on Ubuntu 26.04; LMDE 7 on Debian 13.
+- New manual workflow .github/workflows/linux-distros.yml: v3.9.0 .deb (apt install ./), AppImage and portable in Mint 27, Mint 22.3, LMDE 7,
+  Ubuntu 26.04 / 24.04 / 22.04 and Debian 13 containers, ldd plus a headless start under xvfb. Run 43265138175: all 21 combinations start,
+  no missing libraries, all .deb dependencies resolve; the AppImage runtime is static (no libfuse2, needs fusermount3). Not reproduced.
+- Fix: on Linux a fatal start error (no OpenGL 3.0, no window, graphics back end) went only to stderr, so from the menu OnAir seemed to do
+  nothing. showFatalError now also writes ~/.config/onair/startup-error.txt and shows a dialog (zenity / kdialog / notify-send / xmessage,
+  2 min timeout, ONAIR_NO_DIALOG=1 turns it off) when there is a desktop and no terminal. README Linux row: Mint, terminal start, the file.
+  Packaging unchanged.
+  Packaging unchanged. dect2 built on GitHub quick run 43266619099 (pass).
+## 2026-11-13: my location on every map (feat41-mypos)
+
+- Request from a Discord user: AIS, APRS and other maps did not show the user's own position.
+- `adsbmap::draw()` now draws the station position (and optional range rings) on every map screen, with distance and bearing from it to the pointer; AIS panel, mesh and APRS tooltips, DMR list and Remote ID selection show distance and bearing too. No position set: a small hint that opens Settings > Location.
+- New: `core/include/dect2/geo/mylocation.h`, `app/map/my_location.{h,cpp}`, three settings (`mapMyLoc`, `mapMyLocRings`, `mapMyLocRingList`), test `mylocation`. Details in docs/MY-LOCATION-MAPS-4.1.md.
+- Not compiled or run; tests not yet run.
+
+## 2026-11-12 - OOK on / off-time scatter (feat41-ookxy)
+Added the scatter plot (on time against the following off time per pulse) with cluster centres, an encoding guess (PWM, PPM, Manchester, unknown), burst selection, log or linear axes and CSV copy to the OOK analyser (x40) and the ISM Unknown view. Logic in core/include/dect2/ism/ook_scatter.h, test `ook_scatter`, notes in docs/OOK-SCATTER-4.1.md. Simulated pulse trains only.
+
+## 2026-11-13: contributor credit in the 7(b) attribution term (4.1)
+- ADDITIONAL-TERMS.md item 3: works using OnAir code also credit the OnAir contributors in their legal notices, by the CONTRIBUTORS.md list or a link to it. It applies from 4.1 on; earlier releases keep the terms they came with. README, NOTICE.md and AGENTS.md say the same.
+
+## 2026-11-13: README restructured
+
+README cut from 801 to about 150 lines: what it is, install, quick start, mode table, radios, highlights, documentation links, community, licence, credits. The "What is new" sections were dropped (0.2.6 to 0.2.8 moved to docs/CHANGELOG-0.2.md, later ones are in docs/CHANGELOG-*.md). Long sections moved to docs/INSTALL.md, MODES-DETAIL.md, KA-FAMILY.md, TOOLS-AND-NOTES.md, FEATURES.md, RADIOS.md, UPDATES.md, GOOD-TO-KNOW.md, TROUBLESHOOTING.md, BUILD.md, CREDITS.md. Markers for gen_changelog.py kept.
+
+## 2026-11-13: licence enforcement note (ARGUS)
+- README (License) and NOTICE.md say OnAir is protected by ARGUS, the project's code-provenance system: public code is scanned for OnAir-derived code, the author is asked first, then a takedown if it isn't fixed.
+
+## 2026-11-12 (feat41-spectran): Aaronia SPECTRAN V6 / V6 ECO (#482, docs/SPECTRAN-V6.md)
+- New native driver core/src/source/source_spectran.cpp through Aaronia's RTSA API (AaroniaRTSAAPI from the RTSA-Suite PRO, loaded at run
+  time, not shipped). Interface declared in aartsa_min.h from Aaronia's public RTSA-API-Samples README and samples; result codes checked
+  against SatDump's and two other wrappers' lists; SDR++ spectran_source read as a reference. No Aaronia header is bundled (not public, the
+  samples repository states no licence).
+- Receive: iqreceiver (any rate, span = rate / 1.5) or raw (clock / 2^k); gain = reference level (+10 dBm at 0 dB), scale follows the level
+  the device took; live frequency / level / amplifier; rate changes stop and restart the device; unplug and reopen. Transmit: iqtransmitter,
+  timed packets a lead time ahead of the stream clock, 1.0 = 0 dBm before main/transgain, end flags on close; warn-only.
+- Missing SDK: plain message, Fix it entry, radio-list hint for USB vendor 2f72. Credits rows added (gen_credits.py).
+- Tests: spectran (fake RTSA API: listing, both modes, rate plan, scaling, I/Q order, retunes, unplug, busy, TX pacing / flags) and
+  spectran_missing (no library, Init failing). GitHub quick run 43363137455: spectran, spectran_missing, fixit, sdrplay passed, dect2 built;
+  native fails 4 RTL-SDR V4 / HF+ checks, the same 4 on integ-40 (run 43368500233), not from this branch. Untested on a device.
+
+2026-11-13 feat41-footerfix: investigated Discord report "this text is stuck at the bottom" (chasyxx, 4.0.0; strip: by-credit | Credits | Support | Discord | v4.0.0 | Clear all). Findings: that strip exists exactly once, as menuBarRight() in app/ui/ui2_shell.cpp, drawn inside ImGui::BeginMainMenuBar() (top of the window, never at a fixed bottom position); the classic interface uses its own row (classicTopBar in draw_ui.cpp) with the same buttons but without the credit text. The 4.0 bottom bar (bottomBar/statusLine, kit::statusBarBegin) does not draw credits, version or Clear all, so there is no duplicate footer in the source. "Clear all" empties decoded lists of every mode (not notifications). No code changed: cause not reproducible from source, needs the reporter's screenshot or window size/OS. No screenshots taken (an app build needs ci.yml, not dispatched by workers).
+
+2026-11-13 feat41-footerfix (follow-up, owner confirmed): the menu bar's right-hand strip sat too low and touched the bar's bottom line. Cause: ImGui::SmallButton (Credits, Support, version, Clear all, the credit text) uses ImGuiButtonFlags_AlignTextBaseLine, which moves the button down by the line's CurrLineTextBaseOffset; in the menu bar that is the bar's frame padding (pushed +3 gUi in menuBar()), re-applied by every SameLine. The Discord InvisibleButton and the thin rules were at the centred y, the text buttons FP.y below it. Fix: menuBarRight zeroes CurrLineTextBaseOffset after each SetCursorPosY (noBaseShift), so every item is at the same centred y as the menu titles, at any scale or typography (the offset was proportional to the padding). New rule ruleMenuBarCentre in tests/app/test_gui_rules.cpp. Checked in CI by compiling dect2 and running gui_rules and i18n; no screenshot (no screenshot test of the menu bar exists).
+## 2026-11-13 (feat41-diagpilot): diagnostic codes, DAB first (docs/DIAGNOSTICS.md)
+- Every failure or notable condition shows a unique six-digit code next to a specific message, `[E352413] Writing the WAV recording ... failed (the disk may be full), so the recording stops.`, so users can quote it and developers find the line with one search. Silent failures get a debug-level diagnostic with its own code.
+- C++: `core/include/dect2/common/diag.h` + `core/src/common/diag.cpp`: DIAG, DIAG_ERROR, DIAG_DEBUG, DIAG_EVERY, DIAG_DEBUG_EVERY, DIAG_TEXT, DIAG_UI. Code checked at compile time (constexpr rules), message must be a literal, printf arguments checked. Lines go to the existing process log (diagEmit); debug lines start with "[v] ". Debug switch: the existing Verbose logging setting, ONAIR_DEBUG_DIAG=1, or diag::setDebug. Off: one relaxed load and a branch, arguments not evaluated.
+- Lint `tools/lint/diag_check.py` (stdlib): C++, Kotlin, Rust, Python and JS call forms; number rules, one literal sentence of 6+ words, unique codes and messages, permanence against the git history (cached in the git folder; tools/lint/diag_retired.txt for retired or moved codes), loop warnings, `--new N`, `--self-test` on tests/diag/fixtures. Both run in tools/gate/run.sh.
+- DAB pilot (core/src/dab, the OnAir-owned files; dab_fig* and dab_gen* left out): 144 codes. Recording errors now carry codes (DIAG_TEXT); the rest are new debug diagnostics at operation boundaries (FFmpeg / faad2 opens, MP4 muxer, SPI / EPG parsing and cache, MOT, Journaline, DMB remux and outer decoder, sync lost / found, reconfiguration, ensemble change, FEC geometry). Per-frame rejects stay counters with rate-limited summaries. No decoder output, file format, setting or parsed string changed (the DMB `note` compared by test_dab_dmb is unchanged). One constant named: kFigKeepFrames = 3125 (300 s / 96 ms frames), same value.
+- Test `diag` (tests/diag/test_diag.cpp): format, switches, rate limits, cost while off. Kotlin, Rust, Python and JS helpers are designed in the doc; they come with the first module of each language.
+
+## 2026-11-14: OnAir 4.1 released
+
+- Published v4.1.0 from 4d351b912 with 12 assets (Windows installer and zip, macOS arm64 and x86_64, Linux AppImages, portable archives and .deb packages for x86_64 and aarch64, the signed Android APK, SHA256SUMS). Website updated.
+- Final checks: the full CI run had three failures. `sarsat_engine` and `sens40a3` passed when run alone (runner load). `sens41` timed out even alone on macOS (over 3000 s), so it now runs as three tests (`sens41`, `sens41_iridium`, `sens41_rest`) with every check unchanged; all three pass on macOS.
+- Merged contributor PRs #502, #509, #510, #511 and #515 are on main; issue replies posted for the 4.1 fixes and features.
+
+## 2026-11-15: Smart checks, map Clear button, map colours in Settings
+
+- The Smart checks cards (FM, AM, DAB, TV, satellite and others) now follow Insights > Advanced > Analyse decodes: with it off the cards and their checks stop, and Clear findings also resets the FM watchdog.
+- The HFDL, VDL2 and ACARS maps have a Clear button on the map toolbar that removes plotted aircraft, ground stations and lines.
+- Settings > Network and updates has a Map colours entry (background, grid, outline, text, tile tint, presets and reset); the default look is unchanged.
+
+## 2026-11-15: Auto gain no longer stays at the minimum after a strong burst
+
+- Report: Auto gain "always reduces the gain to 0". Reproduced in the simulator (Auto v2, default settings): a strong signal that keys up cuts the gain by up to 30 dB; the weak wanted signal then disappears under the ADC noise, the loop read that as "the signal went away" and waited 10 minutes at the minimum (RTL-SDR, Airspy and other index radios; the cut also repeated on every burst).
+- Fix: when a clip cut leaves the wanted channel invisible, the cut is treated as an out-of-band overload, so the fast climb back (limited by headroom and the soft ceiling) starts at once. New test `autogain_collapse` covers normal bands and keying signals on nine radio models.
+
+## 2026-11-15: HFDL ground-station table corrected
+
+- A user reported missing and wrong HFDL frequencies. The built-in table was compared with the UDXF "Digital aero" list (HFDL table version 51) and the dumphfdl system table (version 52). Missing frequencies were added (Molokai, Shannon, Johannesburg, Barrow, Muan, Agana), wrong ones corrected (Muan, Krasnoyarsk, Molokai, Barrow) and one removed (Canarias 5589, in neither source); the order follows the system table, as the squitter masks need.
+- The station record passed from Rust to C++ held only 8 frequencies per station; it now holds 20, so stations with more (Barrow has 19) are complete. Band table gained a 3.0 MHz entry and wider 3.455 and 4.67 MHz entries so the new frequencies are tuned.
+- The HFDL header, the aircraft list and the receiver panel now show how many aircraft have a position. New test: `hfdl_table`.
+
+## 2026-11-15: 11 m presets, Finnish operator codes, wheel tuning choices
+
+- 11 m / CB band presets: SSTV 27.700 MHz (USB), JS8Call 27.245 MHz, ROS 27.635 MHz (USB) and a packet button for 27.235 MHz (FM) in APRS / Packet. CB rules differ by country, so the buttons are labelled and only warn.
+- LTE operator names: Erillisverkot (Finland) 24445 and 24446.
+- Wheel over the spectrum and waterfall: View > Controls already maps the wheel (zoom by default). Added "Tune by 10 steps" as a wheel choice (for Shift+wheel) and a custom tuning step field. Defaults are unchanged.
+
+## 2026-11-15: live UDP transport stream into the TV transmitters
+
+- Digital TV transmit modes can now read a live MPEG-TS stream from UDP (udp://@:1234, a multicast group, or RTP) in place of a file, for streaming from OBS, ffmpeg or VLC. A jitter buffer with null-packet stuffing and drop-oldest keeps the modulator fed; counters are shown in the transmit panel. Modes: DVB-T, T2, S, S2 (also QO-100), C, ATSC, ISDB-T, DTMB. docs/TS-UDP-IN.md, test ts_udp_in (alignment recovery, RTP, nulls, overflow, loopback socket).
+- Live RDS changes (PS, RadioText, PTY, TP/TA, music/speech) already existed since the earlier RDS-live work (panel, REST /api/v1/x/rds, MCP rds_set, text port); see docs/RDS-LIVE.md.
+
+## 2026-11-15: Kenwood FleetSync receive mode (family 347)
+
+- New mode on branch feat42-fleetsync, modelled on MDC-1200: every FM carrier of the span is followed and the 1200 bit/s FFSK burst is decoded, FleetSync and FleetSync II (error correction), with fleet and unit number, carrier, a log and the raw words.
+- Only the ID fields are defined by the public description used (credited: GopherTrunk, Apache-2.0); message type, status text and position are not decoded and there is no map. Tested on simulated signals only.
+
+## 2026-11-15: four reported bugs (#534, #507, #514, #506)
+
+- FT8 / FT4 / WSPR and the other sideband-only HF digital entries no longer fall to narrow FM on 6, 4 and 2 m: Auto now means upper sideband for them at every dial (#534).
+- The DRM panel has an SW 49 m (5.9 - 6.2 MHz) band button (#507).
+- General receiver: a click or short drag on the bandwidth slider that ended over the spectrum could tune the radio to the frequency under the mouse; the spectrum now tunes only when the press began on it. Found by reading the code and the report log, not reproduced with a radio (#514).
+- Shortwave RTTY Auto now also finds 200 and 450 Hz shifts (weather RTTY such as DDK9 is 50 baud / 450 Hz), and a half-fixed baud/shift pair no longer falls back to 45.45 baud / 170 Hz silently. Tested on simulated signals only; the exact cause of the reporter's "starting" line is not confirmed (#506).
+
+## 2026-11-15: Inmarsat all-carriers fixes (#508) and codec status text (#533)
+
+- Inmarsat all-carriers: opening or closing one window no longer restarts the receivers of the other windows (it dropped Aero locks, half-received multi-block messages and the Inmarsat-C frame search on a busy band). An Inmarsat-C receiver is now also started for carriers 0.9 to 1.5 kHz wide, which the width classifier called narrow.
+- Positions: Aero P channels are the ground-to-aircraft direction, so an aircraft's own position reports are not heard from the ground; the mode text and docs now say so. Position decoding in a multi-carrier capture is covered by a new simulated-signal test (the test signal sends downlinks, a real P channel does not).
+- Codec setup: a missing plug-in row now names the exact file, every folder searched and how to get that plug-in (the build helper makes only tetra, ambe2, ambe, imbe, ysf, not aeroambe, iridium or tetrapol), and reports a near-miss file name. Tested with a fake folder listing.
+- Simulated signals only; no real capture was used.
+
+## 2026-11-15: Android DTMB provider names and track lists, Chinese text, ADS-B gain after close aircraft
+
+- Android TV: the service list header shows the SDT provider name when the multiplex has no network name (NIT), for any original network id; the provider also shows under the picture. The sound-track list always shows all audio streams and says "not supported on this phone" when no decoder can play one; DVB subtitle, teletext and MHEG-5 / data-carousel streams of the PMT are listed too (the phone does not draw them yet).
+- DVB text: unprefixed UTF-8 under a Chinese or Korean profile is read as UTF-8; the DTMB GB 2312 default switches to Big5 when the stream's time offset says Hong Kong, Macau or Taiwan.
+- ADS-B auto gain: after a cut for a very close aircraft the message counters read zero at the lower gain, which the loop took as the signal having gone and held the gain for up to 10 minutes. Pulsed modes no longer use that idle wait. New 1-hour test with a strong aircraft passing every 4 minutes on the RTL-SDR and HackRF models.
+
+## 2026-11-15: Bug batch D (issues 249, 223, 435)
+
+- Pack downloads (such as the DAB transmitter lists) retry twice and say why they failed (missing file, DNS, TLS, timeout) with the address, instead of "error 22".
+- The COSPAS-SARSAT whole-capture search has a channel cap (1, 2, 4, 8 or all 90 kHz finders) for slow computers.
+- Android: the radio screen now lists every plugged-in USB radio and can select it; generic RTL-SDR sticks are named by their chip family, not always R820T.
+
+## 2026-11-15: SondeHub upload switched off (issue #526)
+
+- On branch feat42-sondehub: SondeHub upload is off in the app (note in the panel, saved settings ignored), kept for developers behind ONAIR_SONDEHUB=1. The RS41 datetime is now the sonde's GPS time as SondeHub's validation page asks, and ONAIR_SONDEHUB_LOG writes each submitted object as one JSON line. Test sonde_hub extended; tests run on GitHub.
+
+## 2026-11-15: Radiosonde own height and NMEA GPS output of the selected sonde
+
+- The radiosonde "me / prediction" panel now has "Own height (m)", the antenna height above sea level. It is the same value the ADS-B position uses (so it is not entered twice) and it goes into the station height of the SondeHub station record and telemetry (uploader_position, which was 0.0 when it had never been set) and into the APRS-IS station beacon (/A= in feet).
+- New optional output "Send the selected sonde as NMEA": $GPGGA and $GPRMC once a second for the sonde chosen in the list, to a serial port (COMx, /dev/cu.*, /dev/tty*, a pty or virtual port), or to TCP or UDP host:port; 4800 baud by default, off by default, nothing sent while the sonde has no position. Sentence builder and checksum are pure code with a test (sonde_nmea); the sender is checked against a file and UDP on localhost, not against a real COM port.
+- Developer-only SondeHub path (ONAIR_SONDEHUB=1): the telemetry body is a JSON array and the station record one object (now tested), the User-Agent is OnAir/<version>, and the HTTP status and answer of both uploads are shown in the panel and written to the developer log.
+
+## 2026-11-15: TETRA name book (ISSI / GSSI)
+
+- New Names tab on the TETRA screen: your own names for terminal (ISSI) and talkgroup (GSSI) numbers, with notes, optional network (MCC/MNC), colour code and site. Names appear in the slot lines, the Messages table, the Talkgroups table and the Map, and a "Speaking now" line shows who is on the air in calls that are not encrypted. Stored in the data folder, never shipped.
+- Import reads the own CSV (type,id,name,notes,mcc,mnc,colour_code,site) or plain lines (1001;Name, 1001,Name, ISSI=Name); export writes the CSV. The SDR# TETRA Trunk Tracker file layout could not be confirmed from public documentation, so only its plain "number, separator, name" lines read; see docs/TETRA-NAMES.md.
+- Tested by a unit test (parser, lookup, persistence round trip) with made-up data; the screen was only syntax-checked.
+
+## 2026-11-15: DRM channel filter box follows the setting
+
+- Bug report: with the DRM channel filter set to 10 kHz the spectrum still drew a 20 kHz box. The box came from the fixed mode table width (20 kHz) and ignored the Channel filter choice. It now shows 10 or 20 kHz as chosen, or on "off" the occupancy the receiver found in the signal. The receiver still detects the occupancy by itself. Logic test drm_filter; only checked by syntax and the width function, not run on a live DRM signal.
+
+## 2026-11-15: DRM xHE-AAC sound on Android (#516)
+Branch feat42-xheaac. The core got a portable hand-off for an outside xHE-AAC decoder (drm_usac_ext.h: compressed frames out, PCM in, tried after libfdk-aac and before FFmpeg). Android registers its MediaCodec decoder there (audio/XheAacDecoder.kt, native/src/jni_xhe.cpp), using the ASC the DRM decoder already builds; a phone without a USAC decoder shows a plain status line on the DRM Audio card instead of silence.
+- Tested on the host with a fake decoder (test drm_xhe_ext: the hand-off, loss handling, the no-decoder line) and ASC bytes written out by hand from the specs. Kotlin and JNI were only syntax reviewed and compiled by the Android CI; nothing was tried on a phone, so real USAC decoding through MediaCodec (buffer timing, output format, which phones accept the config) is untested.
+
+## 2026-11-15: SPECTRAN gain fix and per-stage gain controls
+
+- SPECTRAN V6 / V6 ECO: the gain slider (the reference level) is now checked against what the device took, read back after every set. A gain control left on Peak / Power, a refused or clipped value is reported in the start / retune message and the log, and the V6's gain control is written as Manual at every start. The slider and Auto gain have a radio profile of their own (reference level plus the RF amplifier setting). Only tested against the fake RTSA API. The receive thread no longer starves a retune that waits for the device.
+- Gain row, Advanced: one slider per stage the driver lets you set by hand (Airspy LNA / mixer / VGA, the RTL-SDR E4000's six IF stages, the gain elements a USRP reports), with the step table, what each does, and "Reset to overall gain". A stage set by hand turns Auto gain off and is remembered with the radio (#233).
+
+
+## 2026-11-15: SDR++ server on Android, ELAD FDM-DUO rig hint
+
+- Android: the "Add a network radio" dialog now offers SDR++ server (default port 5259) next to rtl_tcp and SpyServer, and mDNS discovery (opt-in) lists `_sdrpp._tcp` servers. The core's SDR++ client (test_sdrpp) was already in the Android library; only the screen did not offer it (#473). Kotlin tests added, not run locally.
+- ELAD FDM-DUO (#251): no public IQ protocol or SDK exists, so no native driver. The DUO's CAT (documented in its manual) is a Hamlib/TS-480 rig: a port named ELAD / FDM-DUO now gets the FDM-DUO model first, then TS-480 (test rig_control); IQ stays on its USB sound card. DEVICES.md rewritten with the recipe and what is missing.
+
+## 2026-11-15: Android update banner, pager scan, GTH sondes, SARSAT baseband export
+
+- #183: the phone's in-app update (check, mirror fallback, SHA-256 and signature check, system installer) already lived in Settings > Updates; a banner on the main screen now shows when a newer version is available or downloaded and opens it. Kotlin was only syntax reviewed; the android workflow compiles it.
+- #269: "Scan the span for pagers" in the pager screens (wide captures). A PagerFinder runs the whole-span pager bank beside the mode for up to 90 s and lists each carrier with the speed that decoded most pages (POCSAG 512 / 1200 / 2400, FLEX 1600 / 3200 / 6400) and its page count; click to tune. Test pager_find, simulated signals only.
+- #214 (a): new sonde type "GTH" for the Huayuntianyi HT03G / GTH3 and the Changwang GTH6 frame (2400 baud, 109 bytes, CRC-16): position, speed, time and, when the fields look plausible, temperature, humidity and pressure. Frame layout from the public rs1729 decoder (GPL-3, credited). The CF-06-AH frame (Reed-Solomon, GPS week) is not decoded. Test sonde_gth, simulated frames only: no recording of a GTH sonde was available; what the GTH6 PTU fields mean in the 2026 batch is not confirmed.
+- #214 (b): "Save every burst as a baseband file" in the SARSAT screen writes each beacon-like burst (decoded or not) as a 2 channel float WAV at 32 kHz with the carrier at zero, to the sarsat folder of the data directory. Test sarsat_export, simulated signal.
+
+## 2026-11-15: one station location (issue #453)
+
+- Settings > Location now holds one station position (latitude, longitude, height, locator, name). PSK Reporter, WSPRnet and Winlink follow it and show "using the global location" with a change link; a screen can still keep its own locator. Older saved positions are folded in once at start-up (first non-empty wins, differing locators stay as that screen's own).
+- Branch feat42-ui3. Helpers and migration rules tested by `station_location` (not yet run on CI); the screens were only syntax-checked.
+
+## 2026-11-15: brightness and contrast for analog TV and FPV (issue #239)
+
+- Analog TV and FPV got Brightness and Contrast sliders with a Reset button, saved per mode and applied only to the picture on the screen (snow and full screen included); decoding and saved frames are unchanged.
+- Branch feat42-ui3. The table maths is tested by `display_adjust` (not yet run on CI); the screens were only syntax-checked.
+
+## 2026-11-15: touch interface on narrow screens (issue #139)
+
+- Under 800 px wide the touch interface folds Gain and Volume into More, widens Start/Stop, Tuner and More, drops the Running/Stopped word from the top bar and, in portrait, puts the status line behind a switch in More. Wider screens and the desktop layout are unchanged.
+- Branch feat42-ui3. The layout rules are tested by `touch_logic` (not yet run on CI); the screens were only syntax-checked, not looked at.
+
+## 2026-11-15: Data services view for carousel files (issue 176)
+
+- A DSM-CC data and object carousel receiver with module reassembly, zlib modules, BIOP files, file list, save to disk and previews (text, PNG/JPEG, MHEG-5 object tree and scene drawing) already existed. The TV data sub-tab is now named "Data services" and says plainly that files are shown and interactive pages are not run (apart from the limited Red Button subset). docs/MHEG-REDBUTTON.md lists what is not implemented. Hong Kong DTMB weather and stock pages are not verified: no real stream here. Existing tests (dvbs_dsmcc, mheg) already round-trip compressed synthetic carousels.
+
+## 2026-11-15: PACTOR-II / -III identifier in the PACTOR-I screen (issue #216)
+
+- Research pass on what is public for PACTOR-I to -IV (docs/PACTOR-RESEARCH.md): the signals are documented, the channel coding of PACTOR-II, -III and -IV (code polynomials, puncturing, interleaver, CRC, frame layout) is not, so text cannot be decoded from them and OnAir does not guess.
+- The PACTOR-I screen now also runs the signal-level analysis and names a PACTOR-II or PACTOR-III signal on the channel (carriers, speed level), "data not decodable (proprietary)". Tested on generator signals only (test pactor_hfid).
+
+## 2026-11-16: OnAir 4.2 released
+
+- Published v4.2.0 from d3999ecd0 with 12 assets (Windows zip and installer, two macOS dmg, two deb, two portable tarballs, two AppImages, signed APK, SHA256SUMS). The APK certificate is the same as 4.0 and 4.1. `main` is at the release commit and the site is deployed.
+- Release builds first failed to link (map colour settings sat in an anonymous namespace); the full test run then found three real bugs before publishing: RTTY Auto took a 450 Hz pair as 425 Hz (a keying sideband made a false pair that was tried first, now the best-fitting shift wins), `near` is a macro on Windows (test variable renamed), and the sonde NMEA sender added the `\\.\` prefix to every Windows path, not only COM names.
+- Flaky tests seen and passing on re-run: audio_engine (Windows timeout), sarsat_engine (Linux CPU budget), dtmb_threads (macOS under load).
+- PRs 523, 525, 528, 531, 532, 535, 538 are in; 528 went in on rebased commits, so it was closed with a note. 512 and 527 stay drafts. Thank-you comments and issue replies posted. Detachable windows (#242) left for 4.3 on feat42-windows.
+- Open: RX888 MkII rates above 64 Msps reported as not reachable by some users (no log yet, likely USB 3 or CPU limits).
+
+## 2026-11-16: 4.2.0 Android APK replaced (start crash, #544)
+
+- The 4.2.0 release APK aborted at launch on every phone: R8 renamed the xHE-AAC decoder methods that android/native/src/jni_xhe.cpp looks up by name (NoSuchMethodError in nativeXheRegister). Added keep rules for XheAacDecoder and XheNative in android/app/proguard-rules.pro (82392fe9b), rebuilt, checked that the names survive in the dex, signed with the same certificate and replaced the asset and SHA256SUMS on the v4.2.0 release (same version number; users install over it).
+- 4.3 branches pushed: fix43-atvcrash (Windows ATV crash after 2^31 samples, `long` is 32-bit there, #520) and fix43-ism (ISM burst decoding off the feed thread, waterfall stall, #542). Approved for 4.3: MIDI LNA/VGA/Bias-T (#543), ISS SSTV 437.550 (#540), DWD RTTY 147.3 kHz 85 Hz (#539), DVB subtitle track list (#517). PR #541 (FFmpeg as shared libraries) to be reviewed and tested for 4.3.
+
+## 2026-11-16 ISM waterfall stalls (#542)
+- ISM burst decoding (and the Sigfox receiver on a Sigfox band) ran inside feed(), on the thread that also feeds the waterfall: one call took 100 to 240 ms in the test. Burst analysis and Sigfox input now go to a worker thread; for a radio feed() never waits (a busy worker means a skipped publish or dropped input after a retune), for a file it waits so nothing is lost. New test ism_stall, new IsmReceiver::setRealtime() and flush().

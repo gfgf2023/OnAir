@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Ham operation beyond FT8 / FT4 / FT2: JT65 (A B C), JT9 and JT4 QSOs and the WSPR beacon. Two engines talk to each other through the real
 // transmitter (HamSlotTx into a recording fake rig, nothing is sent anywhere), the audio goes through the real decoder, the decoded text
 // goes to the other engine. Also timing, the mode bandwidth in the TX gate, the beacon schedule and its limits.
@@ -5,6 +8,7 @@
 #include "dect2/ham/ham.h"
 #include <regex>
 #include "../common/test_util.h"
+#include "../common/test_long.h"
 using namespace dect2;
 using namespace dect2::ham;
 using namespace wsjttest;
@@ -113,6 +117,7 @@ int main() {
     // JT65 B and C at strong, medium and weak levels (the strong ones used to be missed: the sync search was fooled by leakage)
     for (int sub : {1, 2})
         for (double level : {0.4, 0.05, 0.01}) {
+            if (level == 0.05 && !testLong()) continue;   // the middle level only in the long run: strong and weak are the ones that broke
             float snr = 0;
             const std::string got = overAir(4, sub, "CQ LY1ABC KO24", 1200, &snr, level);
             CHECK(got == "CQ LY1ABC KO24", "JT65 sub %d level %.2f heard \"%s\"", sub, level, got.c_str());

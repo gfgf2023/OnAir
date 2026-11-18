@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The voice key store model + per-call matching (see voice_keys.h). No key search or recovery: matching is by the user's own table,
 // and the only "trial" is the user's enabled list in stored order for a call with no key id.
 #include "dect2/voicekeys/voice_keys.h"
@@ -11,11 +14,19 @@ namespace voicekeys {
 
 const char* protocolName(Protocol p) {
     switch (p) { case Protocol::Dmr: return "DMR"; case Protocol::P25: return "P25"; case Protocol::Nxdn: return "NXDN";
-                 case Protocol::Dpmr: return "dPMR"; default: return "any"; }
+                 case Protocol::Dpmr: return "dPMR"; case Protocol::Zigbee: return "Zigbee"; case Protocol::ZWave: return "Z-Wave";
+                 case Protocol::WiSun: return "Wi-SUN"; case Protocol::WMBus: return "wM-Bus"; case Protocol::LoRaWAN: return "LoRaWAN";
+                 case Protocol::EspNow: return "ESP-NOW"; default: return "any"; }
 }
 bool protocolFromName(const std::string& s, Protocol& p) {
     std::string t; for (char c : s) t += (char)std::tolower((unsigned char)c);
     if (t == "any" || t.empty()) { p = Protocol::Any; return true; }
+    if (t == "zigbee") { p = Protocol::Zigbee; return true; }
+    if (t == "z-wave" || t == "zwave") { p = Protocol::ZWave; return true; }
+    if (t == "wi-sun" || t == "wisun") { p = Protocol::WiSun; return true; }
+    if (t == "wm-bus" || t == "wmbus") { p = Protocol::WMBus; return true; }
+    if (t == "lorawan") { p = Protocol::LoRaWAN; return true; }
+    if (t == "esp-now" || t == "espnow") { p = Protocol::EspNow; return true; }
     if (t == "dmr") { p = Protocol::Dmr; return true; }
     if (t == "p25") { p = Protocol::P25; return true; }
     if (t == "nxdn") { p = Protocol::Nxdn; return true; }
@@ -26,7 +37,8 @@ bool protocolFromName(const std::string& s, Protocol& p) {
 const char* algorithmName(Algorithm a) {
     switch (a) { case Algorithm::Rc4: return "RC4"; case Algorithm::DesOfb: return "DES-OFB";
                  case Algorithm::Aes128Ofb: return "AES-128-OFB"; case Algorithm::Aes256Ofb: return "AES-256-OFB";
-                 case Algorithm::Scrambler: return "scrambler"; default: return "none"; }
+                 case Algorithm::Scrambler: return "scrambler"; case Algorithm::HyteraBp: return "Hytera-BP";
+                 case Algorithm::HyteraEnhanced: return "Hytera-Enhanced"; default: return "none"; }
 }
 bool algorithmFromName(const std::string& s, Algorithm& a) {
     std::string t; for (char c : s) if (!std::isspace((unsigned char)c)) t += (char)std::tolower((unsigned char)c);
@@ -35,6 +47,8 @@ bool algorithmFromName(const std::string& s, Algorithm& a) {
     if (t == "aes128" || t == "aes-128" || t == "aes128-ofb" || t == "aes-128-ofb") { a = Algorithm::Aes128Ofb; return true; }
     if (t == "aes256" || t == "aes-256" || t == "aes256-ofb" || t == "aes-256-ofb" || t == "aes") { a = Algorithm::Aes256Ofb; return true; }
     if (t == "scrambler" || t == "lfsr") { a = Algorithm::Scrambler; return true; }
+    if (t == "hytera-bp" || t == "hyterabp" || t == "hbp" || t == "hytera") { a = Algorithm::HyteraBp; return true; }
+    if (t == "hytera-enhanced" || t == "hytera-ep" || t == "hyteraenhanced" || t == "hep") { a = Algorithm::HyteraEnhanced; return true; }
     if (t == "none" || t.empty()) { a = Algorithm::None; return true; }
     return false;
 }
@@ -45,6 +59,8 @@ size_t algorithmKeyBytes(Algorithm a) {
         case Algorithm::Aes128Ofb: return 16;
         case Algorithm::Aes256Ofb: return 32;
         case Algorithm::Scrambler: return 2;    // a 15-bit seed carried in two bytes
+        case Algorithm::HyteraEnhanced: return 5;   // 40-bit key
+        case Algorithm::HyteraBp: return 0;     // 5, 16 or 32 bytes: checked in parseKeyHex
         default: return 0;
     }
 }
@@ -71,6 +87,8 @@ std::string parseKeyHex(Algorithm a, const std::string& hex, std::vector<uint8_t
         return std::string(algorithmName(a)) + " needs " + std::to_string(need) + " key bytes (" +
                std::to_string(need * 2) + " hex digits), got " + std::to_string(out.size());
     }
+    if (a == Algorithm::HyteraBp && !(out.size() == 5 || out.size() == 16 || out.size() == 32))
+        return "Hytera-BP needs 5, 16 or 32 key bytes (10, 32 or 64 hex digits), got " + std::to_string(out.size());
     if (a == Algorithm::Scrambler && out.size() == 2 && (out[0] & 0x80)) {
         // the seed is 15 bits; the top bit must be clear
         return "the scrambler seed is 15 bits: the first hex digit must be 0-7";

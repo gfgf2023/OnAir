@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // IQ sample sources: HackRF, recorded file, built-in synthetic DVB-T2-like signal.
 #pragma once
 #include <functional>
@@ -26,17 +29,24 @@ struct SynthConfig {
     bool dvbt = false;     // generate DVB-T (with a small test transport stream) instead of DVB-T2
     int dvbtMode = 1, dvbtGuard = 2, dvbtMod = 2, dvbtRate = 1; // 8K, GI 1/8, 64-QAM, 2/3
     int isdbtBwMhz = 6;    // ISDB-T test signal: channel width 6, 7 or 8 MHz
+    int isdbtMode = 3, isdbtGuard = 2, isdbtMod = 3, isdbtRate = 2;   // ISDB-T: mode 1 - 3, guard 1/32 1/16 1/8 1/4 (0 - 3), layer B modulation (0 DQPSK, 1 QPSK, 2 16-QAM, 3 64-QAM) and code rate (0 1/2, 1 2/3, 2 3/4, 3 5/6, 4 7/8); the defaults are mode 3, 1/8, 64-QAM 3/4
     double pace = 1.0;     // 1 = real time; below 1 the signal runs in slow motion (tests on slow machines: the receiver gets 1/pace times the time)
     bool gainModel = false; // scale the level with the LNA/VGA/amp gains (for testing AGC): 62 dB total = the nominal level
     int mode = 0;           // 0: the DVB / ATSC / DAB settings above; 8 and up: the test signal of that engine standard (see mode_synth.h)
     int modeOpt[8] = {};    // options of that test signal; every mode says what they mean in its <mode>_gen.h
     double modeVal[4] = {};
+    // "Synthetic content" (synth_media.h): the picture / video and sound the test signal carries instead of the built-in ones. 0 = built-in (nothing changes).
+    int mediaKind = 0;      // 0 built-in, 1 picture file, 2 video file
+    std::string mediaPath;  // the picture or the video
+    std::string mediaAudio; // a sound file; empty: the video's own sound (kind 2) or the built-in sound
 };
 
 struct TuneSettings {
-    double bandwidthMhz = 8;
+    double bandwidthMhz = 8;           // the mode's channel width, or the custom capture bandwidth the user typed (Advanced > Custom): the radio's filter and the rate follow it
+    double channelBwMhz = 0;           // the signal's own channel width when a custom capture bandwidth replaced bandwidthMhz (DVB-T2 / DVB-T / DTMB decode with it); 0 = bandwidthMhz is both
     int isdbtBwMhz = 6;                // ISDB-T channel width: 6 (Japan, the Americas), 7, 8 MHz (the Maldives); 0 = automatic (6, 7 and 8 tried)
     SynthConfig synth;
+    double signalBwMhz() const { return channelBwMhz > 0 ? channelBwMhz : bandwidthMhz; }   // the signal's own width (SNR in the channel, gain, the decoders that need it), not the custom capture width
     double centerHz = 522e6;
     double sampleRate = 18285714.2857; // 2x native rate for an 8 MHz channel
     double basebandFilterHz = 0;       // 0 = auto
@@ -141,6 +151,7 @@ struct DeviceInfo {
     std::string soapyArgs;     // device arguments, e.g. "driver=airspy,serial=..."
     std::string nativeArgs;    // what the radio's own library wants to open it (index, serial, URI, ...)
     double maxRateHz = 0;      // fastest complex sample rate the radio offers (0 = unknown)
+    double pickMinRateHz = 0;  // the lowest rate the sample-rate list offers when lower than minRateHz: the driver delivers it by running faster (0 = minRateHz)
     double minRateHz = 0;
     // The rate its link carries without losing samples when that is below maxRateHz (a PlutoSDR on its USB 2 cable: about 4 Msps of 16-bit
     // samples), 0 = whatever the radio offers. linkRateFor() (rate_choice.h) keeps a mode within it when the mode fits, else goes above it.
@@ -168,6 +179,9 @@ struct DeviceInfo {
     bool isRadio() const { return kind == HackRF || kind == Soapy || kind == Native || kind == Hamlib || kind == Group; }
     bool isGeneric() const { return kind == Soapy || kind == Native || kind == Group; }   // one overall gain, a sample-rate range reported by the radio
     bool isAudio() const { return kind == Audio; }
+    // a sound card, or a rig (Hamlib) whose own receiver gives the audio: the samples are at the dial, there is no DC spike to tune away from,
+    // so a mode's tuneOffsetHz must not move the rig (#358: FT8 on an IC-7300 came out 20 kHz high)
+    bool tunesAtDial() const { return kind == Audio || kind == Hamlib; }
     bool network = false;                  // reached over a network link, not USB (set where the name does not say "(network)": a Pluto found by mDNS)
     bool isNetwork() const { return network || name.find(" (network") != std::string::npos; }   // rtl_tcp, SpyServer, KiwiSDR, a Pluto by IP, ...
 };

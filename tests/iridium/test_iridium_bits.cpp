@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // iridium-toolkit .bits output: every line must match iridium-toolkit bitsparser.py's RAW regex (ported to std::regex) and carry the
 // fields as gr-iridium iridium-extractor prints them. The test signal live (fed straight in) and from a recording file.
 #include "dect2/iridium/iridium_bits.h"
@@ -118,10 +121,10 @@ int main() {
     }
     // live copy: a synthetic burst written with only the UDP stream open arrives as the same RAW line, newline-ended
     {
+        dect2::netInit();   // Winsock must be started before the first socket()
         const dect2::sock_t rs = socket(AF_INET, SOCK_DGRAM, 0);
         sockaddr_in a{};
         a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); a.sin_port = 0;
-        dect2::netInit();
         CHECK(rs != dect2::kBadSock && bind(rs, (sockaddr*)&a, sizeof a) == 0, "udp bind");
         #ifdef _WIN32
         int al = (int)sizeof a;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Playing recorded or timeshifted transport streams through the live player: a file as a PacketSource (with a PCR time map for seeking), the pacer
 // that releases packets at the speed of the stream's own clock, and the feeder thread that reads a PacketSource and hands the packets to a sink
 // (the player's push()). Pause, jump back / forward and "go live" are positions in the source.
@@ -26,11 +29,24 @@ public:
     bool timeAt(uint64_t idx, double& t) const override;
     bool indexAt(double t, uint64_t& idx) const override;
     bool growing() const override { return false; }
+    // T2-MI (ETSI TS 102 773, issue 498): a modulator feed, an outer stream of T2-MI packets on one PID (often with no PCR). open() finds it in
+    // the first packets and plays the transport stream of one PLP instead (the one with the most packets), rebuilt into a temporary file that
+    // close() deletes. selectT2miPlp() rebuilds it for another PLP: stop the feeder first and start it again at 0 afterwards.
+    bool t2mi() const { std::lock_guard<std::mutex> lk(mu_); return t2miPid_ >= 0; }
+    int t2miPid() const { std::lock_guard<std::mutex> lk(mu_); return t2miPid_; }
+    int t2miPlp() const { std::lock_guard<std::mutex> lk(mu_); return t2miPlp_; }
+    std::vector<int> t2miPlps() const { std::lock_guard<std::mutex> lk(mu_); return plps_; }
+    bool selectT2miPlp(int plp);
+    void setScratchDir(const std::string& dir) { std::lock_guard<std::mutex> lk(mu_); scratch_ = dir; }   // where the rebuilt PLP stream goes (default: the system temp folder)
 private:
+    bool buildInner(int plp);
     mutable std::mutex mu_;
     FILE* f_ = nullptr;
     uint64_t n_ = 0;
     PcrTimeline tl_;
+    std::string path_, inner_, scratch_;
+    int t2miPid_ = -1, t2miPlp_ = -1;
+    std::vector<int> plps_;
 };
 
 // Decides how long to wait before releasing a packet whose stream time is t: the stream runs at `speed` times the wall clock from the anchor.

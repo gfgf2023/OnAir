@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Crash reports. The handlers do as little as they can: the text is built in a fixed buffer and written with plain system calls,
 // because the heap and the C library may be what is broken. The binaries are stripped, so a report names module+offset and the
 // image base; those can be looked up against the matching symbols later.
 #include "dect2/engine/crash_report.h"
+#include "dect2/common/diag.h"
+#include "dect2/engine/debug_dump.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -62,6 +67,7 @@ char gVersion[32] = ONAIR_VERSION;
                             "processors before 2013 and AMD before about 2015 lack). Please send this report: a build for older processors can be made.";
 bool gPrevCrashed = false;
 std::string gPrevReport;
+std::string gPrevDump;
 int gFailedStarts = 0;
 std::string gBootMark;   // <dir>/<name>.booting while a start is not yet finished (UTF-8)
 
@@ -171,6 +177,7 @@ void arm(const fs::path& txt, const fs::path& dmp) {
 #else
 
 char gReport[1024];
+char gDump[1024];   // <dir>/<name>.dmp: the stacks of all threads (debug_dump.h), Linux x86-64
 char gAlt[65536];   // a stack of its own, so a stack overflow can still be reported
 
 #ifdef DECT2_HAVE_BACKTRACE
@@ -185,7 +192,7 @@ const char* sigName(int s) {
     return "signal";
 }
 
-void onSignal(int sig, siginfo_t* si, void*) {
+void onSignal(int sig, siginfo_t* si, void* uctx) {
     char buf[768];
     Out o{buf, 0, sizeof buf};
     o.put("OnAir "); o.put(gVersion); o.put(" crashed: signal "); o.dec(sig);
@@ -202,13 +209,23 @@ void onSignal(int sig, siginfo_t* si, void*) {
     }
     (void)!write(STDERR_FILENO, buf, o.n);   // and in the log, which on these systems is standard error
     backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    if (gDump[0] && dump::supported()) {   // then the stacks of all threads, for a debugger with the symbols of this build
+        const int dfd = open(gDump, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (dfd >= 0) {
+            dump::writeFromSignal(dfd, sig, si, uctx);
+            close(dfd);
+        }
+    }
     raise(sig);   // the handler was reset when it started (SA_RESETHAND): this ends the process the usual way
 }
 #endif
 
-void arm(const fs::path& txt) {
+void arm(const fs::path& txt, const fs::path& dmp) {
     const std::string s = fromPath(txt);
     snprintf(gReport, sizeof gReport, "%s", s.c_str());
+    const std::string d = fromPath(dmp);
+    snprintf(gDump, sizeof gDump, "%s", d.c_str());
+    dump::prepare();
 #ifdef DECT2_HAVE_BACKTRACE
     void* warm[2];
     backtrace(warm, 2);   // the first call loads code: do it now, not inside the handler
@@ -239,6 +256,8 @@ std::string logDir() {
 #ifdef __APPLE__
     return home + "/Library/Logs/OnAir";
 #else
+    const char* x = getenv("XDG_CONFIG_HOME");   // where the settings are (a test or screenshot run with its own folder writes its log there)
+    if (x && x[0] == '/') return std::string(x) + "/onair";
     return home + "/.config/onair";
 #endif
 #endif
@@ -273,10 +292,12 @@ void install(const char* name, const char* dir) {
             gFailedStarts = n;
         }
         std::ofstream f(boot, std::ios::trunc);
+        if (!f) DIAG_DEBUG(283055, "The start marker file %s could not be written, so a crash while starting will not be counted.", boot.string().c_str());
         f << gFailedStarts + 1 << "\n";
     }
     {   // mark this start
         std::ofstream f(stamp, std::ios::trunc);
+        if (!f) DIAG_DEBUG(306519, "The version stamp file %s could not be written, so a crash report from this run may be shown again.", stamp.string().c_str());
         f << ONAIR_VERSION << "\n";
     }
     {   // and make sure the mark is newer than an old report, so that the next start does not report it again
@@ -285,11 +306,15 @@ void install(const char* name, const char* dir) {
         const auto st = fs::last_write_time(stamp, e2);
         if (!e1 && !e2 && st <= ct) fs::last_write_time(stamp, ct + std::chrono::milliseconds(1), e2);
     }
-#ifdef _WIN32
+    gPrevDump.clear();
+    if (gPrevCrashed) {   // the dump of that crash: only when it is from the same crash as the report (not an older one)
+        const fs::path dmp = toPath(d) / (base + ".dmp");
+        std::error_code e1, e2;
+        const auto dt = fs::last_write_time(dmp, e1);
+        const auto ct = fs::last_write_time(txt, e2);
+        if (!e1 && !e2 && dt + std::chrono::seconds(60) >= ct) gPrevDump = fromPath(dmp);
+    }
     arm(txt, toPath(d) / (base + ".dmp"));
-#else
-    arm(txt);
-#endif
 }
 
 bool lastRunCrashed(std::string& reportPath) {
@@ -298,6 +323,8 @@ bool lastRunCrashed(std::string& reportPath) {
 }
 
 int failedStarts() { return gFailedStarts; }
+
+std::string lastCrashDump() { return gPrevDump; }
 
 void startupDone() {
     if (gBootMark.empty()) return;
@@ -315,6 +342,8 @@ void rotateLog(const std::string& dir) {
 }
 
 #ifdef _WIN32
+namespace { bool gLogStarted = false; }
+
 void startLog() {
     if (!_wgetenv(L"APPDATA")) return;
     const std::string d = logDir();
@@ -323,6 +352,33 @@ void startLog() {
     rotateLog(d);
     FILE* unused = _wfreopen((toPath(d) / "onair.log").c_str(), L"w", stderr);
     (void)unused;
+    gLogStarted = true;
+}
+
+void appendLog(const std::string& text) {
+    if (!gLogStarted || text.empty()) return;
+    fwrite(text.data(), 1, text.size(), stderr);
+    fflush(stderr);
+}
+#else
+namespace { int gLogFd = -1; }
+
+void startLog() {
+    if (gLogFd >= 0) return;
+    const std::string d = logDir();
+    std::error_code ec;
+    fs::create_directories(toPath(d), ec);
+    rotateLog(d);
+    gLogFd = open((toPath(d) / "onair.log").c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0644);
+}
+
+void appendLog(const std::string& text) {
+    size_t done = 0;
+    while (gLogFd >= 0 && done < text.size()) {
+        const ssize_t r = write(gLogFd, text.data() + done, text.size() - done);
+        if (r <= 0) break;
+        done += (size_t)r;
+    }
 }
 #endif
 

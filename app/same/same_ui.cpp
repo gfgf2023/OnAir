@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NOAA Weather Radio SAME screens: the weather channels (WX1 - WX7), the alert history with every field in plain English (event, originator, the
 // locations with the partial-county direction, purge and issue time, call sign, how many of the three repeats agreed), the 1050 Hz attention
 // tone, a map of the states and provinces named (an approximation: a marker at the centre of the state, nothing more precise) and the raw
@@ -223,9 +226,9 @@ void mapView(App& a, ImVec2 size) {
         const double span = std::max(6.0, std::max(lo1 - lo0, (la1 - la0) * 1.4));
         S.map.zoom = std::max(2, std::min(8, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     ImVec2 click; const bool clicked = adsbmap::clickedAt(click);
@@ -237,7 +240,7 @@ void mapView(App& a, ImVec2 size) {
         ImU32 fill = (m.col & 0x00FFFFFF) | ((m.cur ? 150u : 60u) << 24);
         dl->AddCircleFilled(q, r, fill);
         dl->AddCircle(q, r, m.col, 24, m.cur ? 2.f : 1.f);
-        dl->AddText(ImVec2(q.x + r + 2 * gUi, q.y - ImGui::GetTextLineHeight() * 0.5f), IM_COL32(235, 238, 240, 255), m.label.c_str());
+        if (adsbmap::labelsAt(S.map.zoom, m.cur)) dl->AddText(ImVec2(q.x + r + 2 * gUi, q.y - ImGui::GetTextLineHeight() * 0.5f), IM_COL32(235, 238, 240, 255), m.label.c_str());
         const float d = std::hypot(q.x - click.x, q.y - click.y);
         if (clicked && d < best) { best = d; hit = m.al; }
     }

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
 #include "dect2/atsc3/atsc3_subframe.h"
 #include "atsc3_tables.h"
 #include "dect2/dsp/fftutil.h"
@@ -175,7 +179,10 @@ bool receiveSymbol(const SubframeParams& s, int l, const cf32* x, SymbolRx& rx) 
         pk.push_back(k);
         ph.push_back(y[k] / (float)(2 * a * (0.5 - r[k])));
     }
-    if (pk.size() < 2) return false;
+    if (pk.size() < 2) {
+        DIAG_DEBUG_EVERY(712577, 10.0, "An ATSC 3.0 data symbol has %zu usable scattered pilots (at least 2 needed), so the frame cannot be equalised.", pk.size());
+        return false;
+    }
     std::vector<cf32>& hch = rx.hch;
     hch.resize(noc);
     size_t seg = 0;
@@ -190,6 +197,23 @@ bool receiveSymbol(const SubframeParams& s, int l, const cf32* x, SymbolRx& rx) 
     for (auto& c : hch) hm += std::norm(c);
     hm /= noc;
     rx.nv = (nn && hm > 0) ? (float)(nv / nn * asp * asp / hm) : 0.f;
+    // below about 25 dB the pilot noise of the interpolation is the larger part of the loss: take the response from the pilot comb and drop its noise taps
+    if (rx.nv > 3e-3f) {
+        const int dx = spDx(s.spPattern), dy = spDy(s.spPattern);
+        const bool bnd = isBoundarySymbol(s, l);
+        const int D = bnd ? dx : dx * dy, k0 = bnd ? 0 : dx * (l % dy);
+        std::vector<cf32> est((size_t)noc);
+        std::vector<uint8_t> okp((size_t)noc, 0);
+        for (int k = k0; k < noc; k += D) {
+            if (kind[k] != 1 && kind[k] != 2) continue;
+            if (std::abs(k - mid) <= 1 && noc > 64) continue;
+            const double a = kind[k] == 2 ? acp : asp;
+            est[(size_t)k] = y[k] / (float)(2 * a * (0.5 - r[k]));
+            okp[(size_t)k] = 1;
+        }
+        std::vector<cf32> hc;
+        if (cirDenoiseChannel(N, noc, D, k0, est, okp, hc)) hch = hc;
+    }
     return true;
 }
 
@@ -214,24 +238,31 @@ void smoothChannel(const std::vector<SymbolRx>& rx, int l, int half, std::vector
     for (size_t k = 0; k < noc; k++) out[k] = acc[k] * inv;
 }
 
-void symbolCells(const SubframeParams& s, int l, const SymbolRx& rx, const std::vector<cf32>& hch, std::vector<cf32>& cells) {
+void symbolCells(const SubframeParams& s, int l, const SymbolRx& rx, const std::vector<cf32>& hch, std::vector<cf32>& cells, std::vector<float>* weights) {
     const int noc = numCarriers(s.fftSize, s.cred);
     auto kind = subframeCarrierKinds(s, l);
     std::vector<cf32> a;
+    std::vector<float> aw;
     {   // cells in a deep fade of the channel estimate are mostly noise: they become erasures (zero, which the decoders read as no information)
         double hm = 0;
         for (int k = 0; k < noc; k++) hm += std::norm(hch[k]);
         const float lim = (float)(kFadeErase * hm / noc);
-        for (int k = 0; k < noc; k++) if (kind[k] == 0) a.push_back(std::norm(hch[k]) < lim ? cf32(0, 0) : rx.y[k] / hch[k]);
+        const float inv = hm > 0 ? (float)(noc / hm) : 0.f;
+        for (int k = 0; k < noc; k++) if (kind[k] == 0) {
+            const float p = std::norm(hch[k]);
+            a.push_back(p < lim ? cf32(0, 0) : rx.y[k] / hch[k]);
+            if (weights) aw.push_back(p < lim ? 0.f : std::min(8.f, p * inv));   // the cell's noise is the symbol's times mean |h|^2 / |h|^2
+        }
     }
     const int nd = (int)a.size();
     cells.assign(nd, cf32(0, 0));
+    if (weights) weights->assign((size_t)nd, 1.f);
     if (s.freqInterleaver) {
         const int fl = l + s.fiOffset;
         auto h = frequencyInterleaverSequence(s.fftSize, nd, fl);
-        if (s.fftSize == 32768 && (fl % 2) == 0) { for (int q = 0; q < nd; q++) cells[q] = a[h[q]]; }
-        else { for (int q = 0; q < nd; q++) cells[h[q]] = a[q]; }
-    } else cells = a;
+        if (s.fftSize == 32768 && (fl % 2) == 0) { for (int q = 0; q < nd; q++) { cells[q] = a[h[q]]; if (weights) (*weights)[(size_t)q] = aw[(size_t)h[q]]; } }
+        else { for (int q = 0; q < nd; q++) { cells[h[q]] = a[q]; if (weights) (*weights)[(size_t)h[q]] = aw[(size_t)q]; } }
+    } else { cells = a; if (weights) *weights = aw; }
 }
 
 bool demodulateSubframeSymbol(const SubframeParams& s, int l, const cf32* x, std::vector<cf32>& cells, float* noiseVar) {

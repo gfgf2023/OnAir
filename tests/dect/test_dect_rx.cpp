@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DECT receiver on the generated signal: base stations found with their identities, handset bursts counted, CRC forms, noise gives nothing.
 #include "dect2/dect/dect_gen.h"
 #include "dect2/dect/dect_rx.h"
@@ -58,6 +61,12 @@ int main() {
             printf("  12 dB, %.3f Msps: %llu good of 100\n", r / 1e6, (unsigned long long)t.blocksOk);
             CHECK(t.blocksOk >= 90, "%.3f Msps: %llu fields", r / 1e6, (unsigned long long)t.blocksOk);
         }
+    }
+    {   // no noise at all (digital silence between the bursts, as a transmitter's own signal or a squelched recording has it): the power floor's
+        // running sum once drifted below zero there and every sample after the first burst looked like a burst start (docs/QA-SWEEP-3.9.md)
+        DectGenConfig c; c.rate = 5e6; c.snrDb = 400; c.dialOffsetHz = -1e6; c.handset = true; c.bases = dectTestBases(0);
+        const DectTelemetry t = run(c, 1.0);
+        CHECK(t.blocksOk >= 380, "no noise: %llu fields of 400", (unsigned long long)t.blocksOk);
     }
     {   // wrong CRC: counted bad, no base station listed
         DectGenConfig c; c.rate = 5e6; c.snrDb = 30; c.dialOffsetHz = -1e6; c.bases = dectTestBases(1); c.bases[0].badCrc = true;

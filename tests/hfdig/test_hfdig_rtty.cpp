@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital, RTTY: the generator's audio with noise straight into the decoder (three speeds and shifts, tuning offsets, reversed, noise
 // alone), then the whole way through the engine (synthetic source -> USB audio -> decoder). Quick and silent.
 #include "dect2/engine/engine.h"
@@ -60,6 +63,7 @@ int main() {
     const Case cases[] = {
         {0, 0, 0, false, 0, "45.45/170"}, {0, 0, 100, false, 0, "45.45/170 +100 Hz"}, {0, 0, -100, false, 0, "45.45/170 -100 Hz"},
         {1, 3, 0, false, 0, "50/450"}, {1, 3, 100, false, 0, "50/450 +100 Hz"}, {1, 3, -100, false, 0, "50/450 -100 Hz"},
+        {1, 5, 0, false, 0, "50/85 (DWD 147.3 kHz)"}, {1, 5, 60, false, 0, "50/85 +60 Hz"}, {1, 5, 0, true, 0, "50/85 reversed"},
         {2, 4, 0, false, 0, "75/850"}, {2, 4, 100, false, 0, "75/850 +100 Hz"}, {2, 4, -100, false, 0, "75/850 -100 Hz"},
         {0, 0, 0, true, 0, "45.45/170 reversed"}, {3, 1, 0, false, 1500, "100/200 at 1500 Hz"}, {0, 2, 0, false, 700, "45.45/425 at 700 Hz"},
     };

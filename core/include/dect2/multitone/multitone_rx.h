@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Multitone paging (Multitone Electronics, UK; Mk IV - VII pagers, hospitals and industrial sites) detector: receive only.
 //
 // What is public (sigidwiki.com/wiki/Multitone_Paging, see docs/multitone-research.md): narrowband FM with FFSK, 12.5 / 25 kHz, "coding similar
@@ -66,6 +69,8 @@ FskResult sliceFfsk(const std::vector<float>& disc, double rate);   // sliceFsk 
 FskResult sliceFsk(const std::vector<float>& disc, double rate);
 // Best BCH(31,21)+parity alignment of a bit stream, both polarities: fills the burst's pol, align, words, counts, sync, hex and verdict
 void analyseBits(const std::vector<uint8_t>& bits, MtBurst& b);
+// Repetition and marker structure of a bit stream (fills the framing members of the burst); analyseBits calls it
+void analyseFraming(const std::vector<uint8_t>& bits, MtBurst& b);
 const char* nearestStandardBaud(double baud);   // "1200" within 1.5% of 512 / 1200 / 2400 / 600 / 300 / 4800 / 9600, else ""
 } // namespace multitone
 

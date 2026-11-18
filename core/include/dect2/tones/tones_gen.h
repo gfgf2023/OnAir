@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Tone signalling test signals. Nothing is transmitted: the samples only exist in memory or in a file.
 //
 // ToneScene builds an audio signal (1.0 = 5 kHz FM deviation) out of CTCSS, DCS, DTMF, sequential, SELCAL and two-tone parts, speech-like
@@ -42,5 +45,7 @@ private:
 std::vector<cf32> toneSceneFm(const ToneScene& s, double rate, double offsetHz, double snrDb, uint32_t seed = 3);
 
 std::unique_ptr<ModeSynth> makeTonesSynth(const SynthConfig& cfg, double sampleRate);
+// The SELCAL mode's demonstration: voice, then the calls AM-CP, DH-KS, AM-CP in a loop of 22 s (same SynthConfig as makeTonesSynth)
+std::unique_ptr<ModeSynth> makeSelcalSynth(const SynthConfig& cfg, double sampleRate);
 
 } // namespace dect2

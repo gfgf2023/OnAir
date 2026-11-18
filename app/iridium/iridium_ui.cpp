@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Iridium screens: the map of satellite sub-points with their recent track and the beam centres of the ring alerts, the frame
 // counters and burst rates, the ring alert list, the pager messages with a text panel, the Iridium time, and a burst scatter
 // (time against frequency) of the last 2 s.
 #include "app.h"
+#include "iridium_sky.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "../adsb/adsb_map.h"
@@ -10,6 +15,8 @@
 #include "iridium_extra_ui.h"
 #include "dect2/codec/codec_registry.h"
 #include "../codec/speech_codec_ui.h"
+#include "../voice/voice_clips_ui.h"
+#include "../state/recdir.h"
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
@@ -24,6 +31,7 @@ using dect2::IridiumTelemetry;
 struct State {
     bool loaded = false;
     int view = 0;                    // 0 map, 1 messages, 2 ring alerts, 3 bursts, 4 calls, 5 ACARS, 6 packets, 7 pager (iridium_extra_ui.cpp)
+    bool record = true;              // save each ended call as a WAV
     int listen = 0;                  // voice: -1 off, 0 first call with sound, else the call id
     int selSat = -1;                 // the selected satellite, -1 = none
     int selMsg = -1;                 // index into messages, newest = 0
@@ -51,6 +59,7 @@ void loadState() {
     S.thrDb = (float)d.getD("iridiumThr", 13.0);
     const std::string bn = d.getS("iridiumBitsName", "output.bits");
     snprintf(S.bitsName, sizeof S.bitsName, "%s", bn.empty() ? "output.bits" : bn.c_str());
+    S.record = d.getI("iridiumRecord", 1) != 0;
     S.netOn = d.getI("iridiumNetOn", 0) != 0;
     S.netTcp = d.getI("iridiumNetTcp", 0) != 0;
     S.fileAuto = d.getI("iridiumBitsOn", 0) != 0;
@@ -112,9 +121,9 @@ void mapView(App& a, ImVec2 size) {
             S.map.zoom = std::max(2, std::min(8, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     ImVec2 click; const bool clicked = adsbmap::clickedAt(click);
@@ -140,11 +149,13 @@ void mapView(App& a, ImVec2 size) {
             const ImVec2 d[4] = {{q.x, q.y - r}, {q.x + r, q.y}, {q.x, q.y + r}, {q.x - r, q.y}};
             dl->AddConvexPolyFilled(d, 4, satColour(s.id));
             dl->AddPolyline(d, 4, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 160), ImDrawFlags_Closed, sel ? 1.6f : 1.f);
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
             char b[16]; snprintf(b, sizeof b, "SV%03d", s.id);
             const ImVec2 lp(q.x + 10 * gUi, q.y - ImGui::GetTextLineHeight() * 0.5f);
             const ImVec2 ts = ImGui::CalcTextSize(b);
             dl->AddRectFilled(ImVec2(lp.x - 3 * gUi, lp.y - 1), ImVec2(lp.x + ts.x + 3 * gUi, lp.y + ts.y + 1), IM_COL32(10, 12, 14, 200), 2.f);
             dl->AddText(lp, IM_COL32(235, 238, 240, 255), b);
+            }
             const float dd = std::hypot(q.x - click.x, q.y - click.y);
             if (clicked && dd < best) { best = dd; hit = s.id; }
         }
@@ -289,11 +300,22 @@ void callsView(App& a) {
         ImGui::EndCombo();
     }
     ImGui::TextWrapped("Each call is saved as a WAV file in the recordings folder when it ends and the plug-in produced sound. Frames that fail their checks, or that the plug-in refuses, are listed as not readable and stay silent. Encrypted or scrambled traffic is never decoded.");
-    if (!ImGui::BeginTable("##iri_calls", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+    if (ImGui::Checkbox("Record calls##irrec", &S.record)) plat::prefs().setI("iridiumRecord", S.record ? 1 : 0);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("One WAV per call, written when the call ends (needs the codec plug-in).");
+    ImGui::SameLine(); kit::recordingsButton("iri");
+    {   // a call that has no sound says why (no codec, a plug-in that returns silence, a write error) instead of silently saving nothing
+        std::string why;
+        for (auto it = t.calls.rbegin(); it != t.calls.rend() && why.empty(); ++it) why = it->warning;
+        if (!why.empty()) ImGui::TextColored(ImVec4(0.95f, 0.7f, 0.2f, 1), "%s", why.c_str());
+    }
+    const float tableH = std::max(120.f * gUi, ImGui::GetContentRegionAvail().y - 250.f * gUi);
+    const bool tableOpen = ImGui::BeginTable("##iri_calls", 12, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0, tableH));
+    if (tableOpen) {
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("#"); ImGui::TableSetupColumn("Time"); ImGui::TableSetupColumn("MHz"); ImGui::TableSetupColumn("Dir");
     ImGui::TableSetupColumn("Length"); ImGui::TableSetupColumn("Sat"); ImGui::TableSetupColumn("Beam");
-    ImGui::TableSetupColumn("Frames"); ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Frames"); ImGui::TableSetupColumn("Level"); ImGui::TableSetupColumn("Mute"); ImGui::TableSetupColumn("Solo");
+    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
     for (auto it = t.calls.rbegin(); it != t.calls.rend(); ++it) {
         ImGui::TableNextRow();
@@ -306,12 +328,33 @@ void callsView(App& a) {
         ImGui::TableNextColumn(); if (it->sat >= 0) ImGui::Text("%d", it->sat); else ImGui::TextDisabled("-");
         ImGui::TableNextColumn(); if (it->beam >= 0) ImGui::Text("%d", it->beam); else ImGui::TextDisabled("-");
         ImGui::TableNextColumn(); ImGui::Text("%u/%u", it->readable, it->frames);
+        ImGui::TableNextColumn(); ImGui::ProgressBar(it->audible ? it->level : 0.f, ImVec2(50 * gUi, 0), "");
+        {
+            char id[24]; bool m = it->mute, so = it->solo;
+            ImGui::TableNextColumn(); snprintf(id, sizeof id, "##irm%d", it->id);
+            if (ImGui::Checkbox(id, &m)) a.engine.iridium().voice().setMute(it->id, m);
+            ImGui::TableNextColumn(); snprintf(id, sizeof id, "##irs%d", it->id);
+            if (ImGui::Checkbox(id, &so)) a.engine.iridium().voice().setSolo(it->id, so);
+        }
         ImGui::TableNextColumn();
         ImGui::Text("%s%s", it->active ? "live, " : "", it->status.c_str());
+        if (!it->warning.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", it->warning.c_str());
         if (!it->file.empty()) { ImGui::SameLine(); ImGui::TextDisabled("(saved)"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", it->file.c_str()); }
     }
     if (t.calls.empty()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextDisabled("no voice calls heard"); }
     ImGui::EndTable();
+    }
+    std::vector<dect2::voice::Clip> fresh;   // the saved calls, with what this mode knows about them
+    for (const auto& c : t.calls) {
+        if (c.file.empty()) continue;
+        dect2::voice::Clip k;
+        char lab[96];
+        snprintf(lab, sizeof lab, "%.4f MHz %s%s%s", c.freqHz / 1e6, c.downlink ? "down" : "up", c.sat >= 0 ? ", sat " : "", c.sat >= 0 ? std::to_string(c.sat).c_str() : "");
+        k.path = c.file; k.mode = "iridium"; k.label = lab; k.seconds = c.audioSec;
+        k.wallStart = c.wallEnd > 0 ? c.wallEnd - int64_t(c.audioSec) : 0;
+        fresh.push_back(std::move(k));
+    }
+    voiceclips::panel(a, "iridium", "iriclips", recordingsDir(), "iridium-call-", fresh);
 }
 
 // ---------------------------------------------------------------- burst scatter
@@ -511,13 +554,14 @@ void panels(App& a) {
 void tab(App& a) {
     loadState();
     kit::modeHeader({19, "Iridium", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("iriv", S.view, {{tr("Live"), 0}, {tr("Tracks"), 8}, {tr("Messages"), 1, true}, {tr("Ring alerts"), 2, true}, {tr("Bursts"), 3, true}, {tr("Calls"), 4, true}, {tr("ACARS"), 5, true}, {tr("Log"), 6, true}, {tr("Pager"), 7, true}});
+    kit::modeNav("iriv", S.view, {{tr("Live"), 0}, {tr("Tracks"), 8}, {tr("Messages"), 1, true}, {tr("Ring alerts"), 2, true}, {tr("Bursts"), 3, true}, {tr("Calls"), 4, true}, {tr("ACARS"), 5, true}, {tr("Log"), 6, true}, {tr("Pager"), 7, true}, {tr("Sky"), 9, true}});
     if (S.view == 8) { kit::sessionItems(19, 3, "iridium"); return; }
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     if (S.view == 4) { callsView(a); return; }
     if (S.view == 5) { iridiumui::acarsView(a); return; }
     if (S.view == 6) { iridiumui::packetsView(a); return; }
     if (S.view == 7) { iridiumui::pagerView(a); return; }
+    if (S.view == 9) { iridiumSkyView(a, W, H); return; }
     if (S.view == 1) { messages(a, W, H); return; }
     if (S.view == 2) { ringAlerts(a); return; }
     if (S.view == 3) {
@@ -601,15 +645,16 @@ void summary(const App& a, std::string& l1, std::string& l2) {
 // The engine does not pass the tuned frequency on: the receiver needs it for absolute frequencies and the simplex rule.
 void tick(App& a) {
     loadState();
+    iridiumSkyTick(a);
     if (!a.engine.running()) { S.pushedCenter = 0; S.pushedThr = -1; return; }
     dect2::IridiumReceiver& r = a.engine.iridium();
     if (live(a)) appcodec::voiceCodecTick("iridium");   // the user's codec plug-in (docs/CODECS.md), loaded whichever tab is shown
     {
         static bool dirMade = false;
-        const std::string rec = plat::dataDir() + "/recordings";
+        const std::string rec = recordingsDir();
         if (!dirMade) { std::error_code ec; std::filesystem::create_directories(rec, ec); dirMade = true; }
         dect2::IridiumVoice& v = r.voice();
-        v.setVolume(a.volume); v.setMuted(a.muted); v.setListenCall(S.listen); v.setRecordFolder(rec);
+        v.setVolume(a.volume); v.setMuted(a.muted); v.setListenCall(S.listen); v.setRecordFolder(S.record ? rec : std::string());
     }
     if (S.pushedCenter != a.freqMhz) { r.setCenterMhz(a.freqMhz); S.pushedCenter = a.freqMhz; }
     if (S.pushedThr != S.thrDb) { r.setThresholdDb(S.thrDb); S.pushedThr = S.thrDb; }
@@ -637,7 +682,7 @@ void toolkitSave(App& a) {
     auto bitsPathFor = [&]() {
         const std::string name = S.bitsName[0] ? S.bitsName : "output.bits";
         const bool full = name.find_first_of("/\\") != std::string::npos;
-        return full ? name : plat::dataDir() + "/recordings/" + name;
+        return full ? name : recordingsDir() + "/" + name;
     };
     auto startFile = [&]() { S.bitsErr.clear(); if (!r.startBitsFile(bitsPathFor(), &S.bitsErr) && S.bitsErr.empty()) S.bitsErr = "cannot write the file"; };
     auto startNet = [&]() { S.netErr.clear(); if (!r.startBitsStream(S.netTcp, S.netHost, S.netPort, &S.netErr)) S.netOn = false; };
@@ -729,6 +774,16 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
+// Simple view: the map, the messages, the calls and the time / satellite readouts side by side
+static void command(App& a) {
+    loadState();
+    kit::modeHeader({19, "Iridium", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##iricmap", tr("Map"), [&a] { mapView(a, ImGui::GetContentRegionAvail()); }, 1.f, 260.f},
+                      {"##iricmsg", tr("Messages"), [&a] { const ImVec2 v = ImGui::GetContentRegionAvail(); messages(a, v.x, v.y); }, 2.2f, 300.f},
+                      {"##iriccall", tr("Calls"), [&a] { callsView(a); }, 1.f, 220.f},
+                      {"##iricsat", tr("Satellites"), [&a] { timeBox(a); ImGui::Spacing(); satDetail(a); ImGui::Spacing(); counters(a); }, 0.9f, 220.f}}, 280.f);
+}
+
 extern const ModeUi kIridiumUi;
 const ModeUi kIridiumUi = {
     .sideTitle = "SATELLITES",
@@ -744,4 +799,5 @@ const ModeUi kIridiumUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

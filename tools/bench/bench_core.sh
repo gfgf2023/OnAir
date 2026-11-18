@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Builds tools/bench/bench_core.cpp with only the DSP sources it needs (no other build needed), at the lowest priority, and runs it.
 #   tools/bench/bench_core.sh [out dir] [-- bench_core arguments]
 # DECT2_PORTABLE=1 builds the portable kernels instead of Accelerate (what Windows and Linux run).
@@ -14,5 +17,5 @@ cd "$ROOT"
 LIBS="-lpthread"
 [ "$(uname)" = Darwin ] && LIBS="$LIBS -framework Accelerate"
 nice -n 19 c++ -std=c++20 -O3 $DEFS -Icore/include -Icore/src -w -o "$OUT/bench_core" tools/bench/bench_core.cpp core/src/dsp/dsp_compat.cpp \
-  core/src/dsp/spectrum.cpp core/src/dsp/resampler.cpp core/src/dsp/exact_resampler.cpp core/src/common/threadpool.cpp $LIBS
+  core/src/dsp/spectrum.cpp core/src/dsp/zoom_spectrum.cpp core/src/dsp/resampler.cpp core/src/dsp/exact_resampler.cpp core/src/common/threadpool.cpp $LIBS
 [ -n "$NORUN" ] || nice -n 19 "$OUT/bench_core" "$@"

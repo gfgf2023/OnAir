@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DVB-T signal generator (transmitter): transport stream in, baseband IQ at the native rate (64/7 MHz for 8 MHz) out.
 #pragma once
 #include "dvbt.h"
@@ -48,6 +51,7 @@ private:
     std::vector<uint8_t> codedLpQ_;
     void codeGroup(PacketSource& src, ConvInterleaver& ci, InnerEncoder& enc, std::vector<uint8_t>& q);
     std::deque<uint8_t> wordsQ_;
+    std::vector<cf32> block_;          // the in-depth interleaver's block of two or four symbols (annex F)
     std::vector<float> tpsVal_;
     std::vector<cf32> carriers_;
     ::dect2::Fft* fft_ = nullptr;

@@ -1,4 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Time signal receiver (see time_rx.h).
+#include "dect2/time/dcf77_phase.h"
+#include "dect2/time/wwvb_phase.h"
 #include "dect2/time/time_rx.h"
 #include "dect2/results/results_io.h"
 #include "dect2/time/time_tel.h"
@@ -136,6 +141,8 @@ struct TimeReceiver::Impl {
     std::deque<float> levelH, snrH, tickH, offH;
     std::deque<double> resid;
     uint64_t okN = 0, badN = 0;
+    uint64_t apN = 0;                    // 4.0: minutes counted by the a-priori check (in okN too)
+    std::atomic<bool> apOn{true};
     std::deque<TimeFrameLog> flog;
     bool logLoad = false;                // a loaded file for flog (mu): the feed thread takes it
     std::deque<TimeFrameLog> logIn;
@@ -178,8 +185,12 @@ struct TimeReceiver::Impl {
     template <class T> static void put(std::vector<T>& r, int64_t i, T v) { r[(size_t)(i & (int64_t)(r.size() - 1))] = v; }
 
     // ---------------------------------------------------------------- 8 kHz
+    Dcf77Phase dcfPhase;
+    WwvbPhase wwvbPhase;
     void sample8(cd x) {
         const int64_t j = k8++;
+        if (st == Dcf77) dcfPhase.feed(std::complex<float>((float)x.real(), (float)x.imag()));
+        if (st == Wwvb) wwvbPhase.feed(std::complex<float>((float)x.real(), (float)x.imag()));
         const cd c = car.push(x);
         const bool hf = amAudio(st);
         if (hf) {
@@ -528,6 +539,32 @@ struct TimeReceiver::Impl {
         if (log) log(std::string("Time signal: ") + stationName(st) + (ok ? " " : " rejected: ") + text);
     }
 
+    // 4.0 a-priori check (docs/SENSITIVITY-4.0-X1.md): once a minute was decoded, the next minutes are known in advance. A minute whose parity fails
+    // still counts when its symbols match the time code of the expected minute in at least 54 of 60 seconds and match it at least 3 symbols better
+    // than the minutes around it (+-1, +-2 minutes, +-1 hour, +-1 day): a wrong count of seconds or a wrong anchor cannot pass. Not for RWM (no time
+    // code) and the 20 s BPC frames. Returns the number of agreeing symbols, 0 when the check does not pass.
+    int predictedMatch(const uint8_t* w, int64_t c) const {
+        if (!apOn || !anchored || st == Rwm || st == Bpc || okN == 0) return 0;
+        const int64_t pred = anchorUtc + (c - 59 - anchorCount);
+        if (pred % 60 != 0) return 0;
+        EncodeOpts eo;
+        eo.leapAnnounce = fields.leapAnnounce; eo.leapSign = fields.leapSign != 0 ? fields.leapSign : 1;
+        eo.dut1 = fields.dut1 == 99 ? 0 : fields.dut1; eo.dUt1 = fields.dUt1 == 99 ? 0 : fields.dUt1;
+        eo.callBit = fields.callBit; eo.ut1 = fields.ut1;
+        auto score = [&](int64_t u) {
+            const std::vector<uint8_t> e = encodeMinute(st, u, eo);
+            if (e.size() < 60) return -1;
+            int a = 0;
+            for (int k = 0; k < 60; k++) a += e[(size_t)k] == w[k];
+            return a;
+        };
+        const int a = score(pred);
+        if (a < 54) return 0;
+        for (int64_t d : {-60LL, 60LL, -120LL, 120LL, -3600LL, 3600LL, -86400LL, 86400LL})
+            if (score(pred + d) > a - 3) return 0;
+        return a;
+    }
+
     void setAnchor(int64_t count, int64_t utc) {
         if (anchored && anchorUtc + (count - anchorCount) == utc) framesInRow++; else framesInRow = 1;
         anchored = true; anchorCount = count; anchorUtc = utc;
@@ -682,6 +719,12 @@ struct TimeReceiver::Impl {
                     fields = f;
                     setAnchor(c - 59, f.utcMinute);
                     addLog(true, fieldsText(f, st), bits);
+                } else if (int agree = predictedMatch(w, c); agree > 0) {
+                    okN++; apN++;
+                    setAnchor(c - 59, anchorUtc + (c - 59 - anchorCount));
+                    char t[96];
+                    snprintf(t, sizeof t, "matches the predicted minute (%d of 60 symbols)", agree);
+                    addLog(true, t, bits);
                 } else {
                     badN++;
                     addLog(false, "parity, a fixed bit or a range is wrong", bits);
@@ -719,6 +762,8 @@ struct TimeReceiver::Impl {
         t.timeSec = tNow(); t.inputRate = rate;
         t.cfoHz = cfo; t.snrDb = snr; t.levelDb = level; t.depth = (float)depth;
         t.secPhaseMs = phase * 1000;
+        t.dcfPhaseLocked = dcfPhase.status().locked; t.dcfPhaseCorr = dcfPhase.status().corr; t.dcfPhaseBit = dcfPhase.status().lastBit;
+        t.wwvbPhaseLocked = wwvbPhase.status().locked; t.wwvbPhaseUtc = wwvbPhase.status().utcMinute;
         if (resid.size() >= 3) {
             double m = 0, q = 0;
             for (double r : resid) m += r;
@@ -730,7 +775,7 @@ struct TimeReceiver::Impl {
         t.state = t.timeValid ? 2 : locked ? 1 : 0;
         t.dataValid = locked;
         t.confirmed = t.timeValid && framesInRow >= 2;
-        t.blocksOk = okN; t.blocksBad = badN;
+        t.blocksOk = okN; t.blocksBad = badN; t.minutesPredicted = apN;
         t.fields = fields;
         if (anchored && lastCount >= 0) {
             t.utcNow = (double)(anchorUtc + (lastCount - anchorCount)) + (tNow() - lastS);
@@ -787,6 +832,7 @@ void TimeReceiver::setAudioInput(bool on, double toneHz) {
     if (o != on || t != toneHz) p_->resetReq = true;
 }
 void TimeReceiver::setStation(int s) { if (s != p_->stationReq.exchange(s)) p_->resetReq = true; }
+void TimeReceiver::setPredictedMinutes(bool on) { p_->apOn = on; }
 void TimeReceiver::setPref60(int s) { if (s != p_->pref60.exchange(s) && p_->stationReq.load() < 0) p_->resetReq = true; }
 void TimeReceiver::setClockMode(int mode, double originSec) { p_->clockOrigin = originSec; p_->clockMode = mode; }
 void TimeReceiver::setReceiverLocation(double lat, double lon, bool userSet) { p_->rxLat = lat; p_->rxLon = lon; p_->rxLocSet = userSet; }
@@ -817,7 +863,7 @@ bool TimeReceiver::loadResults(const std::string& blob) {
 void TimeReceiver::feed(const cf32* x, size_t n) {
     Impl& m = *p_;
     if (m.resetReq.exchange(false)) m.resetState();
-    if (m.clearReq.exchange(false)) { m.flog.clear(); m.okN = m.badN = 0; }
+    if (m.clearReq.exchange(false)) { m.flog.clear(); m.okN = m.badN = 0; m.apN = 0; }
     { std::lock_guard<std::mutex> lk(m.mu); if (m.logLoad) { m.flog = std::move(m.logIn); m.logIn.clear(); m.logLoad = false; } }
     if (m.rateRaw < (m.audioIn.load() ? 16000.0 : timeTuning().minSampleRate - 1) || n == 0) return;
     const double r = m.rate;

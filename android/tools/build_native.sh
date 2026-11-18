@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Builds libonair.so (the desktop receiver library + the JNI bridge, android/native/CMakeLists.txt) for arm64-v8a, strips it and puts
 # it where Gradle packages it (android/app/src/main/jniLibs/arm64-v8a/, gitignored).
 #
@@ -59,6 +62,8 @@ echo "NDK:           $NDK"
   -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
   -DCMAKE_MAKE_PROGRAM="$MAKE_BIN" -DONAIR_SRC="$ONAIR_SRC" \
   -DLIBUSB_SRC="${LIBUSB_SRC:-}" -DAIRSPY_SRC="${AIRSPY_SRC:-}" -DAIRSPYHF_SRC="${AIRSPYHF_SRC:-}"
+python3 "$HERE/tools/gen_modes.py" "$ONAIR_SRC" "$HERE"          # the mode list comes from the desktop table: new modes need no Android change
+python3 "$HERE/tools/gen_results_map.py" "$ONAIR_SRC"            # and so do their results
 TARGETS=(onair)
 [ -n "${LIBUSB_SRC:-}" ] && TARGETS+=(usb1.0)
 [ -n "${LIBUSB_SRC:-}" ] && [ -n "${AIRSPY_SRC:-}" ] && TARGETS+=(airspy)

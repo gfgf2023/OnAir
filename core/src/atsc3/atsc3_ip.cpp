@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
 #include "dect2/atsc3/atsc3_ip.h"
 #include "dect2/common/inflate.h"
 #include "dect2/common/xmlmini.h"
@@ -34,11 +38,23 @@ uint16_t checksum(const uint8_t* d, int n) {
 
 bool IpReceiver::push(const uint8_t* p, size_t n, UdpDatagram& out) {
     counter_++;
-    if (n < 20 || (p[0] >> 4) != 4) { dropped_++; return false; }
+    if (n < 20 || (p[0] >> 4) != 4) {
+        DIAG_DEBUG_EVERY(913369, 10.0, "An ATSC 3.0 IP packet of %zu bytes is not IPv4, so it is dropped.", n);
+        dropped_++;
+        return false;
+    }
     const int ihl = (p[0] & 15) * 4;
     const int total = (p[2] << 8) | p[3];
-    if (ihl < 20 || (size_t)ihl > n || total < ihl || (size_t)total > n) { dropped_++; return false; }
-    if (p[9] != 17) { dropped_++; return false; }   // UDP only
+    if (ihl < 20 || (size_t)ihl > n || total < ihl || (size_t)total > n) {
+        DIAG_DEBUG_EVERY(595119, 10.0, "An ATSC 3.0 IPv4 packet has an inconsistent header length (%d) or total length (%d of %zu bytes), so it is dropped.", ihl, total, n);
+        dropped_++;
+        return false;
+    }
+    if (p[9] != 17) {   // UDP only
+        DIAG_DEBUG_EVERY(502789, 10.0, "An ATSC 3.0 IPv4 packet carries protocol %d instead of UDP, so it is dropped.", (int)p[9]);
+        dropped_++;
+        return false;
+    }
     const int fragField = (p[6] << 8) | p[7];
     const bool more = fragField & 0x2000;
     const int off = (fragField & 0x1FFF) * 8;
@@ -66,9 +82,17 @@ bool IpReceiver::push(const uint8_t* p, size_t n, UdpDatagram& out) {
         for (auto it = frags_.begin(); it != frags_.end();) { if (counter_ - it->second.age > 2000) it = frags_.erase(it); else ++it; }   // lost fragments
         if (whole.empty()) return false;
     }
-    if (whole.size() < 8) { dropped_++; return false; }
+    if (whole.size() < 8) {
+        DIAG_DEBUG_EVERY(836372, 10.0, "An ATSC 3.0 UDP datagram of %zu bytes is shorter than its 8 byte header, so it is dropped.", whole.size());
+        dropped_++;
+        return false;
+    }
     const int ulen = (whole[4] << 8) | whole[5];
-    if (ulen < 8 || (size_t)ulen > whole.size()) { dropped_++; return false; }
+    if (ulen < 8 || (size_t)ulen > whole.size()) {
+        DIAG_DEBUG_EVERY(607412, 10.0, "An ATSC 3.0 UDP datagram announces a length of %d bytes but only %zu arrived, so it is dropped.", ulen, whole.size());
+        dropped_++;
+        return false;
+    }
     out.srcIp = src; out.dstIp = dst;
     out.srcPort = (whole[0] << 8) | whole[1];
     out.dstPort = (whole[2] << 8) | whole[3];
@@ -136,41 +160,123 @@ void parseSlt(const std::shared_ptr<XmlNode>& root, Slt& slt) {
 
 } // namespace
 
-LlsTable parseLls(const uint8_t* p, size_t n) {
-    LlsTable t;
-    if (n < 4) return t;
-    t.tableId = p[0]; t.groupId = p[1]; t.groupCount = p[2] + 1; t.version = p[3];
-    if (t.tableId >= 1 && t.tableId <= 5) {   // SLT, RRT, SystemTime, AEAT, OnscreenMessageNotification: gzip compressed XML
-        std::vector<uint8_t> x;
-        if (!gunzip(p + 4, n - 4, x, 8u << 20)) return t;
-        t.xml.assign(x.begin(), x.end());
-        if (t.tableId == 1) {
-            auto root = parseXml(t.xml);
-            if (!root || root->local() != "SLT") return t;
-            parseSlt(root, t.slt);
+std::vector<AeatAlert> parseAeat(const std::string& xml) {
+    std::vector<AeatAlert> out;
+    auto root = parseXml(xml);
+    if (!root || root->local() != "AEAT") return out;
+    for (const auto& ev : root->all("AEA")) {
+        AeatAlert a;
+        a.id = ev->attr("AEAId"); a.issuer = ev->attr("issuer"); a.audience = ev->attr("audience"); a.type = ev->attr("AEAType"); a.priority = ev->attr("priority");
+        if (auto h = ev->first("Header")) {
+            a.effective = h->attr("effective"); a.expires = h->attr("expires");
+            if (auto c = h->first("EventCode")) a.eventCode = c->text;
+            if (auto d = h->first("EventDesc")) a.eventDesc = d->text;
+            for (const auto& l : h->all("Location")) { if (!a.location.empty()) a.location += "; "; a.location += l->text; }
         }
-        t.ok = true;
+        auto texts = ev->all("AEAText");
+        if (!texts.empty()) { a.text = texts[0]->text; a.lang = texts[0]->attr("lang"); }
+        out.push_back(std::move(a));
     }
+    return out;
+}
+
+namespace {
+// one LLS table body (gzip compressed XML for the ids 1 to 5)
+bool llsBody(int tableId, const uint8_t* p, size_t n, LlsTable& t) {
+    if (tableId < 1 || tableId > 5) {
+        DIAG_DEBUG_EVERY(804564, 10.0, "An ATSC 3.0 low level signalling table has the unknown id %d, so it is ignored.", tableId);
+        return false;
+    }
+    std::vector<uint8_t> x;
+    if (!gunzip(p, n, x, 8u << 20)) {
+        DIAG_DEBUG_EVERY(530415, 10.0, "The gzip data of ATSC 3.0 low level signalling table %d (%zu bytes) could not be decompressed, so the table is ignored.", tableId, n);
+        return false;
+    }
+    t.xml.assign(x.begin(), x.end());
+    if (tableId == 1) {
+        auto root = parseXml(t.xml);
+        if (!root || root->local() != "SLT") {
+            DIAG_DEBUG_EVERY(314962, 10.0, "An ATSC 3.0 service list table is not valid XML or has another root element, so the service list is not updated.");
+            return false;
+        }
+        parseSlt(root, t.slt);
+    }
+    t.ok = true;
+    return true;
+}
+} // namespace
+
+std::vector<LlsTable> parseLlsAll(const uint8_t* p, size_t n) {
+    std::vector<LlsTable> all;
+    if (n < 4) return all;
+    LlsTable h;
+    h.tableId = p[0]; h.groupId = p[1]; h.groupCount = p[2] + 1; h.version = p[3];
+    if (h.tableId != 0xFE) {
+        LlsTable t = h;
+        if (llsBody(t.tableId, p + 4, n - 4, t)) all.push_back(std::move(t));
+        return all;
+    }
+    // SignedMultiTable: LLS_payload_count, then id, version, 16-bit length and the payload for each, then the signature
+    size_t pos = 4;
+    if (pos >= n) return all;
+    const int count = p[pos++];
+    for (int i = 0; i < count; i++) {
+        if (pos + 4 > n) break;
+        LlsTable t = h;
+        t.tableId = p[pos]; t.version = p[pos + 1];
+        const size_t len = ((size_t)p[pos + 2] << 8) | p[pos + 3];
+        pos += 4;
+        if (pos + len > n) break;
+        if (llsBody(t.tableId, p + pos, len, t)) all.push_back(std::move(t));
+        pos += len;
+    }
+    return all;
+}
+
+LlsTable parseLls(const uint8_t* p, size_t n) {
+    auto all = parseLlsAll(p, n);
+    for (auto& t : all) if (t.tableId == 1) return t;
+    if (!all.empty()) return all[0];
+    LlsTable t;
+    if (n >= 4) { t.tableId = p[0]; t.groupId = p[1]; t.groupCount = p[2] + 1; t.version = p[3]; }
     return t;
 }
 
-std::vector<uint8_t> makeLls(int id, int group, int version, const std::string& xml) {
-    // gzip with stored blocks: valid, no compression is needed for generating test data
-    std::vector<uint8_t> v = {(uint8_t)id, (uint8_t)group, 0, (uint8_t)version};
+std::vector<uint8_t> gzipStored(const uint8_t* data, size_t size) {
     std::vector<uint8_t> g = {0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 3};
     size_t pos = 0;
     do {
-        size_t n = std::min<size_t>(65535, xml.size() - pos);
-        bool last = pos + n == xml.size();
+        const size_t n = std::min<size_t>(65535, size - pos);
+        const bool last = pos + n == size;
         g.push_back(last ? 1 : 0);
         g.push_back(n & 255); g.push_back(n >> 8); g.push_back(~n & 255); g.push_back((~n >> 8) & 255);
-        g.insert(g.end(), xml.begin() + pos, xml.begin() + pos + n);
+        g.insert(g.end(), data + pos, data + pos + n);
         pos += n;
-    } while (pos < xml.size());
-    uint32_t crc = crc32Ieee((const uint8_t*)xml.data(), xml.size());
+    } while (pos < size);
+    const uint32_t crc = crc32Ieee(data, size);
     for (int i = 0; i < 4; i++) g.push_back((crc >> (8 * i)) & 255);
-    for (int i = 0; i < 4; i++) g.push_back((xml.size() >> (8 * i)) & 255);
+    for (int i = 0; i < 4; i++) g.push_back((size >> (8 * i)) & 255);
+    return g;
+}
+
+std::vector<uint8_t> makeLls(int id, int group, int version, const std::string& xml) {
+    std::vector<uint8_t> v = {(uint8_t)id, (uint8_t)group, 0, (uint8_t)version};
+    const auto g = gzipStored((const uint8_t*)xml.data(), xml.size());
     v.insert(v.end(), g.begin(), g.end());
+    return v;
+}
+
+std::vector<uint8_t> makeSignedMultiLls(int group, const std::vector<std::tuple<int, int, std::string>>& tables, int sigBytes) {
+    std::vector<uint8_t> v = {0xFE, (uint8_t)group, 0, 1, (uint8_t)tables.size()};
+    for (auto& t : tables) {
+        const std::string& xml = std::get<2>(t);
+        const auto g = gzipStored((const uint8_t*)xml.data(), xml.size());
+        v.push_back((uint8_t)std::get<0>(t)); v.push_back((uint8_t)std::get<1>(t));
+        v.push_back((uint8_t)(g.size() >> 8)); v.push_back((uint8_t)g.size());
+        v.insert(v.end(), g.begin(), g.end());
+    }
+    v.push_back((uint8_t)(sigBytes >> 8)); v.push_back((uint8_t)sigBytes);
+    for (int i = 0; i < sigBytes; i++) v.push_back((uint8_t)(0x30 + i));
     return v;
 }
 

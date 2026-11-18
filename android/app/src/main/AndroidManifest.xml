@@ -19,8 +19,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Settings > Keep receiving in the background: the system's own "allow background" dialog, so a long decode is not stopped. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Its notification (Android 13+ asks; the receiver runs without it too). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- In-app update (update/UpdateManager.kt): hands the verified APK to the system's package installer, which asks the user to confirm. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
 
     <application
@@ -73,6 +77,8 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <!-- The package installer's answer to an in-app update (update/UpdateManager.kt); only the system sends to it, through our own PendingIntent. -->
+        <receiver android:name=".update.InstallResultReceiver" android:exported="false" />
     </application>
 
 </manifest>

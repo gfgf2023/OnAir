@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Shared by the ADS-B screens (adsb_*.cpp): the screen state, the colours, the unit helpers and the functions more than
 // one file uses. Everything is in namespace adsbui; the mode entry is kAdsbUi (declared in modeui.cpp).
 // Included by adsb_ui.cpp, adsb_table_ui.cpp and adsb_map_ui.cpp only.
@@ -11,6 +14,8 @@
 #include "dect2/adsb/adsb_reg.h"
 #include "dect2/adsb/adsb_jam.h"
 #include "dect2/adsb/adsb_display.h"
+#include "dect2/adsb/adsb_filter.h"
+#include "dect2/watchlist/plane_alert.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -41,6 +46,7 @@ struct State {
     int pushedDrop = -1;                        // the drop time last given to the receiver
     bool winds = false;                         // "winds aloft": wind arrows at the aircraft (from Comm-B)
     bool full = false;                          // the map or radar fills the whole window (Esc or the same button to leave)
+    int fullView = 0;                           // what fills it: 0 the map, 2 the radar (the screen whose button was pressed, not viewMode: #521)
     double ctxLat = 0, ctxLon = 0;              // where the map was right-clicked
     std::string locMsg;
     int locBusy = 0;
@@ -51,6 +57,8 @@ struct State {
     std::string pushedSrc; bool pushedAny = false, srcPushed = false;
     dect2::AdsbRegDb db;
     std::string dbMsg;
+    dect2::AdsbFilter filter;                   // the filter and search bar (prefs adsbFilter): what the table, the side list and the map show
+    bool filterLoaded = false;
 };
 
 inline const ImVec4 kDim(0.62f, 0.65f, 0.68f, 1), kGood(0.40f, 0.85f, 0.50f, 1), kWarn(0.95f, 0.60f, 0.25f, 1);
@@ -80,9 +88,34 @@ void unitsControls();
 void displayControls();   // the "Display" popup: altitude colours, track width, drop time
 std::string typeText(const AdsbAircraft& ac);
 void aircraftTable(App& a, bool compact);
-void detail(const App& a);
+void detail(App& a);
 void statsView(App& a);
+void atmosFeed(const AdsbTelemetry& t, double now);   // adsb_atmos_ui.cpp (3.9): sounding and altimetry check
+void atmosView(App& a);
 void sourcesPanel(App& a);
+bool shown(const AdsbAircraft& ac);   // passes the filter bar
+void filterBar(App& a);               // search box, Filter pop-up, "n of m shown"
+
+// adsb_overhead_ui.cpp: the overhead log (planefence)
+void overheadTick(App& a);
+void overheadBanner(App& a);
+void overheadView(App& a);
+
+// adsb_seen_ui.cpp: airframes over days and years
+void seenTick(App& a);
+void seenView(App& a);
+bool seenNewToday(uint32_t icao);   // first heard ever today
+
+// adsb_horizon_ui.cpp: the theoretical range outline
+void horizonControls();          // inside the Display pop-up
+void drawHorizon(ImDrawList* dl);
+
+// adsb_airport_ui.cpp: arrivals and departures
+void airportTick(App& a);
+void airportView(App& a);
+
+// adsb_planealert_ui.cpp: the imported plane-alert-db entry of an aircraft (nullptr: none)
+const dect2::watchlist::PlaneAlertEntry* planeAlertFor(uint32_t icao);
 
 // adsb_map_ui.cpp
 double bearingDeg(double lat1, double lon1, double lat2, double lon2);

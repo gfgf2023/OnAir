@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DAB / DAB+ data structures shared by the receiver and the UI: ensemble contents and live telemetry.
 #pragma once
 #include "dect2/common/ring.h"
@@ -91,6 +94,7 @@ struct DabAnnSwitch {
 };
 
 struct DabEnsemble {
+    std::map<int, int> subFec;    // sub-channel id -> FEC scheme (FIG 0/14)
     bool valid = false;           // ensemble id and at least one service seen
     uint16_t eid = 0;
     std::string label;

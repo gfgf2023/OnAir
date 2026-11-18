@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DTMB receiver against what real radios do (part 2): level steps (AGC), impulse noise, a carrier wave inside the band, DC offset, IQ imbalance, a low
 // level, dropouts of zeros and of missing samples, reset. Same method as test_dtmb_impair.cpp. Pass an argument to run the cases whose name contains it.
 #include "dect2/dtmb/dtmb_testkit.h"
@@ -132,6 +135,33 @@ int main(int argc, char** argv) {
             CHECK(lost == 1, "%s: the lock was found %d times", c.name, lost);
             CHECK(r.lastGoodSec > 2.6, "%s: last packet at %.2f s", c.name, r.lastGoodSec);
             CHECK(r.good >= c.minFrac * (r.good + r.missing), "%s: %.2f of the packets", c.name, (double)r.good / std::max<uint64_t>(1, r.good + r.missing));
+        }
+    }
+    // ---- #435: SpyServer over Wi-Fi to a phone at 10 Msps, a fixed-phase PN945 4QAM 0.4 interleaver-720 signal (the parameters in the user's log).
+    // The link loses runs of 2 .. 10 ms several times a second. A fixed-phase header cannot tell how many frames a gap took, so missing samples
+    // shift the deinterleaver; the same gaps filled with zeros of the right length (what the SpyServer source now does from the message sequence
+    // numbers) keep the frame count. The removed-samples run is printed for comparison; the zero-filled one must keep decoding, with no wrong packet.
+    CASE("wifi link") {
+        for (int zero = 0; zero < 2; zero++) {
+            Scenario o = base(Header::Pn945, 10e6, 25, 4.0);
+            o.sc = makeSignal(Header::Pn945, Mapping::Qam4, Rate::R04, true, 10e6, 25);
+            o.sc.tx.phaseRotate = false;
+            o.sc.cfoHz = -110; o.sc.sroPpm = 8;
+            o.dropsPerSec = 5; o.dropMin = 20000; o.dropMax = 100000; o.dropZero = zero != 0;
+            const Result r = run(o);
+            int lost = 0;
+            for (const std::string& l : r.log) if (l.find("lock lost") != std::string::npos || l.find("frames found") != std::string::npos) lost++;
+            const double frac = (double)r.good / std::max<uint64_t>(1, r.good + r.missing);
+            printf("  Wi-Fi gaps %-18s %.1f %% of the samples; %llu good, %llu wrong, %llu missing (%.2f), last packet %.2f s, lock found %d time(s)\n",
+                   zero ? "filled with zeros:" : "removed:", 100.0 * r.dropped / (o.seconds * o.sc.rate), (unsigned long long)r.good,
+                   (unsigned long long)r.wrong, (unsigned long long)r.missing, frac, r.lastGoodSec, lost);
+            if (getenv("DTMB_LOG")) for (const std::string& l : r.log) printf("      %s\n", l.c_str());
+            CHECK(r.wrong == 0, "Wi-Fi gaps (%s): %llu wrong packets", zero ? "zeros" : "removed", (unsigned long long)r.wrong);
+            if (zero) {
+                CHECK(r.lastGoodSec > o.seconds - 0.5, "Wi-Fi gaps filled with zeros: last packet at %.2f s", r.lastGoodSec);
+                CHECK(frac >= 0.85, "Wi-Fi gaps filled with zeros: %.2f of the packets", frac);   // 0.92 measured (0.16 with the gaps removed)
+                CHECK(lost == 1, "Wi-Fi gaps filled with zeros: the lock was found %d times", lost);
+            }
         }
     }
     CASE("reset") {

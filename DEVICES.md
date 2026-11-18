@@ -33,6 +33,14 @@ airspy_info
 - gain is the linearity gain, 0 to 21
 - 10 Msps needs a decent CPU, a 2-core laptop couldn't keep up with live ATSC
 
+# HydraSDR RFOne
+
+Native driver (`core/src/source/source_hydrasdr.cpp`), receive only. 24 MHz to 1.8 GHz, 10 Msps and decimated rates down to 156 ksps, float samples, a bias tee on the ANT input, three RF inputs (ANT, CABLE1, CABLE2: the radio's "RF input" setting). OnAir loads `libhydrasdr` (rfone_host, MIT) at run time when it is installed; it is not included in the downloads. USB id 1d50:60a1 with firmware before 1.0.2 and 38af:0001 since; on Windows the WinUSB binding is done by the driver. Not tested here on a real radio for TV-width channels.
+
+# ESP32 and nRF24L01 modules (3.7)
+
+A home-made module on a USB serial port: nRF24L01+ receive and transmit (Enhanced ShockBurst, all its parameters), BLE advertisements and WiFi observation (networks, clients, signal, channel load; never transmits). Transmit is behind the Arm gate. The firmware is in `firmware/esp32/`, the design and limits in docs/ESP32-NRF24-DESIGN.md. It was written without hardware and tested only against a simulated serial device: **untested on a real ESP32 or nRF24 module.**
+
 # SDRplay RSPduo
 
 OnAir talks directly to the [SDRplay Hardware API](https://sdrplay.com/hardware-api/), which supplies IQ samples. Install API 3.x
@@ -124,6 +132,15 @@ of the one that was opened.
 - SoapySDR: a SoapyFobosSDR module built with Visual Studio (PothosSDR) cannot be loaded by OnAir's Windows build, which is built with
   MinGW; the native driver needs no SoapySDR
 
+# Aaronia SPECTRAN V6 and V6 ECO
+
+Experimental: written from Aaronia's public RTSA API samples and checked against a stand-in library
+(`tests/source/spectran_fake.cpp`). The V6 ECO has since run on a real device (receive, also below 5 MHz, and transmit); the full-size
+V6 has not. Receive (any rate through the RTSA API's IQ receiver, or the raw clock / decimation rates) and
+transmit (the TX option). It needs Aaronia's **RTSA-Suite PRO** (Windows or Linux, [aaronia.com/downloads](https://aaronia.com/downloads)),
+which OnAir does not ship; close the RTSA-Suite PRO before starting the device in OnAir. Install steps, what is unverified and a test
+checklist: [docs/SPECTRAN-V6.md](docs/SPECTRAN-V6.md).
+
 # LimeSDR Mini (and Mini 2)
 
 **Experimental: written from LimeSuite's public C API (`LimeSuite.h`) and tested only against a fake library. It has not run on a real
@@ -149,20 +166,25 @@ OnAir loads `libLimeSuite` at run time (no link dependency; the Windows packages
 
 # ELAD FDM-DUO (and FDM-S2 / FDM-SW2 family)
 
-**Through its USB sound card; needs a user test. There is no native driver.** ELAD publishes no SDK or protocol document that a program can build on
-(only a closed Windows ExtIO DLL for SDR#, HDSDR and similar, and the vendor's own FDM-SW2 program), and OnAir does not reverse-engineer closed
-software or load a Windows-only closed DLL. What the radio does offer openly is the USB layout: three USB 2.0 interfaces (CAT control, IQ data,
-and a USB sound card). So the IQ can be taken as a sound card:
+**CAT control plus its USB sound card; needs a user test. There is no native driver.** ELAD publishes no SDK or IQ protocol document that a program
+can build on (only a closed Windows ExtIO DLL for SDR#, HDSDR and similar, and the vendor's own FDM-SW2 program), and OnAir does not reverse-engineer
+closed software, the USB protocol, or load a Windows-only closed DLL. What the radio does document openly (its user manual) is the CAT command set
+(ASCII commands ending in a semicolon over a USB serial port, 8N1 at 9600, 38400, 57600 or 115200 bit/s, a Kenwood TS-480 subset plus ELAD's own
+commands) and the USB layout: CAT control, IQ data and a USB sound card. OnAir uses those two public parts together:
 
-1. Start ELAD's own software (FDM-SW2 on Windows) or tune the radio with Hamlib (`rigctl`, model "ELAD FDM-DUO") to the frequency you want, and
-   pick its IQ output at the highest rate the radio offers (up to 192 kHz).
-2. In OnAir choose the radio's capture device in the radio list (**Sound card: ...**), set **Mode** to *I/Q stereo* and the sample rate to the same
-   rate, and type the radio's centre frequency in the frequency field.
-3. A narrow band (up to the sound-card rate) is what this route gives; the radio's full 1 MHz-wide panorama needs its own application.
+1. In OnAir add the radio as a **Hamlib rig** (Add rig / Hamlib): the serial port of the DUO and the model **Elad FDM-DUO** (or **Kenwood TS-480**
+   if your Hamlib has no DUO entry). When the port's name says ELAD / FDM-DUO the setup offers that model first. Set **Sound card** to the radio's
+   IQ capture device, mode **I/Q stereo**, at the highest rate the radio offers (up to 192 kHz).
+2. OnAir and the rig now follow each other's frequency (receive only; OnAir never transmits through this entry). Without Hamlib, or for a first try,
+   tune the radio in ELAD's software or with `rigctl` and type the same frequency in OnAir.
+3. A narrow band (up to the sound-card rate) is what this route gives; the radio's full 1 MHz-wide panorama needs its own application, or the vendor
+   publishing its IQ stream format.
 
-On macOS and Linux the sound-card interface is a class-compliant USB audio device; Windows may need ELAD's driver for the IQ interface. The
-frequency is not followed automatically (OnAir has no CAT link to the DUO): change it in the ELAD software or with `rigctl`, and type the same
-value in OnAir. Not tried on a real FDM-DUO.
+On macOS and Linux the sound-card interface is a class-compliant USB audio device; Windows may need ELAD's driver for the IQ interface. Not tried on
+a real FDM-DUO or DUO-R: only the rig-name hint is tested (test rig_control), on simulated port names.
+
+What is missing for a native driver: a published description of the IQ USB endpoint (or a documented TCP/IP IQ server of ELAD's software). If ELAD
+publishes one, a source entry is small to add.
 
 # RFNM
 
@@ -207,7 +229,7 @@ that librfnm finds on USB and on the network is listed once, on USB. `onair.log`
 
 # Icom IC-R8600 (I/Q OUT, receive only)
 
-**Experimental: no IC-R8600 was available when this was written; it needs a user test.** Full notes: [docs/ICOM-R8600.md](docs/ICOM-R8600.md).
+**Experimental: no IC-R8600 was available when this was written; it needs a user test.**
 
 OnAir drives the receiver's [I/Q OUT] USB port itself (libusb, no SoapySDR module). 10 kHz to 3 GHz, six sample rates from 0.24 to 5.12 Msps.
 The port needs Icom's firmware (`IC-R8600_usb_iq.spt` from Icom's "USB I/Q Package for HDSDR"), which OnAir cannot ship: **Radio settings > Import Icom

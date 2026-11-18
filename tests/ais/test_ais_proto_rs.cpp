@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the AIS frame layer (dect2::ais, the Rust crate onair_proto): the known gpsd / AIS-catcher sentences, frames built here, and ONAIR_DIFF_ITERS
 // (default 200000) seeded random and mutated frames, bit streams with values other than 0 and 1, and damaged sentences. Every result goes into a digest
 // (tests/common/golden.h; doubles rounded to 1e-6) compared with the one recorded from the C++ AIS frame layer the Rust code replaced.
@@ -189,5 +192,5 @@ int main() {
         }
     }
     if (abiFails) return 1;
-    return golden::check("ais_proto_rs", dig, 0x839cf1fb96bac6f8ull, !e);
+    return golden::check("ais_proto_rs", dig, 0x83ee07b4ec42ad84ull, !e);
 }

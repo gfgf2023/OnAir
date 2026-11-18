@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The waterfall colour maps as pure functions: v in 0..1 to 0xAABBGGRR (opaque). Map numbers match Waterfall::Map and are stored in the
 // settings: new maps go at the end, never in between. Also the custom gradient (stops as text), the level transform (brightness,
 // contrast, gamma) and the trace colour presets. Tested in tests/app/test_plot_util.cpp and tests/app/test_spec_axis.cpp.
@@ -171,6 +174,16 @@ inline float levelTransform(float v, float brightness, float contrast, float gam
     v = std::min(1.f, std::max(0.f, v));
     if (brightness != 0.f || contrast != 1.f) v = std::min(1.f, std::max(0.f, (v - 0.5f) * contrast + 0.5f + brightness));
     return applyGamma(v, gamma);
+}
+
+// Colour intensity: 1 leaves the colour, 0 is grey, up to 2 is twice as saturated (each channel moves away from the luma). Independent of
+// the level range, brightness, contrast and gamma, which only pick the colour index.
+inline uint32_t saturate(uint32_t c, float s) {
+    if (s == 1.f) return c;
+    const float r = (float)(c & 0xFF), g = (float)((c >> 8) & 0xFF), b = (float)((c >> 16) & 0xFF);
+    const float y = 0.299f * r + 0.587f * g + 0.114f * b;
+    auto ch = [&](float v) { return (uint32_t)std::min(255.f, std::max(0.f, y + (v - y) * s + 0.5f)); };
+    return (c & 0xFF000000u) | (ch(b) << 16) | (ch(g) << 8) | ch(r);
 }
 
 // Trace colours: index 0 is the usual soft white (dark grey on a light theme); the others read on both. RGB 0..1.

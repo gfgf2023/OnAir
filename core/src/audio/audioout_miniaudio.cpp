@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The fallback sound backend for Windows and Linux: miniaudio (ALSA / PulseAudio / PipeWire on Linux, WASAPI on Windows), used when our own
 // backend (audioout_native.cpp) cannot open the sound device, or when DECT2_AUDIO=miniaudio is set. If no sound device can be opened (a
 // headless machine, CI), a null device with correct timing is used so that playback and A/V sync still behave.
@@ -30,7 +33,7 @@ bool open(Backend* b, AudioOut::Impl* I, int rate, const ma_backend* backends, m
     b->haveCtx = true;
     ma_device_config dc = ma_device_config_init(ma_device_type_playback);
     dc.playback.format = ma_format_f32;
-    dc.playback.channels = 2;
+    dc.playback.channels = (ma_uint32)I->channels;   // miniaudio's default map for 6 / 8 is the WAVE order AudioOut uses
     dc.sampleRate = (ma_uint32)rate;
     ma_device_id chosen{};
     if (!I->device.empty()) {   // a named output device; not found: the default

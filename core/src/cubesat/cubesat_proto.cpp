@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // CubeSat framings: see cubesat_proto.h.
 #include "dect2/cubesat/cubesat_proto.h"
 #include <algorithm>
@@ -7,6 +10,7 @@
 #include <cstring>
 #include <sstream>
 #include "dect2/common/bits.h"
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 namespace cubesat {
@@ -18,6 +22,11 @@ const char* framingName(int f) {
     case Ax100Mode5: return "AX100 Mode 5 (ASM + Golay)";
     case Ax100Mode6: return "AX100 Mode 6 (HDLC + RS)";
     case CcsdsRs: return "CCSDS RS (255,223)";
+    case U482c: return "GOMspace U482C";
+    case CcsdsConcat: return "CCSDS concatenated (Viterbi + RS)";
+    case Usp: return "USP (SPUTNIX)";
+    case Ngham: return "NGHam";
+    case Mobitex: return "Mobitex / BEESAT";
     default: return "?";
     }
 }
@@ -28,6 +37,11 @@ const char* framingShort(int f) {
     case Ax100Mode5: return "AX100 M5";
     case Ax100Mode6: return "AX100 M6";
     case CcsdsRs: return "CCSDS";
+    case U482c: return "U482C";
+    case CcsdsConcat: return "CCSDS conc";
+    case Usp: return "USP";
+    case Ngham: return "NGHam";
+    case Mobitex: return "Mobitex";
     default: return "?";
     }
 }
@@ -277,12 +291,12 @@ std::vector<uint8_t> ccsdsEncode(const std::vector<uint8_t>& data, int frameLen)
 
 bool ax100Mode5Decode(uint8_t* body, size_t n, int flags, std::vector<uint8_t>& csp, int& rsErr) {
     rsErr = -1;
-    if (flags & kAx100Viterbi) return false;            // the convolutional code is not supported
+    if (flags & kAx100Viterbi) { DIAG_DEBUG_EVERY(921346, 30, "An AX100 frame uses the convolutional code, which is not supported, so the frame was dropped."); return false; }            // the convolutional code is not supported
     if (flags & kAx100Scrambler) ccsdsRandomize(body, n);
     if (flags & kAx100Rs) {
         if (n <= (size_t)kRsParity) return false;
         rsErr = rsDecode(body, n);
-        if (rsErr < 0) return false;
+        if (rsErr < 0) { DIAG_DEBUG_EVERY(647049, 30, "An AX100 frame failed Reed-Solomon correction, so the frame was dropped."); return false; }
         csp.assign(body, body + n - kRsParity);
     } else {
         rsErr = 0;
@@ -306,7 +320,7 @@ bool ccsdsDecode(uint8_t* block, size_t n, std::vector<uint8_t>& data, int& rsEr
     if (n <= (size_t)kRsParity || n > 255) return false;
     ccsdsRandomize(block, n);
     rsErr = rsDecodeDual(block, n);
-    if (rsErr < 0) return false;
+    if (rsErr < 0) { DIAG_DEBUG_EVERY(809875, 30, "A CubeSat CCSDS block failed dual-basis Reed-Solomon correction, so the block was dropped."); return false; }
     data.assign(block, block + n - kRsParity);
     return true;
 }

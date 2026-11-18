@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Frequencies panel: the built-in frequency database (core/include/dect2/channels/freq_db.h, data/frequencies) and the user's own entries.
 // A window (View > Frequencies, Ctrl+Shift+F), an optional tab of the main screen, and the "Known frequencies" drop-down of the Tuner panel.
 // Tuning goes through the Memory panel's recall (memory_options.h), so the mode is switched and its tuning applied exactly as a recalled memory does.
 #include "airband/airport_ui.h"
+#include "dect2/common/diag.h"
 #include "../memory/memory_options.h"
 #include "../ui/ui_common.h"
 #include "dect2/channels/freq_db.h"
@@ -14,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include "../ui/input_map.h"
 
 namespace {
 
@@ -55,10 +60,10 @@ void saveUser() {
     {
         std::ofstream f(dect2::u8file(tmp), std::ios::binary);
         f << dect2::freqExportJson(u.user);
-        if (!f) { say(std::string(tr("Could not save ")) + path, true); return; }
+        if (!f) { DIAG(419776, "Writing the frequency list %s failed (the folder may be read-only or the disk full), so your entries were not saved.", path.c_str()); say(std::string(tr("Could not save ")) + path, true); return; }
     }
     std::filesystem::rename(dect2::u8file(tmp), dect2::u8file(path), ec);
-    if (ec) say(std::string(tr("Could not save ")) + path, true);
+    if (ec) { DIAG(322109, "Replacing the frequency list %s with its new copy failed, so your latest changes were not saved.", path.c_str()); say(std::string(tr("Could not save ")) + path, true); }
 }
 
 void saveFav() {
@@ -224,7 +229,7 @@ const std::vector<FreqEntry>& airportRows() {
         FreqEntry e;
         e.hz = (uint64_t)std::llround(c.freqHz);
         e.mode = "airband";
-        e.name = c.label;
+        e.name = dect2::airportRowName(*ap, c.label, t);
         e.region = ap->country;
         e.category = "airport";
         e.notes = ap->name + (ap->city.empty() ? "" : ", " + ap->city) + (c.is833 ? ". 8.33 kHz channel." : ". 25 kHz channel.");
@@ -232,6 +237,16 @@ const std::vector<FreqEntry>& airportRows() {
         rows.push_back(e);
     }
     return rows;
+}
+
+// The rows the table shows now (airport channels first, then the matches of the search and filters), for "Export results CSV..."
+std::vector<FreqEntry> resultsNow() {
+    FreqQuery q;
+    q.text = u.query; q.mode = u.mode; q.region = u.region; q.category = u.category; q.favouritesOnly = u.favOnly; q.userOnly = u.userOnly;
+    std::vector<FreqEntry> out;
+    if ((u.mode.empty() || u.mode == "airband") && !u.favOnly && !u.userOnly) for (const FreqEntry& e : airportRows()) out.push_back(e);
+    for (size_t i : dect2::freqSearch(u.all, q, &u.fav)) out.push_back(u.all[i]);
+    return out;
 }
 
 void table(App& a, float h) {
@@ -387,6 +402,14 @@ void panelBody(App& a) {
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tr("Exports your own entries (not the built-in ones)"));
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Export results CSV..."))) {
+        const std::vector<FreqEntry> rows = resultsNow();
+        const std::string p = rows.empty() ? std::string() : saveFileDialog("onair-search-results.csv");
+        if (rows.empty()) say(tr("Nothing to export: no row matches the search."), true);
+        else if (!p.empty()) { std::ofstream f(dect2::u8file(p), std::ios::binary); f << dect2::freqExportCsv(rows); say(f ? std::string(tr("Exported to ")) + p : std::string(tr("Could not save ")) + p, !f); }
+    }
+    if (ImGui::IsItemHovered()) wrapTooltip(380 * gUi, tr("Saves the rows now in the table (with the search and the filters applied, built-in and yours) as a CSV file. Import and the Memory panel read it back."));
     ImGui::SameLine(0, 12 * gUi); ImGui::TextDisabled(tr("%zu built in, %zu yours"), u.nBuiltin, u.user.size());
     if (!u.msg.empty() && ImGui::GetTime() - u.msgT < 12) { ImGui::PushTextWrapPos(0); ImGui::TextColored(u.msgBad ? pal::badRed() : pal::okGreen(), "%s", u.msg.c_str()); ImGui::PopTextWrapPos(); }
     addDialog();
@@ -396,7 +419,8 @@ void panelBody(App& a) {
 
 void freqdbWindow(App& a) {
     ImGuiIO& io = ImGui::GetIO();
-    if ((io.KeyCtrl || io.KeySuper) && io.KeyShift && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) a.freqOpen = !a.freqOpen;
+    if (inputmap::pressed(inputmap::Action::FreqDbWin)) a.freqOpen = !a.freqOpen;   // Ctrl+Shift+F by default
+    (void)io;
     if (!u.tabLoaded) { u.tabLoaded = true; a.freqTab = a.freqTab || plat::prefs().getB("freqTab", false); }
     if (!a.freqOpen) return;
     firstWindowSize(820 * gUi, 480 * gUi);

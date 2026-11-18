@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Automatic gain, part 1: the radio models (gain chains with their step tables) and the stage planner. See docs/AUTOGAIN.md.
 // The noise figures and IIP3 values are typical figures from the parts' data sheets and published measurements, good enough to rank two
 // splits of the same overall gain; they are not calibrated per unit.
@@ -170,24 +173,39 @@ std::vector<RadioProfile> buildProfiles() {
         r.id = "airspy"; r.name = "Airspy R2 / Mini"; r.adcBits = 12; r.hasBias = true; r.driverSplits = true; r.settleSec = 0.25;
         r.stages.push_back(stage("overall", "Gain step", StageKind::Overall, range(0, 21, 1), 3.5, 7, -8, true,
                                  "libairspy's 22-step gain table (linearity or sensitivity, the radio's Gain mode setting): each step sets LNA, mixer and VGA together. Steps, not dB."));
-        r.stages.push_back(info(stage("alna", "LNA", StageKind::Lna, range(0, 15, 1), 3.5, 8, -10, true, "R820T2 LNA, 0-15.")));
-        r.stages.push_back(info(stage("amix", "Mixer", StageKind::Mixer, range(0, 15, 1), 9, 0, 0, true, "R820T2 mixer, 0-15.")));
-        r.stages.push_back(info(stage("avga", "VGA", StageKind::Vga, range(0, 15, 1), 15, 0, 10, false, "IF VGA after the filter, 0-15.")));
+        r.stages.push_back(info(stage("alna", "LNA", StageKind::Lna, range(0, 15, 1), 3.5, 8, -10, true, "R820T2 LNA, 0-15: the first amplifier, sets the noise figure. Lower it first when a strong signal is near.")));
+        r.stages.push_back(info(stage("amix", "Mixer", StageKind::Mixer, range(0, 15, 1), 9, 0, 0, true, "R820T2 mixer, 0-15: the gain around the mixer.")));
+        r.stages.push_back(info(stage("avga", "VGA", StageKind::Vga, range(0, 15, 1), 15, 0, 10, false, "IF VGA after the filter, 0-15: trims the level into the ADC, does not see neighbours.")));
+        r.stages[1].manualKey = "gain.lna"; r.stages[2].manualKey = "gain.mixer"; r.stages[3].manualKey = "gain.vga";
+        r.notes = "12-bit ADC. The Gain mode setting picks the table: Linearity (the default) for strong signals, Sensitivity for weak ones.";
+        v.push_back(r);
+    }
+    {
+        RadioProfile r;   // the Airspy R2's successor: the same tuner stages and gain tables (libhydrasdr)
+        r.id = "hydrasdr"; r.name = "HydraSDR RFOne"; r.adcBits = 12; r.hasBias = true; r.driverSplits = true; r.settleSec = 0.25;
+        r.stages.push_back(stage("overall", "Gain step", StageKind::Overall, range(0, 21, 1), 3.5, 7, -8, true,
+                                 "libhydrasdr's 22-step gain table (linearity or sensitivity, the radio's Gain mode setting): each step sets LNA, mixer and VGA together. Steps, not dB."));
+        r.stages.push_back(info(stage("alna", "LNA", StageKind::Lna, range(0, 15, 1), 3.5, 8, -10, true, "R820T2 LNA, 0-15: the first amplifier, sets the noise figure. Lower it first when a strong signal is near.")));
+        r.stages.push_back(info(stage("amix", "Mixer", StageKind::Mixer, range(0, 15, 1), 9, 0, 0, true, "R820T2 mixer, 0-15: the gain around the mixer.")));
+        r.stages.push_back(info(stage("avga", "VGA", StageKind::Vga, range(0, 15, 1), 15, 0, 10, false, "IF VGA after the filter, 0-15: trims the level into the ADC, does not see neighbours.")));
+        r.stages[1].manualKey = "gain.lna"; r.stages[2].manualKey = "gain.mixer"; r.stages[3].manualKey = "gain.vga";
         r.notes = "12-bit ADC. The Gain mode setting picks the table: Linearity (the default) for strong signals, Sensitivity for weak ones.";
         v.push_back(r);
     }
     {
         RadioProfile r;
-        r.id = "airspyhf"; r.name = "Airspy HF+"; r.adcBits = 16; r.hasAmp = true; r.driverSplits = true; r.settleSec = 0.25;
+        r.id = "airspyhf"; r.name = "Airspy HF+"; r.adcBits = 16; r.hasAmp = true; r.driverSplits = true; r.settleSec = 0.25; r.levelCompensated = true;
         r.stages.push_back(stage("overall", "Gain", StageKind::Overall, range(0, 48, 6), 6, 6, 10, true,
                                  "Attenuator 0-48 dB in 6 dB steps as one gain; the top 6 dB switch the preamp on (only with your permission)."));
         r.ampNote = "The preamp is part of the top 6 dB of the slider; the auto modes stay at 42 dB unless you allow the amp.";
-        r.notes = "Very high dynamic range: gain is rarely the limit; keep the preamp off near strong broadcast stations.";
+        r.notes = "Very high dynamic range: gain is rarely the limit; keep the preamp off near strong broadcast stations. The firmware compensates the\n"
+                  "preamp and treats the attenuator as its gain distribution, so the level in dBFS need not move with the slider: the slider trades noise figure for\n"
+                  "overload margin. Auto gain keeps the least attenuation and backs off only on clipping.";
         v.push_back(r);
     }
     {
         RadioProfile r;
-        r.id = "sdrplay"; r.name = "SDRplay RSP (1A / 1B / 2 / dx / duo)"; r.adcBits = 14; r.hasBias = true; r.driverSplits = true; r.settleSec = 0.3;
+        r.id = "sdrplay"; r.name = "SDRplay RSP (1A / 1B / 2 / dx / duo)"; r.adcBits = 14; r.hasBias = true; r.driverSplits = true; r.settleSec = 0.3; r.splitKey = "gainsplit";
         r.stages.push_back(stage("overall", "Gain", StageKind::Overall, range(0, 100, 1), 4, 10, -10, true,
                                  "One gain for OnAir: the driver turns it into an LNA state (RFGR) and an IF gain reduction (IFGR 20-59 dB). Reductions: more reduction = less gain."));
         GainStage rf = stage("rfgr", "RF gain reduction (LNA state)", StageKind::Lna, range(0, 9, 1), 4, 12, -10, true,
@@ -219,6 +237,12 @@ std::vector<RadioProfile> buildProfiles() {
                   stage("lpga", "PGA", StageKind::Vga, range(-12, 19, 1), 15, 0, 10, false, "PGA -12..19 dB after the filter.")},
                  "12-bit ADC.");
     overallRadio("usrp", "USRP B200 / B210 (AD9364)", 12, 0, 76, 1, 0.3, false, "AD9364 gain 0-76 dB through UHD.", {}, "12-bit ADC.");
+    overallRadio("spectran", "Aaronia SPECTRAN V6 / V6 ECO", 16, 0, 60, 1, 0.5, false,
+                 "The reference level (main/reflevel, dBm): 0 dB = +10 dBm, each dB more is 1 dB lower; the level that fills the converter. It works only with the device's Gain control on Manual (the default).",
+                 {stage("sprea", "RF amplifier (calibration/preamp)", StageKind::Amp, {0, 1}, 4, 0, -5, true,
+                        "Chosen in the radio settings (V6: None / Amp / Preamp / Both; V6 ECO: Off / Amp 1 / Amp 2), not by Auto gain. The reference level and the amplifier together set the real gain.")},
+                 "The V6 has no plain gain: the RTSA API takes a reference level plus the RF amplifier setting. OnAir rescales the samples so that the reference level is full scale.");
+    for (auto& st : v.back().stages) if (st.kind == StageKind::Amp) st.userOnly = true;
     overallRadio("bladerf", "bladeRF 2.0 micro", 12, -15, 60, 1, 0.3, true, "AD9361 gain -15..60 dB (bladeRF 1: LNA + VGA1 + VGA2 as one).",
                  {stage("blna", "LNA", StageKind::Lna, {0, 3, 6}, 3, 4, -10, true, "bladeRF 1 LNA 0 / 3 / 6 dB.")}, "12-bit ADC.");
     overallRadio("fobos", "RigExpert Fobos SDR", 14, 0, 95, 1, 0.3, false, "LNA (0 / 16 / 33 dB) + VGA (0-62 dB, 2 dB steps) as one gain; the driver fills the LNA first.",
@@ -234,6 +258,7 @@ std::vector<RadioProfile> buildProfiles() {
     overallRadio("kiwisdr", "KiwiSDR (network)", 14, 0, 120, 1, 1.0, false, "The Kiwi's manual gain (its own AGC when 'Gain control' is automatic).", {}, "Shared by many listeners.");
     overallRadio("generic", "Other radio (one overall gain)", 12, 0, 60, 1, 0.3, false, "The driver's overall gain; the driver spreads it over its stages.", {}, "");
     for (auto& r : v) if (r.remote || r.id == "spyserver" || r.id == "kiwisdr") r.remote = true;
+    for (auto& r : v) if (r.id == "spyserver" || r.id == "kiwisdr" || r.id == "generic") r.stepsUncertain = true;
     return v;
 }
 
@@ -263,7 +288,33 @@ RadioProfile genericProfile(const std::string& name, double lo, double hi, doubl
     return r;
 }
 
+static RadioProfile radioProfileForBase(const DeviceInfo& d);
+// The driver's own "gain.<stage>" number settings (USRP gain elements, the E4000's IF stages, the Airspy's stages) become manual stages
 RadioProfile radioProfileFor(const DeviceInfo& d) {
+    RadioProfile r = radioProfileForBase(d);
+    for (const auto& rs : d.settings) {
+        if (rs.type != RadioSetting::Number || rs.key.compare(0, 5, "gain.") != 0 || !(rs.maxV > rs.minV)) continue;
+        bool have = false;
+        for (const auto& st : r.stages) have |= st.manualKey == rs.key;
+        if (have) continue;
+        std::string label = rs.label;
+        if (label.compare(0, 12, "Gain stage: ") == 0) label = label.substr(12);
+        const std::string l = [&] { std::string x = label; std::transform(x.begin(), x.end(), x.begin(), ::tolower); return x; }();
+        StageKind k = l.find("lna") != std::string::npos ? StageKind::Lna : l.find("mix") != std::string::npos ? StageKind::Mixer :
+                      l.find("vga") != std::string::npos || l.find("pga") != std::string::npos ? StageKind::Vga :
+                      l.find("att") != std::string::npos || l.find("dsa") != std::string::npos ? StageKind::Atten :
+                      l.find("amp") != std::string::npos ? StageKind::Amp : StageKind::If;
+        const double lo = rs.minV == -1 && rs.def == "-1" ? 0 : rs.minV;
+        GainStage g = info(stage(rs.key.c_str(), label.c_str(), k, range(lo, rs.maxV, rs.step > 0 ? rs.step : 1), 6, 0, 0, k == StageKind::Lna, ""));
+        g.note = rs.help;
+        g.manualKey = rs.key;
+        g.userOnly = k == StageKind::Amp;
+        r.stages.push_back(g);
+    }
+    return r;
+}
+
+static RadioProfile radioProfileForBase(const DeviceInfo& d) {
     auto pick = [&](const char* id) { return *radioProfileById(id); };
     auto withRange = [&](RadioProfile r) {   // the driver's reported range wins over the table's (a different model or firmware)
         if (r.stages.empty() || r.stages[0].id != "overall" || !(d.gainMaxDb > d.gainMinDb)) return r;
@@ -287,6 +338,8 @@ RadioProfile radioProfileFor(const DeviceInfo& d) {
     if (b == "rtltcp") return pick("rtltcp");
     if (b == "airspy") return withRange(pick("airspy"));
     if (b == "airspyhf") return pick("airspyhf");
+    // the RSP1 on OnAir's own Mirics driver (mirics_usb.cpp): one overall gain that the driver splits itself, not the SDRplay API's reductions
+    if (b == "mirics") return genericProfile(d.name, d.gainMinDb, d.gainMaxDb, 1);
     if (b == "sdrplay" || b == "nrspst" || has(d.name, "sdrplay") || has(d.name, "rsp")) {
         RadioProfile r = withRange(pick("sdrplay"));
         for (const auto& rs : d.settings)   // a driver that lists the LNA state as a setting (SoapySDRPlay): OnAir sets it itself
@@ -302,6 +355,7 @@ RadioProfile radioProfileFor(const DeviceInfo& d) {
     if (b == "pluto" || has(d.name, "pluto")) return withRange(pick("pluto"));
     if (b == "lime" || has(d.name, "lime")) return withRange(pick("lime"));
     if (b == "usrp" || has(d.name, "usrp")) return withRange(pick("usrp"));
+    if (b == "spectran") return withRange(pick("spectran"));
     if (b == "bladerf" || has(d.name, "bladerf")) return withRange(pick("bladerf"));
     if (b == "fobos") return withRange(pick("fobos"));
     if (b == "rx888") return withRange(pick("rx888"));
@@ -345,6 +399,7 @@ StagePlan planStages(const RadioProfile& r, double totalDb, Policy pol, uint32_t
     StagePlan p;
     p.db.assign(r.stages.size(), 0.0);
     p.ampOn = ampOn;
+    p.pol = pol; p.polMatters = !r.splitKey.empty();
     std::vector<int> movable;
     double fixedSum = 0;
     for (size_t i = 0; i < r.stages.size(); i++) {
@@ -460,6 +515,40 @@ std::string stageSettingValue(const GainStage& s, double gainDb) {
     } else if (s.reduction) snprintf(b, sizeof b, "%g", s.maxDb() - gainDb);
     else snprintf(b, sizeof b, "%g", gainDb);
     return b;
+}
+
+
+// ------------------------------------------------------------------------------------------------------------------------------ manual stages (#233)
+std::vector<int> manualStages(const RadioProfile& r) {
+    std::vector<int> v;
+    for (size_t i = 0; i < r.stages.size(); i++) if (!r.stages[i].manualKey.empty()) v.push_back((int)i);
+    return v;
+}
+bool setManualStage(const RadioProfile& r, int stage, double db, TuneSettings& tune) {
+    if (stage < 0 || stage >= (int)r.stages.size() || r.stages[(size_t)stage].manualKey.empty()) return false;
+    const GainStage& s = r.stages[(size_t)stage];
+    char b[32];
+    snprintf(b, sizeof b, "%g", s.steps.empty() ? db : s.snap(db));
+    tune.radio[s.manualKey] = b;
+    return true;
+}
+bool manualStageValue(const RadioProfile& r, int stage, const TuneSettings& tune, double& db) {
+    if (stage < 0 || stage >= (int)r.stages.size() || r.stages[(size_t)stage].manualKey.empty()) return false;
+    const auto it = tune.radio.find(r.stages[(size_t)stage].manualKey);
+    if (it == tune.radio.end() || it->second.empty()) return false;
+    char* end = nullptr;
+    const double v = strtod(it->second.c_str(), &end);
+    if (end == it->second.c_str() || v == -1) return false;
+    db = v;
+    return true;
+}
+void resetManualStages(const RadioProfile& r, TuneSettings& tune) {
+    for (int i : manualStages(r)) tune.radio[r.stages[(size_t)i].manualKey] = kManualFollow;
+}
+bool anyManualStage(const RadioProfile& r, const TuneSettings& tune) {
+    double d;
+    for (int i : manualStages(r)) if (manualStageValue(r, i, tune, d)) return true;
+    return false;
 }
 
 } // namespace dect2::ag

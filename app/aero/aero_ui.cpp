@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Inmarsat Aero screens: the ACARS messages with a detail pane, the aircraft map, the aircraft, the log-ons, the P channels and the signal units.
 // What the mode does and does not decode is said on the Channels view and in the Receiver tab.
 #include "dect2/common/time_fmt.h"
 #include "../adsb/adsb_map.h"
 #include "app.h"
+#include "ease/ease_ui.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "dect2/aero/aero_tel.h"
@@ -21,6 +26,7 @@ namespace {
 struct State {
     bool loaded = false;
     int sat = 0;                         // 0 = not chosen, else 1 + index into kSats
+    easeui::SatPick autoPick;            // the automatic choice, for its Undo
     bool snrSound = false;               // decoder: a sine whose level follows Eb/N0
     double hintSince = -1;               // when the tuner started waiting for a first message with no satellite chosen
     int viewMode = 0;                    // 0 messages, 1 map, 2 aircraft, 3 log-ons, 4 channels, 5 signal units
@@ -40,18 +46,18 @@ State S;
 
 // Satellites that carry classic Aero P channels. mhzLo is the middle of the 600/1200 bit/s group; mhzHi the 10500 bit/s group (about 1 MHz higher).
 // Source: the channel tables of github.com/alphafox02/inmarsat-sniffer (satellites.c), taken from Inmarsat's L-band frequency list.
-struct Sat { const char* name; double mhzLo; double mhzHi; const char* tip; };
+struct Sat { const char* name; double mhzLo; double mhzHi; const char* tip; double lonDeg; };
 const Sat kSats[] = {
     {"Alphasat 25E (Europe, Africa)", 1545.12, 1546.02,
-     "P channels 1545.115 to 1545.130 MHz (600 and 1200 bit/s, Fucino).\n10500 bit/s at 1546.0125 and 1546.0275 MHz."},
+     "P channels 1545.115 to 1545.130 MHz (600 and 1200 bit/s, Fucino).\n10500 bit/s at 1546.0125 and 1546.0275 MHz.", 25.0},
     {"Inmarsat-4 F3 98W (Americas)", 1545.10, 1546.04,
-     "P channels 1545.020 to 1545.205 MHz (600 and 1200 bit/s, Laurentides and Paumalu); the busiest group.\n10500 bit/s at 1546.005 to 1546.0775 MHz."},
+     "P channels 1545.020 to 1545.205 MHz (600 and 1200 bit/s, Laurentides and Paumalu); the busiest group.\n10500 bit/s at 1546.005 to 1546.0775 MHz.", -98.0},
     {"Inmarsat-3 F5 54W (Atlantic, South America)", 1545.03, 1546.06,
-     "P channels 1545.025 to 1545.040 MHz (600 bit/s, Burum).\n10500 bit/s at 1546.055 and 1546.070 MHz."},
+     "P channels 1545.025 to 1545.040 MHz (600 bit/s, Burum).\n10500 bit/s at 1546.055 and 1546.070 MHz.", -54.0},
     {"Inmarsat-6 F1 83.5E (Indian Ocean, Asia-Pacific)", 1545.19, 1546.08,
-     "P channels 1545.160 to 1545.225 MHz (600 bit/s, Perth).\n10500 bit/s at 1546.0425 to 1546.1225 MHz."},
+     "P channels 1545.160 to 1545.225 MHz (600 bit/s, Perth).\n10500 bit/s at 1546.0425 to 1546.1225 MHz.", 83.5},
     {"Inmarsat-4 F1 143.5E (Pacific, Asia)", 1545.10, 1546.05,
-     "No published channel list found for this satellite: 600/1200 tunes to the middle of the Aero P band, 10500 to 1546.05 MHz,\nand the receiver searches about 1 MHz either side."},
+     "No published channel list found for this satellite: 600/1200 tunes to the middle of the Aero P band, 10500 to 1546.05 MHz,\nand the receiver searches about 1 MHz either side.", 143.5},
 };
 constexpr int kNumSats = (int)(sizeof kSats / sizeof kSats[0]);
 
@@ -301,9 +307,9 @@ void mapCanvas(App& a, ImVec2 size) {
             S.map.zoom = std::max(2, std::min(10, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     const dect2::AeroAircraft* hit = nullptr; float best = 18 * gUi;
@@ -341,7 +347,7 @@ void mapCanvas(App& a, ImVec2 size) {
                 dl->AddCircleFilled(q, 5 * gUi, planeColour(c, t.timeSec));
                 dl->AddCircle(q, 5 * gUi, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 150), 16, sel ? 1.6f : 1.f);
             }
-            if (S.map.zoom >= 5 || sel || withPos <= 12) {
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
                 std::string s = nameOf(c);
                 if (c.hasAlt) { char b[24]; snprintf(b, sizeof b, "  FL%03d", (c.altFt + 50) / 100); s += b; }
                 const ImVec2 ts = ImGui::CalcTextSize(s.c_str());
@@ -691,13 +697,18 @@ void synth(App& a, bool& changed) {
 void tuner(App& a, bool& retune) {
     loadState();
     const dect2::AeroTelemetry& t = a.rx.aero;
+    {   // the first visit with a position: the highest satellite (a satellite chosen or a frequency tuned by hand stays)
+        double lons[kNumSats]; for (int i = 0; i < kNumSats; i++) lons[i] = kSats[i].lonDeg;
+        const int pick = easeui::preselectSat(a, "aeroSat", lons, kNumSats, S.autoPick);
+        if (pick >= 0) { S.sat = pick + 1; applySatTune(a, retune); }
+    }
     ImGui::TextDisabled("Satellite"); ImGui::SameLine(0, 6 * gUi);
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("##aosat", S.sat ? kSats[S.sat - 1].name : "Not chosen (tune by hand)")) {
         if (ImGui::Selectable("Not chosen (tune by hand)", S.sat == 0)) { S.sat = 0; plat::prefs().setI("aeroSat", 0); savePrefs(a); }
         for (int i = 0; i < kNumSats; i++) {
             if (ImGui::Selectable(kSats[i].name, S.sat == i + 1)) {
-                S.sat = i + 1; plat::prefs().setI("aeroSat", i + 1); savePrefs(a);
+                S.sat = i + 1; plat::prefs().setI("aeroSat", i + 1); savePrefs(a); S.autoPick.undoable = false;
                 applySatTune(a, retune);
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Centre %.3f MHz (600/1200 at %.3f, 10500 at %.3f).\nRaise RATE if the 10500 group is outside the span.\n%s",
@@ -708,6 +719,7 @@ void tuner(App& a, bool& retune) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
         "Optional. Tunes between the 600/1200 and 10500 bit/s P groups.\n"
         "Raise RATE (sample rate) so both sit in the capture; a 4 Msps radio covers them together.");
+    if (S.sat && easeui::satPointing(a, kSats[S.sat - 1].lonDeg, S.autoPick)) { S.sat = 0; plat::prefs().setI("aeroSat", 0); savePrefs(a); a.freqMhz = S.autoPick.prevMhz; retune = true; }
     // the hint only when nothing has come in for a while and no satellite is chosen
     const bool idle = !live(a) || t.messagesTotal > 0 || t.blocksOk > 0;
     if (S.sat != 0 || idle) S.hintSince = -1;
@@ -730,6 +742,15 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
+// Simple view: the live messages, the aircraft and the channels side by side
+static void command(App& a) {
+    loadState();
+    kit::modeHeader({18, "Inmarsat Aero", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##aecmsg", tr("Messages"), [&a] { messageView(a); }, 1.7f, 260.f},
+                      {"##aecair", tr("Aircraft"), [&a] { aircraftView(a); }, 1.f, 220.f},
+                      {"##aecch", tr("Channels"), [&a] { channelView(a); }, 0.9f, 200.f}}, 320.f);
+}
+
 extern const ModeUi kAeroUi;
 const ModeUi kAeroUi = {
     .sideTitle = "AIRCRAFT",
@@ -744,6 +765,7 @@ const ModeUi kAeroUi = {
     .decoder = decoder,
     .synth = synth,
     .meters = meters,
+    .command = command,
 };
 
 void aeroToolsTick(App& a) { tickTone(a); }

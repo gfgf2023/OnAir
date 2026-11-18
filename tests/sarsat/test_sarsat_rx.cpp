@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // COSPAS-SARSAT receiver on the generated test signal: every beacon of a cycle must arrive with its exact hex ID, clean, in noise, with carrier offsets
 // of a few kHz, a bit rate that is 0.8 % off, reversed polarity and at other sample rates. Noise alone must give nothing.
 #include "dect2/sarsat/sarsat_gen.h"
@@ -11,6 +14,7 @@
 #include <vector>
 using namespace dect2;
 #include "../common/test_util.h"
+#include "../common/test_long.h"
 
 static SarsatTelemetry run(const SynthConfig& cfg, double rate, double seconds, bool noiseOnly = false, bool wide = false) {
     SarsatReceiver rx;
@@ -50,17 +54,30 @@ static int countFound(const SarsatTelemetry& t, const char* what) {
     int stray = 0;
     for (const SarsatEntry& e : t.log) if (!known.count(e.b.hexId)) { stray++; printf("  stray %s corr %d t %.2f snr %.1f cfo %.0f long %d id %s\n", e.b.hexId.c_str(), e.b.corrected, e.timeSec, e.snrDb, e.cfoHz, (int)e.b.longMsg, e.b.idText.c_str()); }
     CHECK(stray == 0, "%s: %d messages that were not sent", what, stray);
+    for (const SarsatEntry& e : t.log) {   // the frame as received next to the repaired one (#438): they differ by exactly the repaired bits
+        const sarsat::Beacon& b = e.b;
+        CHECK(!b.rxHex.empty() && b.rxHex.size() == b.rawHex.size(), "%s: received frame missing or of another length (%s)", what, b.hexId.c_str());
+        int diff = 0;
+        for (size_t i = 0; i < b.rxHex.size() && i < b.rawHex.size(); i++) {
+            const int x = std::stoi(std::string(1, b.rxHex[i]), nullptr, 16) ^ std::stoi(std::string(1, b.rawHex[i]), nullptr, 16);
+            diff += __builtin_popcount((unsigned)x);
+        }
+        CHECK(diff == (int)b.fixedBits.size() && (int)b.fixedBits.size() == b.corrected, "%s: %d bits differ, %zu listed, %d repaired", what, diff, b.fixedBits.size(), b.corrected);
+    }
     return found;
 }
 
 int main() {
     const double rate = 256000;
     const double seconds = 5 * 3.6 + 3;   // five bursts of at most 0.62 s, 3 s apart
+    // quick run: one of each mirror-image pair (offset, bit rate error, search edge, wide transponder, whole-capture side), 2.4 Msps as the other rate;
+    // ONAIR_TEST_LONG=1 runs every case
+    const bool L = testLong();
     {
         SynthConfig cfg; cfg.snrDb = 40;
         countFound(run(cfg, rate, seconds), "clean");
     }
-    {
+    if (L) {
         SynthConfig cfg; cfg.snrDb = 22; cfg.cfoHz = 4500;
         countFound(run(cfg, rate, seconds), "22 dB, +4.5 kHz");
     }
@@ -72,7 +89,7 @@ int main() {
         SynthConfig cfg; cfg.snrDb = 30; cfg.modeVal[0] = 0.8; cfg.cfoHz = 1200;
         countFound(run(cfg, rate, seconds), "bit rate +0.8 %");
     }
-    {
+    if (L) {
         SynthConfig cfg; cfg.snrDb = 30; cfg.modeVal[0] = -0.8;
         countFound(run(cfg, rate, seconds), "bit rate -0.8 %");
     }
@@ -82,24 +99,24 @@ int main() {
     }
     {
         SynthConfig cfg; cfg.snrDb = 25; cfg.cfoHz = 2000;
-        countFound(run(cfg, 1024000, seconds), "1.024 Msps");
+        if (L) countFound(run(cfg, 1024000, seconds), "1.024 Msps");
         countFound(run(cfg, 2400000, seconds), "2.4 Msps");
     }
     {   // edges of the search range and weak signals
         SynthConfig cfg; cfg.snrDb = 25; cfg.cfoHz = 11500;
-        countFound(run(cfg, rate, seconds), "+11.5 kHz");
+        if (L) countFound(run(cfg, rate, seconds), "+11.5 kHz");
         cfg.cfoHz = -11500;
         countFound(run(cfg, rate, seconds), "-11.5 kHz");
         cfg.cfoHz = 40000;
         countFound(run(cfg, rate, seconds), "+40 kHz (wide transponder)");
         cfg.cfoHz = -40000;
-        countFound(run(cfg, rate, seconds), "-40 kHz (wide transponder)");
+        if (L) countFound(run(cfg, rate, seconds), "-40 kHz (wide transponder)");
         cfg.cfoHz = 300; cfg.snrDb = 14;
         countFound(run(cfg, rate, seconds * 2), "14 dB");
     }
     {   // the whole-capture search (issue #214, the 1544 - 1545 MHz downlink): beacons far from the dial at 1 Msps, merged without duplicates
         SynthConfig cfg; cfg.snrDb = 25;
-        for (double off : {330000.0, -260000.0, 2000.0}) {
+        for (double off : L ? std::vector<double>{330000.0, -260000.0, 2000.0} : std::vector<double>{-260000.0}) {
             cfg.cfoHz = off;
             char what[64]; snprintf(what, sizeof what, "whole capture, %+.0f kHz", off / 1e3);
             const SarsatTelemetry t = run(cfg, 1e6, seconds, false, true);
@@ -110,6 +127,26 @@ int main() {
         }
         const SarsatTelemetry n = run(cfg, 1e6, 10, true, true);
         CHECK(n.log.empty(), "whole capture: noise gave %zu messages", n.log.size());
+    }
+    {   // the CPU cap of the whole-capture search (#223): 3 finders cover 270 kHz, a beacon inside them is still found
+        SynthConfig cfg; cfg.snrDb = 25; cfg.cfoHz = 2000;
+        SarsatReceiver rx;
+        rx.configure(1e6);
+        rx.setWideMaxChannels(3);
+        rx.setWideSearch(true);
+        rx.setSignalOffset(-sarsatTuning().tuneOffsetHz);
+        auto syn = makeSarsatSynth(cfg, 1e6);
+        std::vector<cf32> buf(32768);
+        SarsatTelemetry t;
+        uint64_t seq = 0;
+        for (double done = 0; done < seconds * 1e6; done += (double)buf.size()) {
+            syn->generate(buf.data(), buf.size());
+            rx.feed(buf.data(), buf.size());
+            SarsatTelemetry n;
+            if (rx.telemetry(n, seq)) { seq = n.seq; t = n; }
+        }
+        CHECK(t.wideChannels == 3 && t.wideSpanHz < 280e3, "capped search: %d channels, %.0f Hz", t.wideChannels, t.wideSpanHz);
+        countFound(t, "capped whole capture");
     }
     {   // a real recording (issue #223): I/Q wav at 37.5 kHz, carrier near +1.44 kHz, moved to the tuning offset at 256 kHz
         std::string path = __FILE__;

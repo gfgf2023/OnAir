@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wi-Fi OFDM PHY for the 5 and 6 GHz beacons: IEEE 802.11-2020 clause 17 (OFDM PHY, "802.11a"), the non-HT format that every access point
 // sends its beacons in on those bands (6 Mbit/s: BPSK, rate 1/2) whatever the channel width of the data it carries. A 40 / 80 / 160 MHz
 // channel sends the same non-HT frame duplicated in each 20 MHz part (clause 17.3.8.2 "non-HT duplicate"), so listening to the 20 MHz primary
@@ -24,6 +27,7 @@ constexpr double kRate = 20e6;           // samples per second
 constexpr int kFft = 64, kCp = 16, kSym = 80;
 constexpr int kStfLen = 160, kLtfLen = 160, kPreamble = 320;
 constexpr int kRate6 = 0xB;              // RATE field 1101, read with R1 as the lowest bit: 6 Mbit/s (Table 17-6)
+constexpr int kRate12 = 0xA;             // RATE field 0101: 12 Mbit/s, QPSK rate 1/2 (802.11p sends it at 6 Mbit/s on a 10 MHz channel)
 
 // Pieces shared by the transmit side, the receiver and the tests
 int pilotPolarity(int n);                                      // p_n, +1 or -1 (n mod 127), Equation 17-25
@@ -33,8 +37,8 @@ int viterbiDecode(const float* soft, int nBits, uint8_t* out);                  
 void scramble(std::vector<uint8_t>& bits, uint8_t state);       // x^7 + x^4 + 1 (clause 17.3.5.5); the same call descrambles
 
 // The whole PPDU as 20 Msps samples (unit average power in the data part): preamble, SIGNAL, DATA. mpdu includes its FCS. scrSeed: the 7-bit
-// scrambler start state (non-zero). The 6 Mbit/s rate only (what beacons use).
-std::vector<cf32> txPpdu(const std::vector<uint8_t>& mpdu, uint8_t scrSeed = 0x5D);
+// scrambler start state (non-zero). 6 Mbit/s (BPSK 1/2, what beacons use), or 12 Mbit/s (QPSK 1/2) with qpsk.
+std::vector<cf32> txPpdu(const std::vector<uint8_t>& mpdu, uint8_t scrSeed = 0x5D, bool qpsk = false);
 
 struct Info {
     double cfoHz = 0;       // carrier offset measured on the preamble (the signal sits this far above where it was expected)
@@ -42,6 +46,7 @@ struct Info {
     float rssiDb = -200;    // mean power of the packet, dB (full scale 0)
     int64_t at = 0;         // sample index of the long training start
     int length = 0;         // PSDU bytes (FCS included)
+    int rateMbps = 6;       // 6 (BPSK 1/2) or 12 (QPSK 1/2, setAllowQpsk)
 };
 
 class OfdmRx {
@@ -50,9 +55,10 @@ public:
     OfdmRx();
     ~OfdmRx();
     void setCallback(FrameCb cb);
+    void setAllowQpsk(bool on);                                // also read QPSK rate 1/2 frames (802.11p); off by default
     void reset();                                              // forget the buffer; the counters stay
     void feed(const cf32* x, size_t n);                        // 20 Msps samples, any block size
-    struct Stats { uint64_t triggers = 0, noSync = 0, signalOk = 0, signalBad = 0, otherRate = 0, framesOk = 0, framesBad = 0; };
+    struct Stats { uint64_t triggers = 0, noSync = 0, signalOk = 0, signalBad = 0, otherRate = 0, framesOk = 0, framesBad = 0, narrow = 0; };   // narrow: triggers of a narrowband signal, dropped
     const Stats& stats() const;
 private:
     struct Impl;

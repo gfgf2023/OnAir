@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Operating-system services for the UI: file dialogs, saved settings, fonts.
 #pragma once
 #include "dect2/backup/backup.h"
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -9,6 +13,17 @@ namespace plat {
 
 // A message the user must see before the program exits (a message box on Windows, standard error elsewhere).
 void showFatalError(const char* title, const char* text);
+
+// While a dialog of the system is open the main loop stands still: the hang watchdog (app/panels/debug_report.cpp) does not count that.
+inline std::atomic<int>& dialogDepth() { static std::atomic<int> d{0}; return d; }
+// True while a debugger is attached to OnAir: the hang watchdog then waits, as a stop at a breakpoint is not a hang.
+bool debuggerAttached();
+struct DialogScope {
+    DialogScope() { dialogDepth().fetch_add(1); }
+    ~DialogScope() { dialogDepth().fetch_sub(1); }
+    DialogScope(const DialogScope&) = delete;
+    DialogScope& operator=(const DialogScope&) = delete;
+};
 
 std::string openFileDialog();
 std::string saveFileDialog(const char* defaultName);
@@ -67,6 +82,11 @@ bool postJsonReply(const std::string& url, const std::string& json, const std::s
 // 4 anything else (TLS ...). detail is a short technical text for the log. body is the answer (up to 64 KB).
 struct HttpResult { int status = 0; int net = 0; std::string body; std::string detail; };
 HttpResult httpRequest(const std::string& method, const std::string& url, const std::string& body, const std::string& userAgent, int timeoutSec);
+// Any method with a body of any Content-Type and extra headers ("Authorization: Bearer ..."; passed to curl in a private temporary file, so a
+// token never appears in a process list), the HTTP status and the answer up to maxReply bytes. Used by the plugin marketplace
+// (docs/PLUGIN-MARKETPLACE-4.0.md) for its JSON, multipart uploads and package downloads.
+HttpResult httpCall(const std::string& method, const std::string& url, const std::string& body, const std::string& contentType,
+                    const std::vector<std::string>& headers, const std::string& userAgent, int timeoutSec, size_t maxReply);
 // Starts a program with arguments and does not wait for it. No shell is ever involved: every argument stays one argument. False and err when it did not start.
 bool spawnProgram(const std::string& program, const std::vector<std::string>& args, std::string& err);
 // Starts a program that keeps running, its output (both streams) written to logFile. Returns its process id, 0 and err when it did not start.
@@ -86,7 +106,8 @@ int locateState(double& lat, double& lon, double& accuracyM, std::string& msg);
 
 // Paths of fonts to try, best first (proportional UI font, monospaced font)
 std::vector<std::string> uiFontCandidates();
-std::vector<std::string> cjkFontCandidates();   // system CJK font merged into the UI fonts for Chinese/Japanese/Korean service names
+// system CJK fonts merged into the UI fonts for Chinese/Japanese/Korean text; those of the interface language lang first (cjk_order.h)
+std::vector<std::string> cjkFontCandidates(const std::string& lang);
 std::vector<std::string> monoFontCandidates();
 
 // The language the user reads the system in, as a code such as "de", "zh-Hans" or "lt_LT.UTF-8" (i18n::set() takes the first letters)

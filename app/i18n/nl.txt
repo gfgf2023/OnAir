@@ -3,48 +3,26 @@
 # Some entries are machine translations that no native speaker has reviewed yet: they are listed in unreviewed/nl.txt. Corrections are welcome.
 #  menus, status words, common buttons
 1 kHz test tone	1 kHz testtoon
-A P6 PPM is sent as the picture; any other or empty file uses the test picture. The callsign is stamped on it.	Een P6 PPM wordt als beeld verzonden; elk ander of leeg bestand gebruikt het testbeeld. De roepletters worden erop gezet.
-A SAME header. ZCZC- is added when missing.	Een SAME-header. ZCZC- wordt toegevoegd als het ontbreekt.
-Aircraft registration	Registratie van het vliegtuig
-An RS41 with this serial. Empty: the demo sondes.	Een RS41 met dit serienummer. Leeg: de demosondes.
 Are you sure? This clears all previous data and cannot be undone.	Weet u het zeker? Hiermee worden alle eerdere gegevens gewist. Dit kan niet ongedaan worden gemaakt.
-ATSC 3.0 uses a ROUTE / fMP4 demo; a custom MPEG-TS is not the payload path.	ATSC 3.0 gebruikt een ROUTE / fMP4-demo; een eigen MPEG-TS is niet het payloadpad.
 Audio file	Audiobestand
 Audio input	Audio-ingang
-AX.25 UI frame. Empty: the demo CubeSat cycle.	AX.25 UI-frame. Leeg: de demo-CubeSat-cyclus.
 Baud	Baud
 Browse…	Bladeren…
-Callsign / my ID	Roepletters / mijn ID
-Capcode	Capcode
 Carrier tune	Draaggolfafstemming
 Clear all	Alles wissen
 Clears all previous data: the decoded lists of every mode (aircraft, ships, messages, pictures and so on), on every open receiver. The saved copy on disk is emptied too.	Wist alle eerdere gegevens: de gedecodeerde lijsten van elke modus (vliegtuigen, schepen, berichten, beelden enzovoort), op elke geopende ontvanger. Ook de opgeslagen kopie op schijf wordt leeggemaakt.
-Code rate / MODCOD index	Coderate / MODCOD-index
-Colour code	Kleurcode
 Comment	Opmerking
 CQ	CQ
-D2-MAC test scene (custom video is not wired into this analogue generator).	D2-MAC-testbeeld (eigen video wordt door deze analoge generator niet ondersteund).
 DATV (DVB-S/S2 file)	DATV (DVB-S/S2-bestand)
 Default input	Standaardingang
 Destination	Bestemming
-Destination / ID	Bestemming / ID
-Destination ID	Bestemmings-ID
 Device ID	Apparaat-ID
 Dial frequency the decoder should assume (the sound card is not tuned)	Kiesfrequentie die de decoder moet aannemen (de geluidskaart wordt niet afgestemd)
 DVB standard	DVB-standaard
-Empty: the demo 802.15.4 scene.	Leeg: de demoscène voor 802.15.4.
-Empty: the demo FLARM scene. This ID is not packed into the unpublished newer protocol.	Leeg: de FLARM-demoscène. Dit ID wordt niet verpakt in het niet-gepubliceerde nieuwere protocol.
-Empty: the demo LoRa / mesh scene.	Leeg: de LoRa- / mesh-demoscène.
-Empty: the demo Mode S uplink scene.	Leeg: de Mode S-uplink-demoscène.
-Empty: the demo VDES scene.	Leeg: de VDES-demoscène.
 File	Bestand
-File to send	Te verzenden bestand
 Free text	Vrije tekst
 Gain controls apply to radios only (not to a recording, a sound card, or the synthetic signal)	Versterkingsregelaars gelden alleen voor radio's (niet voor een opname, een geluidskaart of het synthetische signaal)
 I/Q stereo	I/Q-stereo
-ICAO address	ICAO-adres
-Image (PNG / PPM)	Afbeelding (PNG / PPM)
-Image (PPM)	Afbeelding (PPM)
 Input device	Ingangsapparaat
 Latitude	Latitude
 libcodec2 is not loaded: live encode is off. A 1 kHz tone, silence or a WAV/MP3 can still be sent.	libcodec2 is niet geladen: live coderen staat uit. Een 1 kHz-toon, stilte of een WAV/MP3 kan nog steeds worden verzonden.
@@ -56,58 +34,30 @@ LSB audio	LSB-audio
 Message	Bericht
 Mic level	Microfoonniveau
 Microphone	Microfoon
-MMSI	MMSI
 Mode	Modus
-Morse identification, up to four letters.	Morse-identificatie, maximaal vier letters.
-NAVTEX sends the text (ZCZC / NNNN are added when missing). DSC (when that service is selected) uses the MMSI.	NAVTEX verzendt de tekst (ZCZC / NNNN worden toegevoegd als ze ontbreken). DSC (als die dienst is gekozen) gebruikt de MMSI.
 OnAir still asks the radio for it, but the radio or its driver may not reach this frequency, or the signal may be weak or absent.	OnAir vraagt de radio er nog steeds om, maar de radio of het stuurprogramma bereikt deze frequentie mogelijk niet, of het signaal is zwak of afwezig.
-PAN / short address	PAN / kort adres
 Path	Pad
-Payload text	Payloadtekst
-Power (dBm)	Vermogen (dBm)
-Pre-emphasis	Pre-emphasis
-PSK variant	PSK-variant
 QO-100 path	QO-100-pad
 Radio ID	Radio-ID
-Radio text (RT)	Radiotekst (RT)
-RDS PI	RDS PI
-Receiver-style options (demo signal)	Opties in ontvangerstijl (demosignaal)
 Report	Rapport
-Reverse (mark is the upper tone)	Omgekeerd (mark is de hogere toon)
-RFPI	RFPI
-RFPI of the base station.	RFPI van het basisstation.
 Roll-off	Roll-off
-Satellite standard	Satellietstandaard
 Send analog NFM of the audio instead of the digital test pattern	Analoge NFM van de audio verzenden in plaats van het digitale testpatroon
 Send analog NFM of the microphone or a file instead of the test scene	Analoge NFM van de microfoon of een bestand verzenden in plaats van de testscène
-Serial / ID	Serienummer / ID
 Shift	Shift
 Sideband	Zijband
 Silence	Stilte
 sound card	geluidskaart
 SSB (microphone)	SSB (microfoon)
-SSTV mode	SSTV-modus
-Station name (PS)	Stationsnaam (PS)
-Symbol rate (Hz)	Symboolsnelheid (Hz)
 Talkgroup	Talkgroup
-test DJI DroneID scene (custom serial is not packed)	test DJI DroneID-scène (eigen serienummer wordt niet verpakt)
-test downlink scene (this generator does not take a custom message)	test downlink-scène (deze generator accepteert geen eigen bericht)
-test LRPT/HRIT scene (custom image not wired)	test LRPT/HRIT-scène (eigen beeld niet aangesloten)
-test NCDXF-style beacon scene	test NCDXF-achtige bakenscène
-test weather-fax chart (custom image not wired)	test weerfaxkaart (eigen beeld niet aangesloten)
 TETRA ACELP is not encoded here. Colour code and IDs are shown; the downlink test pattern is sent. A 1 kHz tone, silence or a WAV/MP3 can be sent as analog NFM instead.	TETRA ACELP wordt hier niet gecodeerd. Kleurcode en ID's worden getoond; het downlink-testpatroon wordt verzonden. Een 1 kHz-toon, stilte of een WAV/MP3 kan in plaats daarvan als analoge NFM worden verzonden.
 Text	Tekst
 The capture rate of the sound card. The engine runs at this rate; there is no radio to tune.	De opnamesnelheid van de geluidskaart. De engine draait op deze snelheid; er is geen radio om af te stemmen.
-The file bytes go out as a HamDRM object with this callsign. Empty file: the test picture.	De bestandsbytes gaan de lucht in als een HamDRM-object met deze roepletters. Leeg bestand: het testbeeld.
 The microphone starts only when you press START TRANSMITTING.	De microfoon start pas wanneer u op START ZENDEN drukt.
-The registration and free-text go on the air as an H1 / ACARS downlink. Empty: the demo traffic.	De registratie en vrije tekst gaan de lucht in als een H1 / ACARS-downlink. Leeg: het demoverkeer.
 This frequency is outside what this radio is specified for	Deze frequentie valt buiten het bereik waarvoor deze radio is gespecificeerd
 this mode has no transmit generator	deze modus heeft geen zendgenerator
 This vocoder cannot encode: OnAir loads mbelib for decode only (AMBE/IMBE). Destination ID / talkgroup / colour code still go on the air; voice bits are the test pattern. A 1 kHz tone, silence or a WAV/MP3 can be sent as analog NFM instead.	Deze vocoder kan niet coderen: OnAir laadt mbelib alleen voor decodering (AMBE/IMBE). Bestemmings-ID / talkgroup / kleurcode gaan nog steeds de lucht in; de spraakbits zijn het testpatroon. Een 1 kHz-toon, stilte of een WAV/MP3 kan in plaats daarvan als analoge NFM worden verzonden.
-Timeslot	Timeslot
 To	To
 USB audio	USB-audio
-Vessel name	Scheepsnaam
 View	Weergave
 Help	Help
 Language	Taal
@@ -148,8 +98,6 @@ State	Status
 Channel	Kanaal
 Delay	Vertraging
 dropped	verloren
-level %.1f dBFS	niveau %.1f dBFS
-load %.0f%%	belasting %.0f%%
 FM: no station	FM: geen zender
 %s  SNR %.0f dB  %d services	%s  SNR %.0f dB  %d diensten
 OK	OK
@@ -449,7 +397,6 @@ The width of the signal is measured in the spectrum and the receiver switches be
 The receiver's channel filter. Narrower keeps a strong neighbour out (150 kHz copes with one 10 dB stronger 150 kHz away); below about 180 kHz loud passages distort a little and RDS suffers first.	Het kanaalfilter van de ontvanger. Smaller houdt een sterke buurzender buiten (150 kHz verdraagt er een die 10 dB sterker is op 150 kHz afstand); onder ongeveer 180 kHz vervormen luide passages een beetje en lijdt RDS het eerst.
 The width is measured in the spectrum, and 6, 8 and 7 MHz are tried in turn while nothing locks.	De breedte wordt in het spectrum gemeten en 6, 8 en 7 MHz worden om beurten geprobeerd zolang er niets vergrendelt.
 6 MHz in Japan and the Americas, 8 MHz in the Maldives (ISDB-T International). The signal is the same, scaled in time by the width.	6 MHz in Japan en Amerika, 8 MHz op de Malediven (ISDB-T International). Het signaal is hetzelfde, in de tijd geschaald met de breedte.
-Set by the country: there is nothing to measure it from. A receiver set to the wrong width finds nothing.	Bepaald door het land: er is niets om haar aan te meten. Een ontvanger met de verkeerde breedte vindt niets.
 Follows the symbol rate: symbol rate x (1 + roll-off).	Volgt de symboolsnelheid: symboolsnelheid x (1 + roll-off).
 Choose automatic or a manual symbol rate in the tuner to change it.	Kies in de tuner automatische of handmatige symboolsnelheid om dit te wijzigen.
 This mode	Deze modus
@@ -468,7 +415,6 @@ Radio settings (%d changed)	Radio-instellingen (%d gewijzigd)
 The driver's own settings show up here\nonce this radio has been started.	De eigen instellingen van het stuurprogramma verschijnen hier\nzodra deze radio is gestart.
 0 = libiio's default	0 = standaardwaarde van libiio
 #  passes
-Weather (137 MHz)	Weer (137 MHz)
 Amateur	Amateur
 Amateur satellites	Amateursatellieten
 downloading...	downloaden...
@@ -485,8 +431,6 @@ No TLE for:	Geen TLE voor:
 no valid TLE in the pasted text (two lines per satellite, checksums must match)	geen geldige TLE in de geplakte tekst (twee regels per satelliet, controlesommen moeten kloppen)
 pasted TLEs added:	geplakte TLE's toegevoegd:
 No TLEs yet: download them or paste some.	Nog geen TLE's: download ze of plak ze.
-No TLEs: open TLE data above.	Geen TLE's: open hierboven de TLE-gegevens.
-No passes in the next 24 hours.	Geen overvluchten in de komende 24 uur.
 TLE data	TLE-gegevens
 %d TLEs, %d satellites listed	%d TLE's, %d satellieten vermeld
 the oldest is %.0f days old: download again	de oudste is %.0f dagen oud: download opnieuw
@@ -495,23 +439,13 @@ Receiver position	Positie van de ontvanger
 The same position as the ADS-B antenna position	Dezelfde positie als de positie van de ADS-B-antenne
 not set: the times are for a placeholder position	niet ingesteld: de tijden gelden voor een plaatsvervangende positie
 Satellite	Satelliet
-AOS	AOS
-LOS	LOS
 Max el	Max. elev.
 Duration	Duur
 Frequency	Frequentie
-AOS in %d:%02d:%02d	AOS over %d:%02d:%02d
 %s - %s, max %.0f deg	%s - %s, max. %.0f gr.
-no pass	geen overvlucht
-az %.0f  el %.0f  %.0f km\nDoppler %+.0f Hz	az %.0f  el %.0f  %.0f km\nDoppler %+.0f Hz
 Track	Volgen
-Track (choose a pass)	Volgen (kies een overvlucht)
-During each pass of this satellite, retune about once a second for the Doppler shift	Tijdens elke overvlucht van deze satelliet ongeveer eens per seconde bijstemmen voor de dopplerverschuiving
 Auto start at AOS, stop at LOS	Automatisch starten bij AOS, stoppen bij LOS
-Switches to the satellite's mode and starts the receiver at AOS (when it is stopped), and stops it at LOS	Schakelt naar de modus van de satelliet en start de ontvanger bij AOS (als die gestopt is), en stopt hem bij LOS
 Auto record IQ	IQ automatisch opnemen
-Records the radio's IQ during the pass, as Record IQ does (format from the Record IQ setting), into %s/recordings	Neemt het IQ van de radio op tijdens de overvlucht, zoals IQ opnemen (formaat uit die instelling), naar %s/recordings
-OnAir has no decoder for this: auto start opens the Spectrum explorer, and Auto record keeps the IQ	OnAir heeft hiervoor geen decoder: automatisch starten opent de Spectrum explorer en automatisch opnemen bewaart het IQ
 tracking%s	volgen%s
 , recording	, opname
 #  data feeds
@@ -614,7 +548,6 @@ Checking and preparing the new version…	De nieuwe versie controleren en voorbe
 Downloaded and checked. It is installed when you close OnAir.	Gedownload en gecontroleerd. Wordt geïnstalleerd zodra je OnAir sluit.
 Restart now and update	Nu herstarten en bijwerken
 Windows asks for permission to run the installer.	Windows vraagt toestemming om het installatieprogramma uit te voeren.
-The system asks for your password to install the package.	Het systeem vraagt om je wachtwoord om het pakket te installeren.
 This copy of OnAir cannot replace itself.	Deze kopie van OnAir kan zichzelf niet vervangen.
 The update to v%s did not install (setup exit code %d).	De update naar v%s is niet geïnstalleerd (afsluitcode van de setup %d).
 Only github.com is contacted. Downloads are checked against the SHA-256 GitHub lists for the file.	Er wordt alleen contact gemaakt met github.com. Downloads worden gecontroleerd aan de hand van de SHA-256 die GitHub voor het bestand vermeldt.
@@ -882,7 +815,7 @@ Weather pictures, 1.7 GHz	Weerbeelden, 1.7 GHz
 What to add to a level in dBFS to get dBm for this radio (its calibration: a known signal into the antenna port shows it). Also in the radio's settings.	Wat je bij een niveau in dBFS optelt om dBm voor deze radio te krijgen (zijn kalibratie: een bekend signaal in de antenne-aansluiting toont het). Ook in de radio-instellingen.
 Your callsign	Je roepletters
 Your locator	Je locator
-Zoom: mouse wheel (both axes), Ctrl+wheel (frequency), Shift+wheel (level).\nCtrl+PageUp / PageDown: step the view by one screen in frequency. Double click: reset.	Zoom: muiswiel (beide assen), Ctrl+wiel (frequentie), Shift+wiel (niveau).\nCtrl+PageUp / PageDown: beeld een scherm opschuiven in frequentie. Dubbelklik: herstellen.
+Zoom: mouse wheel (both axes), Ctrl+wheel (frequency), Shift+wheel (level).\nCtrl+PageUp / PageDown: step the view by one screen in frequency. Double click: tune. Home: show the whole band.	Zoom: muiswiel (beide assen), Ctrl+wiel (frequentie), Shift+wiel (niveau).\nCtrl+PageUp / PageDown: beeld een scherm opschuiven in frequentie. Dubbelklik: afstemmen. Home: de hele band tonen.
 antenna %.6g MHz -> %s LO %.6g -> radio %.6g MHz%s	antenne %.6g MHz -> %s LO %.6g -> radio %.6g MHz%s
 channel scan has the radio	kanaalscan gebruikt de radio
 dBm offset	dBm-offset
@@ -930,7 +863,6 @@ WSJT, 14.078 MHz	WSJT, 14.078 MHz
 WSJT, 14.080 MHz	WSJT, 14.080 MHz
 WSJT, 14.084 MHz	WSJT, 14.084 MHz
 WSJT, 14.100 MHz	WSJT, 14.100 MHz
-%.0f deg	%.0f gr.
 %s, %llu spots sent in %llu packets, %llu duplicates skipped	%s, %llu spots verzonden in %llu pakketten, %llu duplicaten overgeslagen
 offset %+.3f %+.3f	offset %+.3f %+.3f
 sigma %.3f per axis (%.0f%% of the half-distance to a neighbour)	sigma %.3f per as (%.0f%% van de halve afstand tot een buur)
@@ -946,11 +878,8 @@ FM	FM
 %s  %.4f MHz  %s%s%s%s  %.1f dB  %s	%s  %.4f MHz  %s%s%s%s  %.1f dB  %s
 -	-
 8 MHz	8 MHz
-A line at the top of the window and a log entry before the tracked pass rises (0: off)	Een regel bovenin het venster en een logregel voordat de gevolgde overvlucht begint (0: uit)
 All time	Altijd
-Arms this pass only: at AOS the receiver starts in the satellite's mode and frequency (when it is stopped), Doppler is followed and the IQ is recorded; at LOS it stops and tracking switches off again	Stelt alleen deze overvlucht in: bij AOS start de ontvanger (als die gestopt is) in de modus en op de frequentie van de satelliet, wordt de dopplerverschuiving gevolgd en het IQ opgenomen; bij LOS stopt hij en wordt het volgen weer uitgeschakeld
 Automatic update	Automatische update
-Cancel recording this pass	Opname van deze overvlucht annuleren
 Dark	Donker
 Download SDDC_FX3.img from the Releases page of the SDDC_Driver project (button below).	Download SDDC_FX3.img van de Releases-pagina van het SDDC_Driver-project (knop hieronder).
 Downloads the TLEs again once a day, only while this window is open or a pass is tracked. Without a network the saved lists are used.	Downloadt de TLE's eenmaal per dag opnieuw, alleen zolang dit venster openstaat of een overvlucht wordt gevolgd. Zonder netwerk worden de opgeslagen lijsten gebruikt.
@@ -963,12 +892,10 @@ Look for Red Pitaya boards on this computer's networks again	Opnieuw zoeken naar
 MHz	MHz
 No Red Pitaya answered on this computer's networks (is its SDR transceiver app running?): type its address.	Geen Red Pitaya antwoordde op de netwerken van deze computer (draait de SDR-transceiverapp?): typ het adres.
 Nothing heard yet: the plot fills in as positions arrive.	Nog niets gehoord: de grafiek vult zich naarmate er posities binnenkomen.
-Pass of %s in %d:%02d (max %.0f deg)	Overvlucht van %s over %d:%02d (max. %.0f gr.)
 Pass of %s in %d:%02d (max %.0f deg): the receiver starts by itself	Overvlucht van %s over %d:%02d (max. %.0f gr.): de ontvanger start vanzelf
 Plug the radio into a USB 3 port directly on the computer, not through a USB 2 hub.	Sluit de radio aan op een USB 3-poort rechtstreeks op de computer, niet via een USB 2-hub.
 Put the file in OnAir's codecs folder (button below).	Zet het bestand in de codecmap van OnAir (knop hieronder).
 Range	Bereik
-Record this pass	Deze overvlucht opnemen
 Rolling window: a sector's furthest position counts only for this long	Voortschrijdend venster: de verste positie van een sector telt maar zo lang mee
 Save CSV...	CSV opslaan...
 Save PNG...	PNG opslaan...
@@ -978,7 +905,6 @@ The RX888 is on a USB 2 port	De RX888 zit op een USB 2-poort
 The RX888 needs its firmware file	De RX888 heeft zijn firmwarebestand nodig
 The RX888 MkII has no program of its own in its USB chip: OnAir loads SDDC_FX3.img into RAM when the radio is in boot-loader mode (nothing is flashed to the radio). Official OnAir packages include this file; a copy built by hand may not.	De RX888 MkII heeft geen eigen programma in zijn USB-chip: OnAir laadt SDDC_FX3.img in RAM in de boot-loader-modus (er wordt niets naar de radio geflasht). Officiële OnAir-pakketten bevatten dit bestand; een handmatig gebouwde kopie mogelijk niet.
 Use a USB 3 cable (the one that came with the radio).	Gebruik een USB 3-kabel (die bij de radio werd geleverd).
-armed: %s at %s	ingesteld: %s om %s
 last downloaded %s	laatst gedownload %s
 remind %.0f min before	herinner %.0f min van tevoren
 saved	opgeslagen
@@ -1012,7 +938,6 @@ Frequency (MHz)	Frequentie (MHz)
 +14 dB amplifier	+14 dB-versterker
 Repeat until stopped	Herhalen tot stoppen
 seconds	seconden
-START TRANSMITTING	ZENDEN STARTEN
 This radio has no transmit driver in OnAir.	Deze radio heeft geen zenddriver in OnAir.
 Before you transmit	Voordat u zendt
 Transmitting needs a licence or permission where you are. You are responsible for what you emit and for not interfering with others (including services that people rely on for safety). Connect an antenna, an attenuator or a dummy load to the radio before you start. OnAir does not limit the frequency or the power: the radio's own limits are the only ones.	Zenden vereist een licentie of toestemming waar u zich bevindt. U bent verantwoordelijk voor wat u uitzendt en voor het niet storen van anderen (ook diensten waarop mensen voor hun veiligheid vertrouwen). Sluit een antenne, een verzwakker of een kunstbelasting op de radio aan voordat u begint. OnAir beperkt noch de frequentie noch het vermogen: alleen de grenzen van de radio zelf gelden.
@@ -1167,10 +1092,8 @@ Sample rate	Samplefrequentie
 Search signals...	Signalen zoeken...
 Settings	Instellingen
 Signal	Signaal
-Space = start / stop     Esc = stop	Spatie = start / stop     Esc = stop
 Stops the transmission or test, the carrier and any pending start, and gives the radio back.	Stopt de uitzending of test, de draaggolf en een wachtende start, en geeft de radio vrij.
 TEST - NO RF	TEST - GEEN RF
-Test (dry run, no RF)	Test (proefrun, geen RF)
 Test (no RF)	Test (geen RF)
 Test: the IQ the radio would get	Test: de IQ die de radio zou krijgen
 The IQ going to the radio	De IQ die naar de radio gaat
@@ -1179,8 +1102,6 @@ The transmit panel is in its own window.	Het zendpaneel staat in een eigen venst
 This is added to the frequency sent to the radio, for a radio that radiates off frequency.	Wordt opgeteld bij de frequentie die naar de radio gaat, voor een radio die naast de frequentie uitzendt.
 TX channel	TX-kanaal
 Transmit	Zenden
-Transmitting	Zenden
-Unmodulated carrier at this frequency and level, for adjusting the transmission (drive, filter, SWR, dummy-load level), not a message. Hold the button. Stop still applies. Not saved as transmitting.	Ongemoduleerde draaggolf op deze frequentie en dit niveau om de uitzending af te stellen (aansturing, filter, SWR, niveau op de kunstantenne), geen bericht. Houd de knop ingedrukt. Stop werkt altijd. Niet bewaard als zendend.
 What will be sent (preview)	Wat er verzonden wordt (voorbeeld)
 at full scale: the limiter will round the peaks	op volle schaal: de limiter rondt de pieken af
 making the preview...	voorbeeld wordt gemaakt...
@@ -2427,13 +2348,10 @@ Room title	Titel van de ruimte
 Also show decoded ACARS text in the room (public)	Ook gedecodeerde ACARS-tekst in de ruimte tonen (openbaar)
 Needs Server > Send data to map server and Also share interesting ACARS messages.	Vereist Server > Gegevens naar kaartserver sturen en Ook interessante ACARS-berichten delen.
 Go live	Live gaan
-Schedule passes by itself	Overvluchten zelf plannen
-Takes the passes of the ticked groups one at a time, highest priority first, and starts, tunes and records each one without you. Overlapping passes are trimmed or skipped; a receiver you started yourself is left alone.	Neemt de overvluchten van de aangevinkte groepen één voor één op, hoogste prioriteit eerst, en start, stemt af en neemt elk op zonder jouw tussenkomst. Overlappende overvluchten worden ingekort of overgeslagen; een ontvanger die je zelf startte blijft ongemoeid.
 Priority (higher wins)	Prioriteit (hoger wint)
 Keep the SDR free every day	SDR elke dag vrijhouden
 from %d:00	vanaf %d:00
 to %d:00	tot %d:00
-Nothing planned.	Niets gepland.
 planned	gepland
 trimmed	ingekort
 skipped: SDR reserved	overgeslagen: SDR gereserveerd
@@ -2775,122 +2693,38 @@ decoder locked: gain frozen	decoder vergrendeld: versterking bevroren
 at the end of the gain range	aan het eind van het versterkingsbereik
 holding the level	niveau wordt vastgehouden
 # transmit panel: top bar, Basic / Advanced, per-signal parameters
-0 is the normal suppressed carrier. A little carrier helps a receiver lock on; the top of the range is as strong as the loudest audio.	0 is de gewone onderdrukte draaggolf. Een beetje draaggolf helpt de ontvanger te vergrendelen; het bovenste einde van het bereik is even sterk als het luidste geluid.
-A second tone added to the first (0 = off). Two tones make a two-tone linearity test.	Een tweede toon bovenop de eerste (0 = uit). Twee tonen vormen een tweetoons-lineariteitstest.
-AM (carrier and sidebands)	AM (draaggolf en zijbanden)
-AM sends the carrier and both sidebands. Double sideband with suppressed carrier sends only the sidebands.	AM zendt de draaggolf en beide zijbanden uit. Dubbele zijband met onderdrukte draaggolf zendt alleen de zijbanden uit.
-Audio above this level is turned down.	Geluid boven dit niveau wordt zachter gezet.
-Audio frequency	Audiofrequentie
-Boosts the high notes before sending (0 = off).	Versterkt de hoge tonen voor het zenden (0 = uit).
-Boosts the high notes before sending. 50 µs in Europe and most of the world, 75 µs in the Americas.	Versterkt de hoge tonen voor het zenden. 50 µs in Europa en het grootste deel van de wereld, 75 µs in Amerika.
 CTCSS tone	CTCSS-toon
-Carrier injection	Draaggolfinjectie
-Carrier level	Draaggolfniveau
-Choose a radio below, or switch on the test (no RF).	Kies hieronder een radio of schakel de test in (zonder RF).
 Choose a signal in the list.	Kies een signaal in de lijst.
-Cuts the audio above this pitch, which sets how wide the signal is (0 = off).	Knipt het geluid boven deze toonhoogte af, wat de breedte van het signaal bepaalt (0 = uit).
-DSB (suppressed carrier)	DSB (onderdrukte draaggolf)
 Default: %s	Standaard: %s
 Deviation	Deviatie
-Esc = stop	Esc = stoppen
-Evens out loud and quiet speech so the signal stays strong without over-modulating.	Egaliseert luide en zachte spraak zodat het signaal sterk blijft zonder overmodulatie.
 Every setting of this signal: modulation, audio, filters, output and timing. The defaults are sensible; open this only to change them.	Alle instellingen van dit signaal: modulatie, audio, filters, uitgang en timing. De standaardwaarden zijn verstandig; open dit alleen om ze te wijzigen.
-Filters	Filters
 Follow the receiver	De ontvanger volgen
 Frequency offset	Frequentieverschuiving
-Gain added after the compressor.	Versterking die na de compressor wordt toegevoegd.
-Gain applied to the whole signal just before the radio. Lower it when the meter shows clipping; the radio's own gain is set above.	Versterking van het hele signaal vlak voor de radio. Zet hem lager als de meter clipping toont; de eigen versterking van de radio stel je hierboven in.
 HOLD TO TRANSMIT	HOUD INGEDRUKT OM TE ZENDEN
-High-pass (low cut)	Hoogdoorlaat (laagsnijder)
-How far the RDS subcarrier deviates the carrier.	Hoever de RDS-subdraaggolf de draaggolf afwijkt.
-How far the audio swings the frequency. 2.5 kHz is a 12.5 kHz channel, 5 kHz a 25 kHz channel.	Hoever het geluid de frequentie laat variëren. 2,5 kHz hoort bij een kanaal van 12,5 kHz, 5 kHz bij een kanaal van 25 kHz.
-How far the audio swings the frequency. Broadcast FM uses 75 kHz.	Hoever het geluid de frequentie laat variëren. Omroep-FM gebruikt 75 kHz.
-How far the audio swings the signal. Full modulation is at 100 percent; more than that over-modulates and distorts.	Hoever het geluid het signaal moduleert. Volle modulatie is 100 procent; meer geeft overmodulatie en vervorming.
-How fast the compressor lets go after a loud passage.	Hoe snel de compressor loslaat na een luide passage.
-How long the VOX stays open after the sound stops.	Hoe lang de VOX open blijft nadat het geluid stopt.
-How loud the audio must be to open the VOX.	Hoe luid het geluid moet zijn om de VOX te openen.
-How loud the test tone is, as a share of full audio.	Hoe luid de testtoon is, als deel van het volle geluidsniveau.
-How strongly audio above the threshold is turned down; 20 is close to a hard limiter.	Hoe sterk geluid boven de drempel wordt teruggebracht; 20 komt dicht bij een harde limiter.
-Key-up fade-in	Opbouw bij het inschakelen
-Left level	Niveau links
-Left test tone	Testtoon links
-Low-pass (audio bandwidth)	Laagdoorlaat (audiobandbreedte)
-Lower sideband (LSB)	Onderste zijband (LSB)
-Make-up gain	Make-up-versterking
-Mirror the spectrum	Spectrum spiegelen
-Modulation depth	Modulatiediepte
 Music (not speech)	Muziek (geen spraak)
 Name for a new preset	Naam voor een nieuwe preset
 No presets saved for this signal yet.	Er zijn nog geen presets opgeslagen voor dit signaal.
 Output	Uitgang
 Output level	Uitgangsniveau
-Output trim	Uitgangstrim
-Peak level	Piekniveau
-Pilot level	Pilootniveau
-Pitch	Toonhoogte
 Presets	Presets
 Preview	Voorbeeld
-Programme type	Programmatype
 Push to talk (hold the button)	Push-to-talk (houd de knop ingedrukt)
-Puts every setting below back to its default.	Zet elke instelling hieronder terug op de standaardwaarde.
-RDS	RDS
-RDS level	RDS-niveau
-RF level	RF-niveau
 RX %.6f MHz	RX %.6f MHz
-Ratio	Verhouding
-Release	Loslaten
-Removes rumble and hum below this pitch (0 = off).	Verwijdert gedreun en brom onder deze toonhoogte (0 = uit).
 Reset to default	Terug naar standaard
-Right level	Niveau rechts
-Right test tone	Testtoon rechts
-Runs the signal generator at the radio's sample rate into nothing: no radio is opened and nothing is sent. The spectrum and levels show what would go out.	Laat de signaalgenerator op de samplefrequentie van de radio in het niets draaien: er wordt geen radio geopend en er wordt niets uitgezonden. Spectrum en niveaus tonen wat eruit zou gaan.
 Save preset	Preset opslaan
 Saves the settings below, the frequency and the level under this name.	Slaat de instellingen hieronder, de frequentie en het niveau onder deze naam op.
-Second test tone	Tweede testtoon
-Sends the 19 kHz pilot and the stereo difference signal.	Zendt de 19-kHz-piloottoon en het stereoverschilsignaal uit.
-Sends the station name, radio text and programme type on a 57 kHz subcarrier.	Zendt de zendernaam, radiotekst en het programmatype uit op een subdraaggolf van 57 kHz.
-Speech compressor	Spraakcompressor
 Start transmitting	Zenden starten
 Stereo	Stereo
 Stop transmitting	Zenden stoppen
-Swaps I and Q so the signal is turned over: an upper sideband becomes a lower one. For a radio or mixer that inverts.	Verwisselt I en Q zodat het signaal wordt omgedraaid: een bovenste zijband wordt een onderste. Voor een radio of mixer die inverteert.
 TRANSMITTING (release to stop)	ZENDT (loslaten om te stoppen)
 TX = RX	TX = RX
 TX independent	TX onafhankelijk
-Test tone	Testtoon
-Test tone level	Niveau van de testtoon
-The 19 kHz stereo pilot, as a share of the full deviation.	De 19-kHz-stereopiloot, als deel van de volledige deviatie.
-The RDS flag for a station that carries traffic announcements.	De RDS-vlag voor een zender die verkeersberichten uitzendt.
-The RDS flag for music instead of speech.	De RDS-vlag voor muziek in plaats van spraak.
-The RDS flag that a traffic announcement is on the air.	De RDS-vlag dat er nu een verkeersbericht wordt uitgezonden.
-The RDS programme type code (0 to 31; 10 is pop music).	De RDS-programmatypecode (0 tot 31; 10 is popmuziek).
-The largest signal as a share of full scale.	Het grootste signaal als deel van het volle bereik.
-The left test tone, as a share of full audio.	De linker testtoon, als deel van het volle geluidsniveau.
-The pitch of the Morse tone, as an offset above the dial frequency.	De toonhoogte van de morsetoon, als verschuiving boven de afstemfrequentie.
-The pitch of the test tone, used when the audio input is the test tone.	De toonhoogte van de testtoon, gebruikt wanneer de audio-ingang de testtoon is.
-The pitch on the left channel, used when the audio input is the test tone.	De toonhoogte op het linkerkanaal, gebruikt wanneer de audio-ingang de testtoon is.
-The pitch on the right channel (0 = three times the left).	De toonhoogte op het rechterkanaal (0 = drie keer de linker).
 The radio's output level. Start low.	Het uitgangsniveau van de radio. Begin laag.
-The right test tone, as a share of full audio.	De rechter testtoon, als deel van het volle geluidsniveau.
-The signal fades in over this time after Start, so the key-up does not click.	Het signaal wordt na de start over deze tijd opgebouwd, zodat het inschakelen niet klikt.
-The signal goes out only while there is sound on the audio input.	Het signaal gaat alleen uit zolang er geluid op de audio-ingang is.
-The signal goes out only while you hold the button down.	Het signaal gaat alleen uit zolang je de knop ingedrukt houdt.
-The size of the carrier as a share of full scale. At a depth of 85 percent the peaks reach about full scale.	De grootte van de draaggolf als deel van het volle bereik. Bij een diepte van 85 procent halen de pieken ongeveer het volle bereik.
-The size of the signal as a share of full scale.	De grootte van het signaal als deel van het volle bereik.
 The transmit frequency follows the receiver's. Typing a different one here unlinks them. Click to unlink.	De zendfrequentie volgt die van de ontvanger. Een andere typen ontkoppelt ze. Klik om te ontkoppelen.
 The transmit frequency is its own. The receiver is on %.6f MHz. Click to make the transmitter follow it.	De zendfrequentie staat los. De ontvanger staat op %.6f MHz. Klik om de zender die te laten volgen.
 Threshold	Drempel
 Timing	Timing
-Traffic announcement now	Verkeersbericht nu
-Traffic programme	Verkeersprogramma
-Upper sideband (USB)	Bovenste zijband (USB)
-VOX (transmit on voice)	VOX (zenden op spraak)
-VOX hang time	VOX-nalooptijd
-VOX threshold	VOX-drempel
 Well-known frequencies of this signal: pick one to set the transmit frequency	Bekende frequenties van dit signaal: kies er een om de zendfrequentie in te stellen
-Where the middle of the signal sits in the audio passband, as an offset above the dial frequency.	Waar het midden van het signaal in de audioband ligt, als verschuiving boven de afstemfrequentie.
-Where the signal sits in the audio passband, as an offset above the dial frequency.	Waar het signaal in de audioband ligt, als verschuiving boven de afstemfrequentie.
-Which sideband is sent.	Welke zijband wordt uitgezonden.
 follows the receiver	volgt de ontvanger
 on	aan
 # full screen on every map
@@ -3471,3 +3305,353 @@ Next tab	Next tab
 Previous tab	Previous tab
 The radio runs this many times faster than the mode asks, and OnAir filters the samples down to the mode's rate itself.\nFor radios that are poor at low sample rates (images, a weak anti-alias filter). Costs CPU and USB bandwidth;\nthe radio's highest rate still applies. Off: the radio runs at the mode's rate.	The radio runs this many times faster than the mode asks, and OnAir filters the samples down to the mode's rate itself.\nFor radios that are poor at low sample rates (images, a weak anti-alias filter). Costs CPU and USB bandwidth;\nthe radio's highest rate still applies. Off: the radio runs at the mode's rate.
 At a set speed each row is the highest level of the frames in between, so a short burst is never missed.\nAverage: the mean level instead, which calms the noise and shows steady weak signals better.	At a set speed each row is the highest level of the frames in between, so a short burst is never missed.\nAverage: the mean level instead, which calms the noise and shows steady weak signals better.
+Export results CSV...	Resultaten exporteren naar CSV...
+Nothing to export: no row matches the search.	Niets te exporteren: geen enkele rij komt overeen met de zoekopdracht.
+Saves the rows now in the table (with the search and the filters applied, built-in and yours) as a CSV file. Import and the Memory panel read it back.	Slaat de rijen in de tabel op (met zoekopdracht en filters toegepast, ingebouwd en eigen) als CSV-bestand. Importeren en het paneel Geheugen lezen het weer in.
+Clean the input: DC spike, IQ imbalance and the radio's own spurs	Ingang opschonen: DC-piek, IQ-onbalans en eigen stoorlijnen van de radio
+Measured from the signal itself, never the wanted channel: the DC spike and the IQ mirror image are skipped in the modes they would harm, and a spur inside the channel is cut only when it stays at the same place of the baseband after a retune (a real signal moves with the tuner).	Gemeten uit het signaal zelf en raakt nooit het gewenste kanaal: de DC-piek en het IQ-spiegelbeeld worden overgeslagen in modi waar ze zouden schaden, en een stoorlijn in het kanaal wordt alleen weggehaald als hij na het hertunen op dezelfde plek in de basisband blijft (een echt signaal beweegt mee met de tuner).
+%d spur(s) cut	%d stoorlijn(en) weggehaald
+working	werkt
+installed	geïnstalleerd
+wrong processor	verkeerde processor
+missing	ontbreekt
+Copy build command	Bouwcommando kopiëren
+How to install (this computer):	Zo installeert u (deze computer):
+rtl_tcp: an RTL-SDR shared by another computer over the network.	rtl_tcp: een RTL-SDR die een andere computer via het netwerk deelt.
+Airspy HF+: a very sensitive receiver for long, medium and short wave and FM, up to 260 MHz.	Airspy HF+: een zeer gevoelige ontvanger voor lange, middel- en korte golf en FM, tot 260 MHz.
+Fobos SDR: a wideband receiver, 100 kHz to 6 GHz. Needs the radio's own library, see the ? in Radio settings.	Fobos SDR: een breedbandontvanger, 100 kHz tot 6 GHz. Heeft de eigen bibliotheek van de radio nodig, zie het ? in de radio-instellingen.
+RFNM: a wideband radio board with one or two daughter boards, on USB or the network.	RFNM: een breedband radiobord met een of twee dochterborden, via USB of netwerk.
+SDRplay nRSP-ST: a network radio, used through SDRconnect running on a computer.	SDRplay nRSP-ST: een netwerkradio, gebruikt via SDRconnect op een computer.
+TCI: a radio of the ExpertSDR family (SunSDR and others) on the network. Receive only.	TCI: een radio uit de ExpertSDR-familie (SunSDR en andere) op het netwerk. Alleen ontvangst.
+SDR++ server: a radio shared by another computer running SDR++.	SDR++-server: een radio die een andere computer met SDR++ deelt.
+A sound card or a web radio used as the input.	Een geluidskaart of webradio als ingang.
+Run setup again...	Installatie opnieuw uitvoeren...
+Easy mode	Eenvoudige modus
+European Union (generic)	Europese Unie (algemeen)
+Lithuania	Litouwen
+United Kingdom	Verenigd Koninkrijk
+Germany	Duitsland
+Poland	Polen
+United States	Verenigde Staten
+Canada	Canada
+Australia	Australië
+Quick pick: a region preset sets the band plan, the TV channels, the FM band, the default frequencies and the units	Snelkeuze: een regiovoorinstelling stelt het bandplan, de tv-kanalen, de FM-band, de standaardfrequenties en de eenheden in
+Or search for a city or country	Of zoek een stad of land
+imperial (miles, feet)	imperiaal (mijlen, voet)
+metric (km, metres)	metrisch (km, meter)
+Defaults: FM %.1f MHz, APRS %.3f MHz, units %s.	Standaard: FM %.1f MHz, APRS %.3f MHz, eenheden: %s.
+A preset has no exact position: type a city or coordinates above if you want the aircraft map and satellite passes centred on you.	Een voorinstelling heeft geen exacte positie: typ hierboven een stad of coördinaten als u de vliegtuigkaart en satellietovervluchten op uzelf wilt centreren.
+Units	Eenheden
+Follow the region	Volg de regio
+Metric	Metrisch
+Imperial	Imperiaal
+Which antenna will you use? It matters more than the radio. OnAir uses the answer for hints only; nothing is changed in the radio.	Welke antenne gebruikt u? Ze is belangrijker dan de radio. OnAir gebruikt het antwoord alleen voor tips; aan de radio verandert niets.
+What this means for you	Wat dit voor u betekent
+Digital voice (DMR, P25, NXDN, dPMR, D-STAR, Yaesu, TETRA) is silent until you install its codec plug-in. The calls, IDs and data work without it.	Digitale spraak (DMR, P25, NXDN, dPMR, D-STAR, Yaesu, TETRA) blijft stil tot u de codec-plug-in installeert. Gesprekken, ID's en gegevens werken ook zonder.
+Only digital voice modes need a codec. You can skip this screen and come back from Help > Voice codecs.	Alleen digitale spraakmodi hebben een codec nodig. U kunt dit scherm overslaan en terugkomen via Help > Spraakcodecs.
+OnAir does not include or download these codecs (they are patented). You build or install them on your own computer; whether you may use them is your own responsibility. FreeDV, M17, DAB, DRM and TV need nothing.	OnAir bevat deze codecs niet en downloadt ze niet (ze zijn gepatenteerd). U bouwt of installeert ze op uw eigen computer; of u ze mag gebruiken is uw eigen verantwoordelijkheid. FreeDV, M17, DAB, DRM en tv hebben niets nodig.
+Antenna: %s	Antenne: %s
+Easy mode (recommended)	Eenvoudige modus (aanbevolen)
+Every mode opens its Simple view: the spectrum and one screen with a Start button and the key controls. The detailed tabs are one click away (Simple | Advanced above them).	Elke modus opent in de eenvoudige weergave: het spectrum en één scherm met een Start-knop en de belangrijkste bediening. De gedetailleerde tabs zijn één klik weg (Eenvoudig | Geavanceerd erboven).
+Change any of this at any time: Help > Setup and lessons > Run setup again, Mode > Modes shown, View > Language, Settings > Appearance > Font look.	Dit alles is op elk moment te wijzigen: Help > Installatie en lessen > Installatie opnieuw uitvoeren, Modus > Getoonde modi, Beeld > Taal, Instellingen > Uiterlijk > Lettertype.
+The setup has six short screens and every one can be skipped. Nothing is forced.\n\nRadio: OnAir looks for radios on USB and on the network and picks one. "?" beside a radio opens its help page. Without a radio, the test signal lets you try OnAir.\n\nLocation: one click on a region preset (Lithuania, the EU, ...) or a city, a locator or coordinates give your country, the band plan, the TV channels, the FM band and step, the default frequencies and the units.\n\nAntenna: hints for what you can hear with the antenna you have.\n\nInterests: decide which modes are starred and listed first, where OnAir starts and a few starter presets. Everything stays available.\n\nCodecs: digital voice needs a codec plug-in that you install yourself; Look again checks the folder.\n\nEasy mode on the last screen opens every mode in its Simple view. Run the setup again any time from Help > Setup and lessons > Run setup again, or from Settings.	De installatie heeft zes korte schermen en elk kan worden overgeslagen. Niets is verplicht.\n\nRadio: OnAir zoekt radio's via USB en het netwerk en kiest er een. Het „?” naast een radio opent de helppagina. Zonder radio laat het testsignaal u OnAir uitproberen.\n\nLocatie: een klik op een regiovoorinstelling (Litouwen, EU, ...) of een stad, locator of coördinaten stellen het land, het bandplan, de tv-kanalen, de FM-band en stap, de standaardfrequenties en de eenheden in.\n\nAntenne: tips over wat u met uw antenne kunt horen.\n\nInteresses: bepalen welke modi een ster krijgen en bovenaan staan, waar OnAir start en enkele startvoorinstellingen. Alles blijft beschikbaar.\n\nCodecs: digitale spraak heeft een codec-plug-in nodig die u zelf installeert; Opnieuw zoeken controleert de map.\n\nDe eenvoudige modus op het laatste scherm opent elke modus in de eenvoudige weergave. Voer de installatie op elk moment opnieuw uit via Help > Installatie en lessen > Installatie opnieuw uitvoeren, of via Instellingen.
+Interests	Interesses
+Codecs	Codecs
+Done	Klaar
+Region preset	Regiovoorinstelling
+First-run setup	Eerste installatie
+Every mode opens its Simple view: the spectrum and one screen with a Start button and the key controls. Off: the detailed tabs.	Elke modus opent in de eenvoudige weergave: het spectrum en één scherm met een Start-knop en de belangrijkste bediening. Uit: de gedetailleerde tabs.
+One click sets the band plan, TV channels, FM band and step, default frequencies and units for a region (Lithuania, EU, ...).	Eén klik stelt het bandplan, de tv-kanalen, de FM-band en stap, de standaardfrequenties en de eenheden van een regio in (Litouwen, EU, ...).
+Open the setup again: radio, region, antenna, interests, voice codecs.	De installatie opnieuw openen: radio, regio, antenne, interesses, spraakcodecs.
+Why	Waarom
+no signal at the channel: check the tuning, the antenna and the gain	geen signaal op het kanaal: controleer de afstemming, de antenne en de versterking
+signal, but no frame sync found: check the tuning (offset, polarity), the bandwidth and the signal-to-noise ratio	signaal aanwezig, maar geen framesync gevonden: controleer de afstemming (offset, polariteit), de bandbreedte en de signaal-ruisverhouding
+frame syncs found, but their identity (NID, LICH, slot type) is unreadable: the signal is too noisy or distorted	framesyncs gevonden, maar hun identiteit (NID, LICH, slottype) is onleesbaar: het signaal is te ruisig of vervormd
+frame syncs found, but the payload fails its FEC / CRC: weak signal, fading or a sample clock error	framesyncs gevonden, maar de data falen op FEC / CRC: zwak signaal, fading of een fout in de samplekloks
+decoding, but over a third of the blocks are lost: a stronger signal or a better antenna would help	decodeert, maar meer dan een derde van de blokken gaat verloren: een sterker signaal of een betere antenne zou helpen
+decoding well	decodeert goed
+Base stations	Basisstations
+Calls	Gesprekken
+Channel options	Kanaalopties
+Devices	Apparaten
+Ground stations	Grondstations
+Neighbours	Buren
+Nodes	Knooppunten
+On air	In de lucht
+Selected	Geselecteerd
+Site	Locatie
+Table	Tabel
+Vessels	Schepen
+some stations are hidden	sommige stations zijn verborgen
+File...	Bestand...
+Auto-save to file	Automatisch opslaan in bestand
+Activity	Activiteit
+#  AI assistant (MCP), docs/MCP.md
+AI assistant (MCP)	AI-assistent (MCP)
+Let an AI assistant control this receiver (MCP)	Een AI-assistent deze ontvanger laten bedienen (MCP)
+An AI assistant (Claude, ChatGPT-style clients, a local model) that you connect can tune, scan bands, identify signals and start decoders for you, and read what was decoded. It cannot read files, run programs, change settings or decrypt anything, and it cannot transmit unless you allow that below. Every action is listed in the log.	Een AI-assistent (Claude, ChatGPT-achtige clients, een lokaal model) die u verbindt kan afstemmen, banden scannen, signalen herkennen, decoders starten en lezen wat gedecodeerd is. Hij kan geen bestanden lezen, geen programma's starten, geen instellingen wijzigen en niets ontsleutelen, en hij kan niet zenden tenzij u dat hieronder toestaat. Elke actie staat in het logboek.
+Programs on this computer need the token too	Programma's op deze computer hebben ook het token nodig
+Allow the AI to transmit (off by default; this is your decision, it is forgotten at restart)	De AI mag zenden (standaard uit; uw beslissing, wordt bij herstart vergeten)
+The AI can now start transmissions. You are responsible for the law where you are and for your hardware.	De AI kan nu zendingen starten. U bent verantwoordelijk voor de wet op uw locatie en voor uw apparatuur.
+listening on %s port %d, %d requests, %d refused	luistert op %s, poort %d, %d verzoeken, %d geweigerd
+An AI is connected: %s	Een AI is verbonden: %s
+No AI has connected yet.	Er heeft nog geen AI verbinding gemaakt.
+How to connect your AI	Zo verbindt u uw AI
+Other client	Andere client
+Claude Desktop: put this in its config file (Settings > Developer > Edit config) and restart it; it needs Node.js for the bridge. Claude Code: run the command in a terminal. Other clients: use the address (streamable HTTP) or start onair-server --mcp-stdio. Then ask, for example: there is some DRM around 15 MHz, find it and decode it.	Claude Desktop: zet dit in het configuratiebestand (Instellingen > Ontwikkelaar > Configuratie bewerken) en start het opnieuw; voor de brug is Node.js nodig. Claude Code: voer de opdracht uit in een terminal. Andere clients: gebruik het adres (streamable HTTP) of start onair-server --mcp-stdio. Vraag dan bijvoorbeeld: rond 15 MHz zit wat DRM, zoek het en decodeer het.
+What the AI did	Wat de AI deed
+Clear log	Logboek wissen
+Nothing yet.	Nog niets.
+# Everything in view (wide multi-signal decode)
+identifying	wordt herkend
+running	actief
+no decoder	geen decoder
+paused (CPU)	gepauzeerd (CPU)
+CPU	CPU
+CPU limit %	CPU-limiet %
+What	Wat
+dB	dB
+Pin	Vast
+Everything in view	Alles in beeld
+Everything in view: on	Alles in beeld: aan
+Decode everything in view	Alles decoderen
+Add as	Toevoegen als
+Identify automatically	Automatisch herkennen
+Add selected region	Selectie toevoegen
+Add tuned signal	Afgestemd signaal toevoegen
+Looking for signals...	Signalen zoeken...
+Start the receiver to begin.	Start de ontvanger om te beginnen.
+The decoders' share of one processor core, against the limit. Above the limit the lowest ranked signals are paused.	Het aandeel van één processorkern dat de decoders gebruiken, tegenover de limiet. Boven de limiet worden de signalen met de laagste rang gepauzeerd.
+Find every signal in the whole capture (digital voice, TETRA, pagers, packet radio, air band, Inmarsat, TV) and decode all of them at once.	Vindt elk signaal in de hele opname (digitale spraak, TETRA, pagers, packet radio, luchtvaartband, Inmarsat, tv) en decodeert ze allemaal tegelijk.
+One capture, every signal in it. OnAir finds the signals, says what each one is and starts the right decoder for it. Switch one off, pin the ones that must never be paused, or give an unknown signal its mode by hand.	Eén opname, alle signalen erin. OnAir vindt de signalen, zegt wat elk is en start de juiste decoder. Zet er een uit, zet de belangrijke vast zodat ze nooit gepauzeerd worden, of geef een onbekend signaal handmatig zijn modus.
+When the decoders take longer than this share of one core, the lowest ranked signal is paused (never a pinned one or the one you listen to) and comes back when there is room. 0: no limit.	Als de decoders meer dan dit aandeel van één kern gebruiken, wordt het signaal met de laagste rang gepauzeerd (nooit een vastgezet of het signaal waarnaar u luistert) en komt terug als er ruimte is. 0: geen limiet.
+This computer cannot keep up: %d signals are paused to save CPU. Pin the ones you need, or raise the limit.	Deze computer kan het niet bijbenen: %d signalen zijn gepauzeerd om CPU te besparen. Zet de benodigde vast of verhoog de limiet.
+TV channels in the capture: %.0f MHz wide	Tv-kanalen in de opname: %.0f MHz breed
+Turn the Identify tool on (key I) and drag across a signal on the spectrum, then add it here.	Zet het hulpmiddel Herkennen aan (toets I), sleep over een signaal in het spectrum en voeg het hier toe.
+Add the signal at the tuner marker (12.5 kHz wide).	Voegt het signaal bij de tunermarkering toe (12,5 kHz breed).
+Off. Press the button to decode everything in the capture.	Uit. Druk op de knop om alles in de opname te decoderen.
+%+.1f kHz from the capture centre, %.1f kHz wide	%+.1f kHz van het opnamecentrum, %.1f kHz breed
+Pinned: never paused by the CPU limit	Vastgezet: wordt nooit gepauzeerd door de CPU-limiet
+Follow this signal's sound; it is never paused by the CPU limit	Volgt het geluid van dit signaal; het wordt nooit gepauzeerd door de CPU-limiet
+Remove: a signal you added is taken away, a found one is switched off	Verwijderen: een toegevoegd signaal verdwijnt, een gevonden signaal gaat uit
+# Share on web: relay, listeners, server settings
+Connecting to the relay ...	Verbinden met de relay ...
+Anyone with the link	Iedereen met de link
+Invite links only	Alleen uitnodigingslinks
+Antenna (shown to listeners, optional)	Antenne (zichtbaar voor luisteraars, optioneel)
+Listener limits	Luisteraarslimieten
+While sharing	Tijdens het delen
+Listeners and invites	Luisteraars en uitnodigingen
+Nobody is listening right now.	Er luistert nu niemand.
+Kick##wsKick	Verwijderen##wsKick
+Block 24 h##wsBlock	24 u blokkeren##wsBlock
+Allow again##wsUnban	Weer toestaan##wsUnban
+Make an invite link	Uitnodigingslink maken
+Copy invite link	Uitnodigingslink kopiëren
+Server settings	Serverinstellingen
+Connected to the OnAir relay.	Verbonden met de OnAir-relay.
+Connecting to the OnAir relay ...	Verbinden met de OnAir-relay ...
+The relay link dropped (%s). Trying again in %d s.	De relayverbinding is verbroken (%s). Opnieuw proberen over %d s.
+The OnAir relay refuses or cannot be reached: %s	De OnAir-relay weigert of is onbereikbaar: %s
+Blocked: %s (%d min left)	Geblokkeerd: %s (nog %d min)
+Processor %.0f%% of the %.0f%% limit	Processor %.0f%% van de limiet van %.0f%%
+Upload %.0f of %.0f kbit/s	Upload %.0f van %.0f kbit/s
+Port on this computer (0 = the first free one from 8073)	Poort op deze computer (0 = de eerste vrije vanaf 8073)
+Listeners from one address at once	Gelijktijdige luisteraars per adres
+Longest session of one listener in minutes (0 = no limit)	Langste sessie van één luisteraar in minuten (0 = geen limiet)
+Most spectrum rows per second (0 = the default)	Meeste spectrumrijen per seconde (0 = standaard)
+Key file for that certificate	Sleutelbestand voor dat certificaat
+A certificate needs both files.	Een certificaat heeft beide bestanden nodig.
+Relay service address (only if you run your own relay)	Relayservice-adres (alleen bij eigen relay)
+Free Cloudflare tunnel (needs a small helper program, downloaded once)	Gratis Cloudflare-tunnel (heeft een klein hulpprogramma nodig, eenmalig gedownload)
+Only my network (a phone on the same Wi-Fi)	Alleen mijn netwerk (een telefoon op dezelfde wifi)
+Password (8 characters or more)	Wachtwoord (8 tekens of meer)
+Apply changes	Wijzigingen toepassen
+What to do:	Wat te doen:
+Will share: %s, %s MHz, up to %d listeners, %s, %s.	Wordt gedeeld: %s, %s MHz, tot %d luisteraars, %s, %s.
+through the OnAir relay (no router settings needed)	via de OnAir-relay (geen routerinstellingen nodig)
+through a Cloudflare tunnel	via een Cloudflare-tunnel
+at your own address	op uw eigen adres
+on this network only	alleen op dit netwerk
+invite links only	alleen met uitnodigingslinks
+open to anyone with the link	open voor iedereen met de link
+with a password	met wachtwoord
+no radio found	geen radio gevonden
+Join the OnAir Discord	Word lid van de OnAir Discord
+
+# Multi-radio trunking (trunk pool)
+tuning	afstemmen
+hold	wacht
+ended	beëindigd
+control	besturing
+voice	spraak
+lost	verloren
+Role	Rol
+TG	TG
+not followed	niet gevolgd
+Hang time (s)	Nalooptijd (s)
+Retune wait (s)	Wachttijd afstemmen (s)
+Priority talkgroups take a radio	Prioriteitsgroepen nemen een radio over
+Keep a record of every call	Elk gesprek vastleggen
+Follow talkgroups that are not listed	Niet-vermelde groepen volgen
+Calls are saved in the recordings folder, trunk. Sound needs the vocoder add-on.	Gesprekken staan in de opnamemap trunk. Geluid vraagt de vocoder-add-on.
+Talkgroup and radio rules	Regels voor groepen en radio's
+Deny	Weigeren
+Import rules	Regels laden
+rules read	regels gelezen
+skipped	overgeslagen
+Import plan	Plan laden
+rows read	regels gelezen
+Identifiers	Identifiers
+Call log	Gesprekslogboek
+Channel plan	Kanaalplan
+Export log	Log opslaan
+Multi-radio trunking	Trunking met meer radio's
+Follow calls with several radios	Gesprekken met meer radio's volgen
+Auto-assign devices	Apparaten toewijzen
+One radio listens to the control channel of a trunked system. When it announces a call, another radio is tuned to the voice channel, and the call is logged. With one radio, calls inside its capture are followed and the rest are not.	Eén radio luistert naar het stuurkanaal van een trunkingsysteem. Meldt het een gesprek, dan wordt een andere radio op het spraakkanaal afgestemd en het gesprek vastgelegd. Met één radio worden alleen gesprekken binnen de opname gevolgd.
+The radio on the control channel stays there; every other open receiver becomes a voice radio. Open more receivers with + at the bottom.	De radio op het stuurkanaal blijft daar; elke andere open ontvanger wordt spraakradio. Open meer ontvangers met + onderaan.
+Start a P25 receiver on the control channel, then press Auto-assign devices.	Start een P25-ontvanger op het stuurkanaal en druk op Apparaten toewijzen.
+Calls %llu, followed %llu, retune %.2f s (max %.2f s)	Gesprekken %llu, gevolgd %llu, afstemmen %.2f s (max %.2f s)
+Priority 1 (highest) to 10, 0 none. A higher priority talkgroup takes a radio from a lower one.	Prioriteit 1 (hoogste) tot 10, 0 geen. Een groep met hogere prioriteit neemt een radio van een lagere over.
+From, to (the same number for one), action, priority	Van, tot (zelfde getal voor één), actie, prioriteit
+System, identifier table (iden_up) and channel numbers from a CSV file	Systeem, identifiertabel (iden_up) en kanaalnummers uit een CSV
+EMERGENCY	NOODGEVAL
+encrypted	versleuteld
+Follow talkgroups, radio IDs or callsigns. Alerts and recording are off until you tick them for an entry. Encrypted calls are listed but never recorded.	Volg gespreksgroepen, radio-ID's of roepnamen. Meldingen en opname staan uit tot u ze voor een item aanvinkt. Versleutelde gesprekken worden vermeld maar nooit opgenomen.
+TG 91, 3120123, 100-199, LY1ABC, LY*	TG 91, 3120123, 100-199, LY1ABC, LY*
+Name (optional)	Naam (optioneel)
+All voice modes	Alle spraakmodi
+Nothing watched yet.	Nog niets gevolgd.
+Watching	Gevolgd
+Notify	Melden
+Beep	Piep
+A desktop notification when a call starts (off by default)	Een bureaubladmelding wanneer een gesprek begint (standaard uit)
+Save the audio of its calls to the recordings folder through the auto-record rules (this also switches auto-record on). Encrypted calls are never recorded. You are responsible for the law of your country.	Slaat de audio van de gesprekken op in de opnamemap via de regels voor automatisch opnemen (zet automatisch opnemen ook aan). Versleutelde gesprekken worden nooit opgenomen. U bent zelf verantwoordelijk voor de wet van uw land.
+Copy as CSV	Kopiëren als CSV
+No calls of the watched entries heard yet.	Nog geen gesprekken van de gevolgde items gehoord.
+Sec	Sec
+Flags	Vlaggen
+EMERG	NOOD
+ENC	VERS
+Keywords on: no match yet	Trefwoorden aan: nog geen treffer
+Keywords	Trefwoorden
+One keyword per line, any case. It is looked for in the message text and in the capcode name. Start a line with re: for a regular expression, for example re:structure fire|MVA. Matching pages are highlighted in Messages and shown in the ticker.	Eén trefwoord per regel, hoofdletterongevoelig. Er wordt gezocht in de berichttekst en in de naam van de capcode. Begin een regel met re: voor een reguliere expressie, bijvoorbeeld re:structure fire|MVA. Overeenkomende berichten worden gemarkeerd in Berichten en getoond in de ticker.
+Notify on a keyword match	Melden bij een trefwoord
+A desktop notification for each matching new page (off by default)	Een bureaubladmelding voor elke nieuwe overeenkomende pagina (standaard uit)
+lines are not valid and were skipped	regels zijn ongeldig en overgeslagen
+Pager keyword	Pager-trefwoord
+more matching pages	meer overeenkomende pagina's
+No GPS position heard yet (needs LRRP data)	Nog geen GPS-positie gehoord (LRRP-gegevens nodig)
+Last position	Laatste positie
+just now	zojuist
+min ago	min geleden
+Show on map	Tonen op kaart
+# custom bandwidth chip and reset (3.6)
+custom	aangepast
+default	standaard
+How much spectrum the radio captures. Default is the mode's own width; click to set any width you like.	Hoeveel spectrum de radio vastlegt. Standaard is de eigen breedte van de modus; klik om elke gewenste breedte in te stellen.
+Back to this mode's own bandwidth and sample rate. Your custom values stay saved for the next time you tick Custom.	Terug naar de eigen bandbreedte en samplefrequentie van deze modus. Uw aangepaste waarden blijven bewaard voor de volgende keer dat u Aangepast aanvinkt.
+16-bit	16-bit
+Share##rec	Share##rec
+Opens the folder with this recording and copies its path. Send the file (for SigMF the .sigmf-meta and the .sigmf-data together): it replays with its own frequency, rate and mode.	Opens the folder with this recording and copies its path. Send the file (for SigMF the .sigmf-meta and the .sigmf-data together): it replays with its own frequency, rate and mode.
+Tones (Hz)	Tonen (Hz)
+Frequency (kHz)	Frequentie (kHz)
+no calls yet	nog geen oproepen
+no codes yet	nog geen codes
+calls	oproepen
+strongest tone	sterkste toon
+Play the channel audio; decoding is the same either way	Kanaalgeluid afspelen; decoderen blijft hetzelfde
+Copy CSV	CSV kopiëren
+copied	gekopieerd
+rows	rijen
+Copy the table as CSV to the clipboard (positions included)	Kopieer de tabel als CSV naar het klembord (met posities)
+Copy the table as CSV to the clipboard	Kopieer de tabel als CSV naar het klembord
+# MFSK pictures (Shortwave Radiogram)
+Save PNG	PNG opslaan
+Save every picture	Elke afbeelding opslaan
+Clear pictures	Afbeeldingen wissen
+grey	grijs
+Pictures sent inside the MFSK stream (Shortwave Radiogram) appear here as they arrive.	Afbeeldingen in de MFSK-stroom (Shortwave Radiogram) verschijnen hier zodra ze binnenkomen.
+Open recordings folder	Opnamemap openen
+Where recordings are saved. Change it in Settings > Files.	Hier worden opnamen opgeslagen. Wijzigen via Instellingen > Bestanden.
+Free disk space:	Vrije schijfruimte:
+Default (inside the data folder)	Standaard (in de gegevensmap)
+Choose...	Kiezen...
+Use typed path	Getypt pad gebruiken
+That folder cannot be written: the default is used.	In die map kan niet worden geschreven: de standaardmap wordt gebruikt.
+# Smart CubeSat (docs/CUBESAT-SMART.md)
+Tuned for	Afgestemd op
+No satellite is expected soon: scanning this span for any carrier.	Binnenkort wordt geen satelliet verwacht: dit bereik wordt op elke draaggolf afgezocht.
+Nothing was uploaded.	Er is niets geüpload.
+carrier found	draaggolf gevonden
+decoding	decoderen
+carrier only	alleen draaggolf
+no known signal	geen bekend signaal
+Next passes	Volgende passages
+working out the passes ...	passages worden berekend ...
+no pass of a satellite in the table in the next hours (set your location, refresh the orbits)	geen passage van een satelliet uit de tabel in de komende uren (stel je locatie in, ververs de banen)
+In	Over
+Carriers	Draaggolven
+none yet	nog geen
+Tried on	Geprobeerd op
+valid	geldig
+failed their checks	faalden bij de controle
+satellite	satelliet
+framing	framing
+validated by	gevalideerd door
+byte errors put right	bytefouten hersteld
+received	ontvangen
+telemetry	telemetrie
+Field	Veld
+Decoded packets	Gedecodeerde pakketten
+Framing	Framing
+Follow satellites from the table (passes and Doppler)	Satellieten uit de tabel volgen (passages en Doppler)
+Look for carriers the table does not explain	Zoek draaggolven die de tabel niet verklaart
+Minimum SNR (dB)	Minimale SNR (dB)
+Carriers followed at once	Gelijktijdig gevolgde draaggolven
+Lowest elevation (deg)	Laagste elevatie (graden)
+Search window around the predicted carrier (Hz)	Zoekvenster rond de voorspelde draaggolf (Hz)
+Modulation of unknown carriers	Modulatie van onbekende draaggolven
+Baud rate (0: automatic, any value)	Baudrate (0: automatisch, elke waarde)
+Channel width (Hz, 0: automatic, any value)	Kanaalbreedte (Hz, 0: automatisch, elke waarde)
+Scan resolution (Hz, 0: automatic)	Scanresolutie (Hz, 0: automatisch)
+Add a transmitter to the table	Zender aan de tabel toevoegen
+NORAD number	NORAD-nummer
+Baud rate	Baudrate
+orbits for %zu satellites, %zu table entries	banen voor %zu satellieten, %zu tabelregels
+Auto decode: on (click to stop)	Automatisch decoderen: aan (klik om te stoppen)
+Auto decode cubesats	Cubesats automatisch decoderen
+Tunes a span that holds the satellites about to pass, follows their Doppler shift, finds every narrow carrier, works out its modulation and baud rate, and decodes it with every framing that fits. Nothing to set up.	Stemt af op een bereik met de satellieten die zo passeren, volgt hun dopplerverschuiving, vindt elke smalle draaggolf, bepaalt modulatie en baudrate en decodeert met elke passende framing. Niets in te stellen.
+Refresh orbits	Banen verversen
+Downloading orbits from CelesTrak (the built-in set is used meanwhile).	Banen worden van CelesTrak gedownload (intussen wordt de ingebouwde set gebruikt).
+Writes the packets as a SatNOGS-ready file (one telemetry record per line), a CSV and a KISS file to the data folder. Nothing is uploaded.	Schrijft de pakketten naar de gegevensmap als SatNOGS-klaar bestand (één telemetrierecord per regel), CSV en KISS-bestand. Er wordt niets geüpload.
+Press the button: it does the rest.	Druk op de knop: de rest gaat vanzelf.
+BPSK	BPSK
+A country file (cty.dat, wl_cty.dat) from country-files.com gives every DXCC entity with its CQ and ITU zone. Thanks to Jim Reisert AD1C and the country-files.com team. OnAir does not bundle it: load one you have, or press Download (only on your click).	Een landenbestand (cty.dat, wl_cty.dat) van country-files.com geeft elke DXCC-entiteit met CQ- en ITU-zone. Dank aan Jim Reisert AD1C en het country-files.com-team. OnAir levert het niet mee: laad er een die je hebt of druk op Downloaden (alleen op jouw klik).
+Show country and zone in decoded messages	Land en zone tonen in gedecodeerde berichten
+Load file...	Bestand laden...
+Download from country-files.com	Downloaden van country-files.com
+Reset to built-in	Terug naar de ingebouwde tabel
+Remove after: VDL2	Verwijderen na: VDL2
+Remove after: ACARS	Verwijderen na: ACARS
+Remove after: HFDL	Verwijderen na: HFDL
+Remove after: ADS-B	Verwijderen na: ADS-B
+Remove after: AIS	Verwijderen na: AIS
+Remove after: UAT	Verwijderen na: UAT
+Remove after: Inmarsat	Verwijderen na: Inmarsat
+How long after it was last heard an entry stays in the list and on the map. Default is the rule of the mode; Never keeps everything.	Hoe lang een item na het laatste ontvangen in de lijst en op de kaart blijft. Standaard is de regel van de modus; Nooit bewaart alles.
+Custom remove-after time (minutes)	Eigen verwijdertijd (minuten)
+Used by every Remove after row set to Custom.	Gebruikt door elke rij Verwijderen na die op Eigen staat.
+Default	Standaard
+Custom	Eigen
+Join the Discord to get access to built codecs	Word lid van de Discord voor toegang tot kant-en-klare codecs
+Opens the OnAir Discord in your browser. OnAir itself never downloads or includes a codec.	Opent de OnAir-Discord in je browser. OnAir zelf downloadt of bevat nooit een codec.
+Unknown language	Unknown language
+Teletext subtitles	Teletext subtitles
+DVB subtitles	DVB subtitles
+hearing impaired	hearing impaired
+Teletext subtitles (page 888)	Teletext subtitles (page 888)
+subtitles##subson	subtitles##subson
+Subtitles over the picture (S in the pop-out window)	Subtitles over the picture (S in the pop-out window)
+Subtitle language, or Off (L in the pop-out window)	Subtitle language, or Off (L in the pop-out window)

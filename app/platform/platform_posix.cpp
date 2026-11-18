@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Linux and Windows services. Linux: dialogs through zenity/kdialog, settings in ~/.config/onair/settings.conf.
 // Windows: the standard Open/Save dialogs, settings in %APPDATA%\\OnAir\\settings.conf.
 #include "platform.h"
+#include "dect2/common/diag.h"
 #include "prefs_text.h"
 #include "datadir_ptr.h"
+#include "cjk_order.h"
 #include "dect2/common/png.h"
 #include <algorithm>
 #include <atomic>
@@ -24,6 +29,7 @@
 #endif
 #include <windows.h>
 #include <commdlg.h>
+#include <shlobj.h>
 #include <direct.h>
 #else
 #include <unistd.h>
@@ -255,16 +261,107 @@ HttpResult httpRequest(const std::string& method, const std::string& url, const 
     else { r.net = 4; r.detail = "no HTTP status in the answer"; }
     return r;
 }
+HttpResult httpCall(const std::string& method, const std::string& url, const std::string& body, const std::string& contentType,
+                    const std::vector<std::string>& headers, const std::string& userAgent, int timeoutSec, size_t maxReply) {
+    static std::atomic<unsigned> counter{0};
+    HttpResult r;
+    if (method.empty() || method.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ") != std::string::npos) { r.net = 4; r.detail = "bad method"; return r; }
+    const std::string base = cacheDir() + "/hcall_" + std::to_string(counter++ % 1000);
+    const std::string inFile = base + ".in", outFile = base + ".out", hdrIn = base + ".hin", hdrOut = base + ".hdr";
+    const bool send = !body.empty() || method == "POST" || method == "PUT";
+    std::string hdr;
+    if (send) hdr += "Content-Type: " + (contentType.empty() ? std::string("application/json") : contentType) + "\n";
+    for (const std::string& h : headers) {
+        if (h.find('\n') != std::string::npos || h.find('\r') != std::string::npos) { r.net = 4; r.detail = "bad header"; return r; }
+        hdr += h + "\n";
+    }
+    auto put = [](const std::string& path, const std::string& data, bool priv) {
+#ifdef _WIN32
+        FILE* f = _wfopen(wide(path).c_str(), L"wb");
+        (void)priv;
+#else
+        FILE* f = fopen(path.c_str(), "wb");
+        if (f && priv) fchmod(fileno(f), 0600);
+#endif
+        if (!f) return false;
+        const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+        fclose(f);
+        return ok;
+    };
+    if ((send && !put(inFile, body, false)) || !put(hdrIn, hdr, true)) { DIAG(696652, "The temporary request files for %s could not be written in the cache folder, so the web request was not sent.", url.c_str()); r.net = 4; r.detail = "cannot write a temporary file"; return r; }
+    const std::string to = std::to_string(std::max(1, timeoutSec));
+#ifdef _WIN32
+    wchar_t sys[MAX_PATH + 1] = {0};
+    std::wstring exe = GetSystemDirectoryW(sys, MAX_PATH) ? std::wstring(sys) + L"\\curl.exe" : std::wstring(L"curl.exe");
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) exe = L"curl.exe";
+    std::wstring line = L"\"" + exe + L"\" -sS -L --max-redirs 4 --proto =https --max-time " + wide(to) + L" -A \"" + wide(userAgent) + L"\" -X " + wide(method) +
+                        L" -H @\"" + wide(hdrIn) + L"\" " + (send ? L"--data-binary @\"" + wide(inFile) + L"\" " : std::wstring()) +
+                        L"-D \"" + wide(hdrOut) + L"\" -o \"" + wide(outFile) + L"\" \"" + wide(url) + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    DWORD rcw = 1;
+    if (CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        if (WaitForSingleObject(pi.hProcess, (DWORD)(timeoutSec + 3) * 1000) != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 28);
+        GetExitCodeProcess(pi.hProcess, &rcw);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    const int rc = (int)rcw;
+    auto slurp = [&](const std::string& path, size_t cap) {
+        std::string o;
+        FILE* f = _wfopen(wide(path).c_str(), L"rb");
+        if (f) { char b[16384]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0 && o.size() <= cap) o.append(b, n); fclose(f); }
+        DeleteFileW(wide(path).c_str());
+        return o;
+    };
+    if (send) DeleteFileW(wide(inFile).c_str());
+    DeleteFileW(wide(hdrIn).c_str());
+#else
+    auto q = [](const std::string& s) { std::string o = "'"; for (char c : s) { if (c == '\'') o += "'\\''"; else o += c; } return o + "'"; };
+    const std::string cmd = "curl -sS -L --max-redirs 4 --proto =https --max-time " + to + " -A " + q(userAgent) + " -X " + method + " -H @" + q(hdrIn) +
+                            (send ? " --data-binary @" + q(inFile) : std::string()) + " -D " + q(hdrOut) + " -o " + q(outFile) + " " + q(url) + " 2>/dev/null";
+    const int st = system(cmd.c_str());
+    const int rc = st == -1 ? 1 : (WIFEXITED(st) ? WEXITSTATUS(st) : 1);
+    auto slurp = [&](const std::string& path, size_t cap) {
+        std::string o;
+        FILE* f = fopen(path.c_str(), "rb");
+        if (f) { char b[16384]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0 && o.size() <= cap) o.append(b, n); fclose(f); }
+        std::remove(path.c_str());
+        return o;
+    };
+    if (send) std::remove(inFile.c_str());
+    std::remove(hdrIn.c_str());
+#endif
+    const std::string h = slurp(hdrOut, 65536);
+    r.body = slurp(outFile, maxReply);
+    if (r.body.size() > maxReply) r.body.resize(maxReply + 1);   // one byte more than allowed: the caller sees it is too large
+    for (size_t p = 0; p < h.size();) {
+        size_t e = h.find('\n', p);
+        if (e == std::string::npos) e = h.size();
+        if (h.compare(p, 5, "HTTP/") == 0) { const size_t sp = h.find(' ', p); if (sp != std::string::npos && sp < e) r.status = std::atoi(h.c_str() + sp + 1); }
+        p = e + 1;
+    }
+    if (rc == 0 && r.status > 0) return r;
+    r.status = 0;
+    if (rc == 6 || rc == 5) { r.net = 1; r.detail = "host name not found"; }
+    else if (rc == 7) { r.net = 2; r.detail = "connection refused or unreachable"; }
+    else if (rc == 28) { r.net = 3; r.detail = "timed out"; }
+    else if (rc == 1) { r.net = 4; r.detail = "only https:// addresses are used"; }
+    else if (rc != 0) { r.net = 4; r.detail = "curl error " + std::to_string(rc); }
+    else { r.net = 4; r.detail = "no HTTP status in the answer"; }
+    return r;
+}
 bool postJson(const std::string& url, const std::string& json, const std::string& userAgent) { return postImpl(url, json, userAgent, nullptr); }
 bool postJsonReply(const std::string& url, const std::string& json, const std::string& userAgent, std::string& reply) { return postImpl(url, json, userAgent, &reply); }
 
 // the map tiles are PNG: OnAir's own decoder (these systems have none it could call without an extra library)
 bool decodeImage(const std::string& path, int& w, int& h, std::vector<uint32_t>& rgba) {
     std::ifstream f(std::filesystem::path(reinterpret_cast<const char8_t*>(path.c_str())), std::ios::binary);
-    if (!f) return false;
+    if (!f) { DIAG_DEBUG(173178, "The picture file %s could not be opened, so it was not decoded.", path.c_str()); return false; }
     const std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     std::vector<uint8_t> px;
-    if (!dect2::decodePng(data.data(), data.size(), w, h, px) || w > 4096 || h > 4096) return false;
+    if (!dect2::decodePng(data.data(), data.size(), w, h, px) || w > 4096 || h > 4096) { DIAG_DEBUG(704587, "The picture file %s is not a PNG OnAir can decode or is larger than 4096 pixels, so it was not shown.", path.c_str()); return false; }
     rgba.resize((size_t)w * h);
     memcpy(rgba.data(), px.data(), px.size());   // bytes R, G, B, A in memory, as on macOS
     return true;
@@ -346,6 +443,7 @@ void makeDirs(const std::string& path) {
 bool replaceFile(const std::string& from, const std::string& to) { return MoveFileExW(wide(from).c_str(), wide(to).c_str(), MOVEFILE_REPLACE_EXISTING) != 0; }
 
 std::string fileDialog(bool save, const char* name) {
+    DialogScope blocked;
     wchar_t buf[MAX_PATH * 4] = {0};
     if (save && name) wcsncpy(buf, wide(name).c_str(), MAX_PATH - 1);
     OPENFILENAMEW o{};
@@ -491,15 +589,46 @@ void showFatalError(const char* title, const char* text) {
     MessageBoxA(nullptr, text, title, MB_OK | MB_ICONERROR);
 #else
     fprintf(stderr, "%s: %s\n", title, text);
+    // Started from the menu (Linux Mint report, docs/LINUX-MINT-4.0.md) stderr goes nowhere the user sees, so OnAir seemed to do nothing:
+    // the message is also kept in ~/.config/onair/startup-error.txt and shown in a dialog when there is a desktop and no terminal.
+    const std::string dir = configDir();
+    makeDirs(dir);
+    if (FILE* f = fopen((dir + "/startup-error.txt").c_str(), "w")) { fprintf(f, "%s: %s\n", title, text); fclose(f); }
+    const bool desktop = (getenv("DISPLAY") && *getenv("DISPLAY")) || (getenv("WAYLAND_DISPLAY") && *getenv("WAYLAND_DISPLAY"));
+    if (!desktop || isatty(STDERR_FILENO) || getenv("ONAIR_NO_DIALOG")) return;
+    const std::string t = shellQuote(title), m = shellQuote(text);
+    int rc = -1;   // each dialog closes by itself after 2 minutes, so a start without a user (a test) still ends
+    if (haveProgram("zenity")) rc = system(("zenity --error --no-markup --timeout=120 --title=" + t + " --text=" + m + " >/dev/null 2>&1").c_str());
+    else if (haveProgram("kdialog")) rc = system(("timeout 120 kdialog --title " + t + " --error " + m + " >/dev/null 2>&1").c_str());
+    else if (haveProgram("notify-send")) rc = system(("notify-send -u critical " + t + " " + m + " >/dev/null 2>&1").c_str());
+    else if (haveProgram("xmessage")) rc = system(("timeout 120 xmessage -center " + m + " >/dev/null 2>&1").c_str());
+    (void)rc;
 #endif
 }
 
 #ifdef _WIN32
 std::string openFileDialog() { return fileDialog(false, nullptr); }
 std::string saveFileDialog(const char* name) { return fileDialog(true, name); }
-std::string openFolderDialog() { return {}; }   // Windows: the path is typed in the export dialog
+// The shell's folder browser (#442: Tools > Images > Choose... did nothing on Windows, this returned nothing). The new-style dialog needs COM on
+// this thread; a thread that has it already (S_FALSE, or another apartment) is left as it is.
+std::string openFolderDialog() {
+    const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    BROWSEINFOW bi{};
+    bi.hwndOwner = GetActiveWindow();
+    bi.lpszTitle = L"Choose a folder";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX;
+    std::string out;
+    if (LPITEMIDLIST pidl = SHBrowseForFolderW(&bi)) {
+        wchar_t path[MAX_PATH] = {0};
+        if (SHGetPathFromIDListW(pidl, path)) out = utf8(path);
+        CoTaskMemFree(pidl);
+    }
+    if (SUCCEEDED(co)) CoUninitialize();
+    return out;
+}
 #else
 std::string openFolderDialog() {
+    DialogScope blocked;
     if (haveProgram("zenity")) return capture("zenity --file-selection --directory --title='Choose a folder' 2>/dev/null");
     if (haveProgram("kdialog")) return capture("kdialog --getexistingdirectory \"$HOME\" 2>/dev/null");
     fprintf(stderr, "no folder dialog available (install zenity or kdialog); type the path in the text field instead\n");
@@ -507,6 +636,7 @@ std::string openFolderDialog() {
 }
 
 std::string openFileDialog() {
+    DialogScope blocked;
     if (haveProgram("zenity")) return capture("zenity --file-selection --title='Open' 2>/dev/null");
     if (haveProgram("kdialog")) return capture("kdialog --getopenfilename \"$HOME\" 2>/dev/null");
     fprintf(stderr, "no file dialog available (install zenity or kdialog); type the path in the text field instead\n");
@@ -514,6 +644,7 @@ std::string openFileDialog() {
 }
 
 std::string saveFileDialog(const char* name) {
+    DialogScope blocked;
     if (haveProgram("zenity")) return capture("zenity --file-selection --save --confirm-overwrite --filename=" + shellQuote(name) + " 2>/dev/null");
     if (haveProgram("kdialog")) return capture("kdialog --getsavefilename " + shellQuote(name) + " 2>/dev/null");
     fprintf(stderr, "no file dialog available (install zenity or kdialog); type the path in the text field instead\n");
@@ -522,7 +653,7 @@ std::string saveFileDialog(const char* name) {
 #endif
 
 #if defined(__linux__)
-std::vector<std::string> cjkFontCandidatesFixed();
+std::vector<std::string> cjkFontCandidatesFixed(const std::string& lang);
 #endif
 std::vector<std::string> uiFontCandidates() {
     return {"C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -567,19 +698,21 @@ static void addLinuxCjkFonts(std::vector<std::string>& out) {
     }
 }
 #endif
-std::vector<std::string> cjkFontCandidates() {
+std::vector<std::string> cjkFontCandidates(const std::string& lang) {
 #if defined(__linux__)
-    std::vector<std::string> v = cjkFontCandidatesFixed();
+    std::vector<std::string> v = cjkFontCandidatesFixed(lang);
     addLinuxCjkFonts(v);
     return v;
 }
-std::vector<std::string> cjkFontCandidatesFixed() {
+std::vector<std::string> cjkFontCandidatesFixed(const std::string& lang) {
 #endif
-    return {"C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc",
-            "C:/Windows/Fonts/YuGothM.ttc", "C:/Windows/Fonts/meiryo.ttc",   // kana and kanji for Japanese if the Chinese fonts are missing
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc"};
+    // Windows by language; then the Linux fonts, which cover all three (Noto Sans CJK, WenQuanYi)
+    std::vector<std::string> v = cjkFontOrder(lang, {"C:/Windows/Fonts/YuGothM.ttc", "C:/Windows/Fonts/meiryo.ttc"},
+                                              {"C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc"}, {"C:/Windows/Fonts/malgun.ttf"});
+    v.insert(v.end(), {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                       "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                       "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc"});
+    return v;
 }
 std::vector<std::string> monoFontCandidates() {
     return {"C:/Windows/Fonts/consola.ttf", "C:/Windows/Fonts/lucon.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
@@ -608,6 +741,18 @@ std::string uiLanguage() {
 #else
     for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"}) if (const char* v = getenv(k)) if (*v && strcmp(v, "C") && strcmp(v, "POSIX")) return v;
     return "en";
+#endif
+}
+
+bool debuggerAttached() {
+#ifdef _WIN32
+    return IsDebuggerPresent() != FALSE;
+#else
+    std::ifstream f("/proc/self/status");   // Linux: TracerPid is the process id of the debugger, 0 without one
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("TracerPid:", 0) == 0) return std::atoi(line.c_str() + 10) != 0;
+    return false;
 #endif
 }
 

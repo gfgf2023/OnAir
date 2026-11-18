@@ -10,6 +10,7 @@ proxies OSM tiles and serves `/meta` (aircraft type, airline and route from adsb
 - `src/doa.js` - direction finding: a `doa` track is a bearing line (station position, `heading` = bearing, `extra` = `{f: Hz, s: sigma deg, c: confidence}`, 10 min TTL, at most 4 per post, no trail); `computeFixes` intersects the newest line of each distinct station on one frequency (within 3 kHz) into a derived, never stored `fix` track (robust ML fit, 95 % ellipse in `extra` = `{a, b, o, n, r, f}`) that is added to `/live` and the WebSocket upserts. Fixes with a 95 % major axis over 300 km are not published.
 - `src/by-name.js` - the optional public name (`by`) a station can send in the `/ingest` body: 2-24 chars of letters, digits, space and `_-.`, no web or e-mail addresses, a short reserved and banned list; the server re-checks it, keeps the last contributor per track (`by`, `heard_at`) and answers `GET /api/by/<name>` (case-insensitive prefix, `?exact=1`, at most 200 tracks). A bad name is dropped (data still taken) and the reply carries `by_error`. Names are never logged and no IP is stored. `test/by-name.test.js`.
 - `src/jam.js` - GPS interference cells (aggregate only): `POST /jam` `{station, cell: 0.5, cells: [[latIdx, lonIdx, aircraft, degraded]]}` is checked cell by cell (anything else rejects the post, no ids), a station's newest post replaces its earlier one (30 s gap, 600 cells, 2 h), `GET /jam` returns the sum over stations without station ids and without cells under 3 aircraft; kept in one `meta` row (written at most once a minute). `public/jamlayer.js` turns the cells into the coloured squares of the "GPS interference (community)" layer. See `docs/gps-jamming-map.md`. `test/jam.test.js`.
+- Badges and GitHub sign-in (docs/MAP-BADGES-4.0.md): `src/auth.js` (tokens in the marketplace's format, OAuth state, CSRF), `src/badge-stats.js` (per-user stats, unique counting, streaks, range, anti-cheat, badge awards), `src/badge-geo.js`, `src/badge-service.js` (`/auth/*`, `/api/me`, `/api/u/<login>`, `/api/leaderboard`), `src/badge-store.js` (tables `bu_users`, `bu_seen`, `bu_tokens`, created by the hub: no migration); `public/badges/defs.js` (THE badge data file), `art.js` (medal icons), `page.js`; pages `/u/<login>` (`profile.html`) and `/leaders` (`leaders.html`). `/ingest` takes an optional `Authorization: Bearer` (the app's OnAir sign-in) and `home` (a locator, for range; not stored); the reply adds `account`, `awards`, `account_error`. Signed-out posts are unchanged. Tests: `badge-stats`, `auth`, `badge-service`, `hub-badges`, `badges-ui`.
 - `src/index.js` - Worker + MapHub. `/meta` returns type, registration, airline, flight number and `route.origin/destination` (with lat/lon).
 - `public/index.html`, `styles.css` - page shell and theme (dark tokens, drawer rail and bottom-sheet card on phones).
 - `public/app.js` - map, layers, live feed, search (callsign / registration / hex / MMSI, `/` focuses it), stats bar, selection, `#hex=` deep links.
@@ -21,7 +22,9 @@ proxies OSM tiles and serves `/meta` (aircraft type, airline and route from adsb
 - `public/shapes.js`, `icons.js` - original hand-authored vector icons (SVG paths) and the lazy canvas rendering at device resolution; `icons.js` also holds the altitude colour scale and the image ids. `test/icon-sheet.html` shows every icon on a dark and a light map (serve `web/map` and open it).
 - `public/airports.js` - ~290 major airports (fallback coordinates when the route lookup has none).
 - `public/df.js` - map features for the DF layers: bearing line, wedge (one sigma) and station dot per `doa`, 95 % ellipse and marker per `fix`.
-- `public/demo.js` - `?demo=1` synthetic data.
+- `public/demo.js` - `?demo=1` synthetic data (includes ham contacts in the exact form the desktop app posts them).
+- `public/iconsvg.js` - the icon set as one inline SVG sprite generated from `shapes.js`, the legend table, `iconSvg()`; `public/view.js` - pure helpers: layer groups, age fade / filter, shortcut table, sparkline geometry; `public/theme.js` - auto / dark / light.
+- `test/dev-server.js` - run the page locally against the real hub rules (`node test/dev-server.js --serve --seed`, then open http://localhost:8791/?shot=1). Serves `public/`, takes `POST /ingest` through `sanitize()` + `TrackBook`, answers `/live`, a WebSocket (hello and upserts), OSM tiles (cached on disk) and `/icon-sheet`. `--still` stops the periodic updates.
 - `test/` - `node --test` tests for the pure modules.
 
 ## Preview offline (demo)
@@ -38,6 +41,7 @@ cd web/map && node --test test/
 
 ## Deploy
 The owner runs `npx wrangler deploy` in `web/map`. Nothing here deploys automatically.
+Badges need the secrets `SESSION_SECRET` (same value as the marketplace), `GITHUB_CLIENT_SECRET` and optionally `BADGE_ADMIN_TOKEN`; see docs/MAP-BADGES-4.0.md, "Owner setup".
 
 ## Trails (kept by the hub, so a refresh keeps them)
 - Each accepted fix with a position is stored in the `trails` table (created with `CREATE TABLE IF NOT EXISTS` inside the Durable Object: no wrangler migration needed). Rows: time, lat, lon, alt, heading.

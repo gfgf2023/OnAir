@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Automatic gain, parts 2 and 3: what is measured (ADC, noise floor, channel SNR, the mode's quality, intermodulation) and what each mode
 // wants. See docs/AUTOGAIN.md.
 #include <string>
@@ -253,6 +256,32 @@ static void applyBandBias(ModeTarget& t, double f) {
     }
 }
 
+// Per mode, over the class's numbers (3.6; tests/source/test_autogain_modes.cpp lists every mode that changes). The classes are right for most modes; these have
+// a property the class does not know:
+//  - keyed bursts (ACARS, AIS, VDL2, HFDL, Iridium, Orbcomm, pagers, APRS, ISM sensors, BLE, Zigbee): a burst is well under 0.01 % of the samples, so the 99.99 %
+//    point sees only the noise between them; the headroom floor also reads the 2 s peak-hold, so a transmitter that keys up nearby cannot clip the next burst
+//  - below the noise (LoRa raw 73, mesh 22): the channel SNR reads about 0 dB at every gain, so a hill climb on it is random; they take the GNSS class
+//    (the floor above the ADC's own noise, headroom only as a floor)
+void applyModeRefinement(ModeTarget& t, int std_) {
+    switch (std_) {
+    case 16: case 18: case 21: case 25: case 26: case 29: case 30: case 37: case 46: case 53: case 67:
+        t.usePeakHold = true; t.minHeadroomDb = std::max(t.minHeadroomDb, 5.0);
+        break;
+    case 22: case 73:
+        t.kind = ModeKind::Gnss; t.metric = Metric::Sensitivity; t.policy = Policy::Sensitivity;
+        t.headroomDb = 12; t.marginGoalDb = 10; t.floorRiseDb = 10; t.lockSnrDb = 1e9;
+        t.minHeadroomDb = 6; t.improveDb = 1.0; t.comfortDb = 1e9;
+        t.why = "LoRa / mesh: the signals are below the noise; the noise floor must sit well above the ADC's own noise";
+        break;
+    default: break;
+    }
+}
+
+bool retuneNeedsSearch(double deltaHz, double rateHz, bool bandChanged) {
+    if (bandChanged || rateHz <= 0) return true;
+    return std::fabs(deltaHz) > 0.05 * rateHz;
+}
+
 ModeTarget modeTargetFor(int std_, double bwHz, double rateHz, double freqHz) {
     ModeTarget t;
     auto in = [&](std::initializer_list<int> l) { for (int x : l) if (x == std_) return true; return false; };
@@ -277,9 +306,9 @@ ModeTarget modeTargetFor(int std_, double bwHz, double rateHz, double freqHz) {
         t.headroomDb = 12; t.marginGoalDb = 10; t.floorRiseDb = 10; t.lockSnrDb = 1e9;
         t.why = "GNSS: the signals are below the noise; the noise floor must sit well above the ADC's own noise";
     } else if (in({44, 50, 34, 56, 71, 54})) {
-        t.kind = ModeKind::WideSpan; t.metric = Metric::Headroom; t.policy = Policy::Linearity;
+        t.kind = ModeKind::WideSpan; t.metric = Metric::Sensitivity; t.policy = Policy::Linearity;
         t.headroomDb = 12; t.windowDb = 4; t.marginGoalDb = 6; t.floorRiseDb = 3; t.lockSnrDb = 1e9;
-        t.why = "a wide span: everything in it reaches the ADC, so headroom first";
+        t.why = "a wide span: every signal in it reaches the ADC: as much gain as the headroom floor allows, the floor over the ADC's own noise decides";
     } else if (in({11, 33, 35, 40, 47, 48, 52, 28, 57, 51})) {
         t.kind = ModeKind::NarrowVoice; t.metric = Metric::ChannelSnr; t.policy = Policy::Sensitivity;
         t.headroomDb = 14; t.windowDb = 4; t.marginGoalDb = 10; t.floorRiseDb = 6; t.lockSnrDb = 15;
@@ -304,9 +333,10 @@ ModeTarget modeTargetFor(int std_, double bwHz, double rateHz, double freqHz) {
     case ModeKind::NarrowData: t.minHeadroomDb = 5; t.improveDb = 1.0; t.comfortDb = 6; break;
     case ModeKind::Pulsed: t.minHeadroomDb = 3; t.improveDb = 0.5; t.comfortDb = 1e9; t.usePeakHold = true; break;   // judged on the 2 s peak-hold: pulses are < 0.1 % of the samples
     case ModeKind::Gnss: t.minHeadroomDb = 6; t.improveDb = 1.0; t.comfortDb = 1e9; break;
-    case ModeKind::WideSpan: t.minHeadroomDb = 6; t.improveDb = 1.5; t.comfortDb = 1e9; break;
+    case ModeKind::WideSpan: t.minHeadroomDb = 8; t.improveDb = 1.5; t.comfortDb = 1e9; break;
     default: t.minHeadroomDb = 5; t.improveDb = 1.0; t.comfortDb = 6; break;
     }
+    applyModeRefinement(t, std_);
     if (freqHz > 0) applyBandBias(t, freqHz);
     return t;
 }

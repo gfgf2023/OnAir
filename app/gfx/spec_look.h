@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The spectrum and waterfall look and the pure maths behind it, no ImGui: OnAir's one look (measured against reference screenshots,
 // docs/SPECTRUM-RESEARCH.md), the noise floor's place in each palette, the frequency ticks (1-2-5 steps, minor ticks, labels that never
 // touch or leave the panel, kHz / MHz, or offsets from the tuned frequency), the trace at one point per pixel column (the highest bin of
@@ -133,6 +136,7 @@ inline std::vector<Tick> freqTicks(double lo, double hi, double widthPx, double 
     const int unit = freqUnit(lo, hi);
     const double perPx = (hi - lo) / widthPx;
     double step = step125(perPx * std::max(8.0, gapPx + 3 * charPx));
+    if (!(hi + step > hi) || !(lo + step > lo)) return out;   // a step lost in the rounding of a double: the loops below would never end (#442)
     for (int guard = 0; guard < 40; guard++) {   // grow the step until the longest label fits in it
         size_t longest = 0;
         for (double v = std::ceil(lo / step - 1e-9) * step; v <= hi + step * 1e-9; v += step) longest = std::max(longest, tickLabel(v, step, mode, ref, unit).size());

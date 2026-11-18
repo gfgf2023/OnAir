@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The programme guide (EPG) database of the TV recorder, written from ETSI EN 300 468 (SI in DVB systems) and ETSI TS 102 323 (CRIDs).
 //   - EIT sections (table 0x4E/0x4F present/following, 0x50..0x6F schedule; actual and other transport stream) parsed with every descriptor
 //     the guide needs: short and extended event (with the character set prefix of the text), content (genre), parental rating, content identifier
@@ -7,6 +10,7 @@
 //   - EpgCollector: transport stream packets in, EpgDb filled (PIDs 0x10 NIT, 0x11 SDT, 0x12 EIT, 0x14 TDT/TOT).
 // Independent of the Rust/C++ parser pair in ts_proto: this layer only adds what the guide needs and uses tsp::crc32 and dvbText.
 #pragma once
+#include "dvb_text.h"
 #include "dect2/tv/tvjson.h"
 #include <cstdint>
 #include <map>
@@ -47,7 +51,7 @@ struct EitSection {
 };
 // A whole section (table_id to CRC_32 inclusive). False: too short, wrong table id, length field wrong or CRC wrong. A damaged event loop
 // keeps the events decoded before the damage. Never reads past `len`.
-bool parseEitSection(const uint8_t* s, int len, EitSection& out);
+bool parseEitSection(const uint8_t* s, int len, EitSection& out, const dvbsi::TextContext& context = {});
 
 // ---- the language of the guide texts (#268). A broadcaster may send an event's name and text in several languages (Finland: Finnish and
 // Swedish), one short event descriptor (and extended event descriptors) per language. With a preferred language set (ISO 639-2, "fin"), the
@@ -188,11 +192,13 @@ public:
     uint64_t sections() const;         // EIT sections accepted
     uint64_t badSections() const;      // EIT sections rejected (CRC, structure)
     void setFixedNow(int64_t t);       // tests: a fixed clock instead of the computer's
+    void setTextEncoding(dvbsi::TextEncoding encoding);
 
 private:
     void section(int pid, const uint8_t* s, int len);
     int64_t nowLocked() const;
     EpgDb* db_;
+    dvbsi::TextEncoding textEncoding_ = dvbsi::TextEncoding::Dvb;
     mutable std::mutex mu_;
     std::map<int, SectionAssembler> asm_;
     int64_t tdt_ = 0, fixedNow_ = 0;

@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Digital video generator: overlay layout, snapping and renderer (videogen_overlay.h). Text is drawn with stb_truetype (the copy that
 // comes with Dear ImGui, compiled here as static functions). The logo is a picture file: PNG through OnAir's own decoder (every build,
 // transparency kept), other formats through FFmpeg when the build has a decoder for them; scaled with swscale.
 #include "dect2/tv/videogen_overlay.h"
 #include "dect2/common/png.h"
 #include "dect2/common/u8file.h"
+#include "dect2/common/diag.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -102,7 +106,7 @@ void fillRect(std::vector<uint8_t>& rgba, int W, int H, Rect r, uint32_t abgr) {
 // A picture file through FFmpeg (JPEG, BMP, WebP, SVG with librsvg ... whatever this build decodes) as RGBA premultiplied by alpha
 bool decodeWithFFmpeg(const std::string& path, int& w, int& h, std::vector<uint8_t>& rgba) {
     AVFormatContext* fc = nullptr;
-    if (avformat_open_input(&fc, path.c_str(), nullptr, nullptr) < 0) return false;
+    if (avformat_open_input(&fc, path.c_str(), nullptr, nullptr) < 0) { DIAG_DEBUG(575313, "FFmpeg could not open the overlay picture %s, so it is not drawn.", path.c_str()); return false; }
     bool ok = false;
     const AVCodec* c = nullptr;
     AVCodecContext* dec = nullptr;
@@ -149,7 +153,8 @@ bool loadPicture(const std::string& path, int& w, int& h, std::vector<uint8_t>& 
         fclose(f);
     }
     if (bytes.size() > 8 && bytes[0] == 0x89 && bytes[1] == 'P' && decodePng(bytes.data(), bytes.size(), w, h, rgba) && w > 0 && h > 0) return true;
-    return !bytes.empty() && decodeWithFFmpeg(path, w, h, rgba);
+    if (bytes.empty()) { DIAG_DEBUG(390907, "The overlay picture file %s is missing or empty, so it is not drawn.", path.c_str()); return false; }
+    return decodeWithFFmpeg(path, w, h, rgba);
 }
 
 } // namespace
@@ -320,6 +325,7 @@ bool OverlayRenderer::setFont(std::shared_ptr<const std::vector<uint8_t>> ttf) {
     const unsigned char* d = p_->ttf->data();
     const int off = stbtt_GetFontOffsetForIndex(d, 0);
     p_->ok = off >= 0 && stbtt_InitFont(&p_->font, d, off) != 0;
+    if (!p_->ok) DIAG_DEBUG(313899, "The overlay font data (%zu bytes) is not a usable TrueType font, so overlay text is not drawn.", p_->ttf->size());
     return p_->ok;
 }
 

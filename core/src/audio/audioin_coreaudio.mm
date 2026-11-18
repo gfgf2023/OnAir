@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // macOS capture: a HAL AudioUnit on the chosen (or default) input device. Nothing is opened until audioInMicStart().
 #include "audioin_impl.h"
 #import <AudioToolbox/AudioToolbox.h>
@@ -5,10 +8,33 @@
 #import <AVFoundation/AVFoundation.h>
 #include <string>
 #include <vector>
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
 namespace {
+std::vector<AudioDeviceID> allDevices() {
+    AudioObjectPropertyAddress a = {kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    UInt32 n = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0, nullptr, &n) != noErr || n == 0) return {};
+    std::vector<AudioDeviceID> ids(n / sizeof(AudioDeviceID));
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, nullptr, &n, ids.data()) != noErr) return {};
+    return ids;
+}
+std::string cfString(AudioDeviceID id, AudioObjectPropertySelector sel) {
+    AudioObjectPropertyAddress nm = {sel, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    CFStringRef cf = nullptr;
+    UInt32 cfs = sizeof cf;
+    std::string out;
+    if (AudioObjectGetPropertyData(id, &nm, 0, nullptr, &cfs, &cf) == noErr && cf) {
+        char b[512];
+        if (CFStringGetCString(cf, b, sizeof b, kCFStringEncodingUTF8)) out = b;
+        CFRelease(cf);
+    }
+    return out;
+}
+std::string deviceUid(AudioDeviceID id) { return cfString(id, kAudioDevicePropertyDeviceUID); }
+
 AudioDeviceID parseId(const std::string& s) {
     if (s.empty()) {
         AudioDeviceID d = 0;
@@ -17,7 +43,11 @@ AudioDeviceID parseId(const std::string& s) {
         AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, nullptr, &n, &d);
         return d;
     }
-    return (AudioDeviceID)strtoul(s.c_str(), nullptr, 10);
+    if (s.rfind("ca:", 0) == 0) {   // the device's UID: the same device keeps it when it is plugged in again or the radio is switched off and on
+        for (AudioDeviceID id : allDevices()) if (deviceUid(id) == s.substr(3)) return id;
+        return 0;
+    }
+    return (AudioDeviceID)strtoul(s.c_str(), nullptr, 10);   // the AudioDeviceID of 3.7 and older (changes when the device comes back)
 }
 
 // the channels the input side of a device has, and the rate it runs at
@@ -63,16 +93,30 @@ bool audioInMicStart(AudioIn::Impl* I, int rate, const std::string& deviceId, st
     {   // microphone permission denied in System Settings gives silence, not an error: say so. A chosen input that is gone is not replaced by the default.
         const AVAuthorizationStatus st = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
         if (st == AVAuthorizationStatusDenied || st == AVAuthorizationStatusRestricted) { err = "microphone access is off for OnAir (System Settings > Privacy & Security > Microphone)"; return false; }
+        // never asked: a HAL input unit alone does not make macOS show the question, it just delivers silence (#358). Ask, and wait a
+        // little for the answer so a quick "Allow" starts the input at once
+        if (st == AVAuthorizationStatusNotDetermined) {
+            dispatch_semaphore_t done = dispatch_semaphore_create(0);
+            __block BOOL granted = NO;
+            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL ok) { granted = ok; dispatch_semaphore_signal(done); }];
+            const long waited = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)15 * NSEC_PER_SEC));
+            dispatch_release(done);   // this file is not ARC; the handler's copy of the block keeps its own reference
+            if (waited != 0) {
+                err = "macOS is asking whether OnAir may use the microphone: answer the question, then start the source again";
+                return false;
+            }
+            if (!granted) { err = "microphone access is off for OnAir (System Settings > Privacy & Security > Microphone)"; return false; }
+        }
         if (!deviceId.empty()) {
             bool found = false;
-            for (const auto& dv : audioInListMic()) if (dv.id == deviceId) found = true;
+            for (const auto& dv : audioInListMic()) if (dv.id == deviceId || parseId(dv.id) == parseId(deviceId)) found = true;   // a 3.7 number still works
             if (!found) { err = "the chosen microphone is not connected any more"; return false; }
         }
     }
     AudioComponentDescription d = {kAudioUnitType_Output, kAudioUnitSubType_HALOutput, kAudioUnitManufacturer_Apple, 0, 0};
     AudioComponent c = AudioComponentFindNext(nullptr, &d);
     AudioUnit unit = nullptr;
-    if (!c || AudioComponentInstanceNew(c, &unit) != noErr) { err = "CoreAudio would not open an input unit"; return false; }
+    if (!c || AudioComponentInstanceNew(c, &unit) != noErr) { DIAG(413296, "CoreAudio would not create an input unit, so the microphone is not available."); err = "CoreAudio would not open an input unit"; return false; }
     UInt32 one = 1, zero = 0;
     AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &one, sizeof one);
     AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &zero, sizeof zero);
@@ -93,6 +137,7 @@ bool audioInMicStart(AudioIn::Impl* I, int rate, const std::string& deviceId, st
     if (AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &f, sizeof f) != noErr) {
         AudioComponentInstanceDispose(unit);
         delete ctx; I->ctx = nullptr;
+        DIAG(387668, "The input device refused %d channels at %d Hz, so the microphone did not start.", (int)chans, (int)devRate);
         err = "this input device would not give " + std::to_string(chans) + " channel(s) at " + std::to_string((int)devRate) + " Hz";
         return false;
     }
@@ -102,6 +147,7 @@ bool audioInMicStart(AudioIn::Impl* I, int rate, const std::string& deviceId, st
     if (AudioUnitInitialize(unit) != noErr || AudioOutputUnitStart(unit) != noErr) {
         AudioComponentInstanceDispose(unit);
         delete ctx; I->ctx = nullptr;
+        DIAG(698729, "CoreAudio could not start the microphone (the Input permission in System Settings may be off), so there is no audio input.");
         err = "the microphone could not be started (check Input in System Settings)";
         return false;
     }
@@ -122,12 +168,7 @@ void audioInMicStop(AudioIn::Impl* I) {
 
 std::vector<AudioInputDevice> audioInListMic() {
     std::vector<AudioInputDevice> v;
-    AudioObjectPropertyAddress a = {kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
-    UInt32 n = 0;
-    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0, nullptr, &n) != noErr || n == 0) return v;
-    std::vector<AudioDeviceID> ids(n / sizeof(AudioDeviceID));
-    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, nullptr, &n, ids.data()) != noErr) return v;
-    for (AudioDeviceID id : ids) {
+    for (AudioDeviceID id : allDevices()) {
         AudioObjectPropertyAddress cfg = {kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyScopeInput, kAudioObjectPropertyElementMain};
         UInt32 sz = 0;
         if (AudioObjectGetPropertyDataSize(id, &cfg, 0, nullptr, &sz) != noErr || sz == 0) continue;
@@ -146,7 +187,8 @@ std::vector<AudioInputDevice> audioInListMic() {
             if (CFStringGetCString(cf, b, sizeof b, kCFStringEncodingUTF8)) name = b;
             CFRelease(cf);
         }
-        v.push_back({std::to_string((unsigned)id), name});
+        const std::string uid = deviceUid(id);
+        v.push_back({uid.empty() ? std::to_string((unsigned)id) : "ca:" + uid, name});   // the UID when there is one: it survives a re-plug (#358)
     }
     return v;
 }

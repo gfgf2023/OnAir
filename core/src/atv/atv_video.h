@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV receiver, picture side: from the detected video and the complex baseband at the video rate to lines, fields and pictures.
 //   sync slicer (levels found from the signal) -> line phase-locked loop -> field sync (broad pulses) -> line and row assignment
 //   -> clamp and gain from the sync pulses -> luminance and colour decoding (PAL with delay-line averaging, NTSC) -> pictures
 #pragma once
+#include "dect2/atv/atv_ghost.h"
+#include "dect2/atv/atv_vbi.h"
 #include "dect2/atv/atv_std.h"
 #include "dect2/atv/atv_tel.h"
 #include <cstdint>
@@ -30,6 +35,7 @@ public:
     ~AtvVideo();
     void configure(double videoRate, bool colourCapable);
     void reset();                                    // forget the signal; counters keep running
+    void setSampleCount(uint64_t n);                 // tests: carry on as if n samples had gone through already (the position counter passes 2^31 after 215 s at 10 Msps)
     void setParams(const AtvVideoParams& p);
     void setSoundSpacing(double mhz);                // from the carrier search: tells B/G from I, D/K and N (and C from L)
     void setMirrored(bool on);                       // the channel was found turned round (sound below the vision carrier): L' rather than L
@@ -62,6 +68,10 @@ public:
         int fieldNo = 0;
         bool state1 = false, state2 = false;
         std::vector<float> lineWave, vbiWave;
+        std::vector<std::vector<float>> vitsLines; std::vector<int> vitsLineNo; double vitsRate = 0;   // test-line candidates (VITS)
+        AtvGhost ghost;
+        AtvVbiStatus vbi;
+        std::shared_ptr<TeletextDecoder> ttx;
     };
     Info info() const;
     // for tests and the tool: the standard the decoder settled on

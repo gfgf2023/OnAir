@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // "Monitor audio": listen to the tuned channel of ANY mode. Most decoders have no sound path of their own (they decode data), so a signal you
 // are trying to recognise stays silent. The monitor takes a copy of the radio's samples (like the second mode), shifts the tuned frequency to
 // 0 Hz, demodulates it (USB, LSB, narrow FM or AM; the demodulators of the ham decoders, hfdig::UsbAudio) and sends the audio to
@@ -41,12 +44,24 @@ struct MonitorStats {
     std::string error;             // output device or port that could not be opened
 };
 
+// Where the monitor's channel sits from the capture centre (the shiftHz of push()). dialHz: the radio's dial (the engine's last tune), captureCentreHz:
+// the centre of the samples, decodeShiftHz: a click or a typed frequency inside the captured band that moved only the decode (sticky tuning),
+// monitorOffsetHz: the user's own offset. A recording's dial already is its VFO (the decode shift is that VFO's distance from the file's centre), so
+// it is not added again. Before 4.1 the decode shift was left out: after such a click the mode's receiver went to the new frequency and the
+// monitor kept playing the old one until the radio was stopped and started (#488).
+inline double monitorShiftHz(double dialHz, double captureCentreHz, double decodeShiftHz, double monitorOffsetHz, bool recording) {
+    return dialHz + (recording ? 0.0 : decodeShiftHz) + monitorOffsetHz - captureCentreHz;
+}
+
 class AudioMonitor {
 public:
     AudioMonitor();
     ~AudioMonitor();
     void configure(const MonitorConfig& c);
     MonitorConfig config() const;
+    // The app's mute: the speaker (output 1) goes silent. The second device and the TCP stream carry on, they feed other programs.
+    // Without it the monitor took over when the mode was muted (a muted mode does not count as playing) and the station stayed audible.
+    void setMuted(bool m);
     bool enabled() const;          // cheap: for the radio's thread
     // The radio's thread: a block of samples at `rate`, the wanted channel at shiftHz from their centre (negative: below). Never waits.
     void push(const cf32* x, size_t n, double rate, double shiftHz);

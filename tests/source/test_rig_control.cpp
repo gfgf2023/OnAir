@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Rig control for transmitting: the watched CAT link (re-open with back-off, never while keyed), tuning for TX with read-back and split, PTT by
 // CAT / VOX and a failed release, CatRigIo through the ham gate (licence x Arm x band), a rig that drops mid-burst, finding the rig, audio pairing,
 // error hints and the rig profile in the settings. Fake CAT and fake sound card only; the Hamlib part uses the dummy rig (no radio).
@@ -157,7 +160,11 @@ int main() {
         p.display = "Silicon Labs Dual CP2105 USB to UART Bridge"; p.path = "COM5";
         h = rigHintsForPort(p);
         CHECK(!h.empty() && h[0].mfg == "Yaesu", "CP2105: Yaesu first");
-        p.display = "USB-SERIAL CH340"; h = rigHintsForPort(p);
+        p.path = "/dev/serial/by-id/usb-ELAD_FDM-DUO_CAT-if00"; p.display = "";
+        h = rigHintsForPort(p);
+        bool ts480e = false; for (auto& x : h) ts480e |= x.model == "TS-480";
+        CHECK(!h.empty() && h[0].model == "FDM-DUO" && h[0].mfg == "Elad" && ts480e, "FDM-DUO by name: its own model, then TS-480");
+        p.path = "COM5"; p.display = "USB-SERIAL CH340"; h = rigHintsForPort(p);
         CHECK(!h.empty() && h[0].mfg == "Xiegu", "CH340: Xiegu");
         p.display = "Some modem"; p.path = "/dev/cu.Bluetooth"; CHECK(rigHintsForPort(p).empty(), "no hint from an unrelated name");
         p.path = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_IC-7300"; p.display = "";
@@ -194,7 +201,7 @@ int main() {
         CHECK(old.size() == 1 && old[0].pttType == 0 && !old[0].split && old[0].baud == 19200, "an older entry reads with defaults");
     }
     // ---- the Hamlib transmit sink warns outside the amateur bands and keys (dummy rig, no radio) ----
-    if (hamlibSupported()) {
+    if (hamlibSupported() && hamlibLibraryReady()) {   // a run-time Hamlib build without the library (Windows CI) skips it
         HamlibRig r; r.model = 1; r.path = "dummy";
         auto devs = hamlibRigDevices({r});
         auto s = makeTxSink(devs[0]);

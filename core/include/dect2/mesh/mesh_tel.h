@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mesh (LoRa: Meshtastic and MeshCore) receiver telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 // Times are seconds of signal since the receiver started (timeSec says where "now" is); frequencies are absolute, in Hz, computed from
 // the frequency the receiver was told it is tuned to (MeshReceiver::setTunedHz).
 #pragma once
+#include "dect2/map/mesh_topology.h"
 #include "dect2/packet/packet_tel.h"
 #include <cstdint>
 #include <cstdio>
@@ -64,6 +68,7 @@ struct MeshPacket {
     std::string flags;           // "ADR, ACK", ...
     std::string mac;             // FOpts MAC command names, comma separated
     uint32_t mic = 0;
+    int jumpsFixed = 0;          // sample jumps undone to get the CRC right (0: none; the radio dropped samples inside the frame)
 };
 
 // A LoRaWAN end device: by DevAddr (data frames) or, until it has one, by the DevEUI of its join requests
@@ -180,6 +185,7 @@ struct MeshTelemetry {
     std::vector<std::string> userChannels;   // "Meshtastic: name", "MeshCore: name"
     std::vector<MeshAprsStation> aprsStations;   // LoRa APRS and MeshCom stations and objects (at most 150; the one heard longest ago leaves)
     std::vector<MeshLorawanDevice> lorawanDevices; // LoRaWAN end devices (at most 200; the one heard longest ago leaves)
+    TopoSnapshot topo;                       // who relays whom (Meshtastic relay bytes and hop counts, MeshCore paths), refreshed about once a second
 };
 
 inline std::string meshSummary(const MeshTelemetry& t) {

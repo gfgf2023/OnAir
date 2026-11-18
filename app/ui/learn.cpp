@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The hands-on lessons (a spotlight on the real control and a card that checks the step), the Lessons list, the concepts glossary with
 // small pictures, and the checkup. The lesson table, the checks, the progress and the checkup rules are in learn_logic.h (tested).
 // Nothing here blocks the window: the dimming is drawn on top and takes no clicks, so the person uses the real controls.
 #include "../app.h"
 #include "learn_logic.h"
+#include "tour_logic.h"
 #include "autogain_iface.h"
 #include "dect2/audio/audio_rec.h"
 #include "dect2/engine/mode_tuning.h"
@@ -558,7 +562,7 @@ void lessonsStart(App& a, int planPos) {
 }
 
 void lessonsUi(App& a, ImVec2 disp) {
-    if (R.on && !a.setupOpen && !a.wizOpen) lessonCard(a, disp);
+    if (tour::guideInFront(a.setupOpen, a.wizOpen, listenWizardShown(), R.on) == tour::Guide::Lesson) lessonCard(a, disp);   // one guide at a time (#491)
     lessonsWindow(a);
     glossaryWindow(a);
     checkupWindow(a);

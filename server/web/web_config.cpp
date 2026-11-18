@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "web_config.h"
 #include "server_config.h"
 #include <algorithm>
@@ -35,6 +38,7 @@ WebSettings loadWebSettings(onair_server::ConfigFile& c, bool& madeAdminToken) {
     for (const auto& o : c.getAll("web_origin")) if (!o.empty()) s.origins.push_back(o);
     if (!authModeFromName(c.get("web_auth", "open"), s.auth.mode)) w.warnings.push_back("web_auth must be open, password or invite (using open)");
     s.auth.password = c.get("web_password");
+    s.auth.passwordHash = c.get("web_password_hash");
     for (const auto& line : c.getAll("web_invite")) {   // token,label,max_minutes
         if (line.empty()) continue;
         const auto f = splitComma(line);
@@ -65,8 +69,16 @@ WebSettings loadWebSettings(onair_server::ConfigFile& c, bool& madeAdminToken) {
     L.publicMaxMin = clampi("web_public_max_min", L.publicMaxMin, 0, 100000);
     L.memberMaxMin = clampi("web_member_max_min", L.memberMaxMin, 0, 100000);
     L.maxFps = clampi("web_max_fps", L.maxFps, 1, 30);
+    L.maxAudioRate = clampi("web_max_audio_rate", 0, 0, 96000);
+    {
+        const std::string cm = c.get("web_control", "everyone");
+        L.controlMode = cm == "members" ? HubLimits::CtlMembers : cm == "slot" ? HubLimits::CtlSlot : cm == "nobody" ? HubLimits::CtlNobody : HubLimits::CtlEveryone;
+        if (cm != "everyone" && cm != "members" && cm != "slot" && cm != "nobody" && !cm.empty()) w.warnings.push_back("web_control must be everyone, members, slot or nobody (using everyone)");
+        L.controlSlotMin = clampi("web_control_slot_min", 5, 1, 1440);
+    }
     L.maxBins = clampi("web_max_bins", L.maxBins, 64, 4096);
     L.spectrum = c.flag("web_spectrum", true);
+    L.listenerStart = c.flag("web_listener_start", true);
     L.threads = clampi("web_threads", L.threads, 0, 64);
     s.maxConnections = std::max(16, L.maxUsers * 3 + 8);
     w.logIp = c.flag("web_log_ip", false);
@@ -86,12 +98,20 @@ WebSettings loadWebSettings(onair_server::ConfigFile& c, bool& madeAdminToken) {
     w.directory.desc = c.get("web_directory_desc");
     w.directory.reach = c.flag("web_directory_reach", false);
     w.directory.ack = c.get("web_directory_ack");
+    w.relay.on = c.flag("web_relay", false);
+    w.relay.url = c.get("web_relay_url", w.relay.url);
+    w.relay.listed = c.flag("web_relay_public", false);
+    w.relay.keyFile = w.directory.keyFile;   // set by the server beside the config file when empty
+    w.relay.name = w.name;
+    w.relay.localPort = s.port;
+    w.relay.maxConns = std::max(16, L.maxUsers * 3 + 8);
+    if (w.relay.on) s.trustProxy = true;     // the relay's connections arrive from 127.0.0.1 with the listener's address in X-Forwarded-For
     const bool network = s.bind != "127.0.0.1";
     if (network && s.tlsCert.empty()) {
         w.warnings.push_back(s.plainInternet ? "web: plain HTTP for everyone, also from the internet (web_plain_internet=1): passwords and invites travel unencrypted"
                                              : "web: no TLS, so only private (LAN) addresses are let in; set web_tls_cert / web_tls_key (or a reverse proxy) for the internet");
     }
-    if (s.auth.mode == AuthMode::Password && s.auth.password.size() < 8) w.warnings.push_back("web_password must have 8 characters or more");
+    if (s.auth.mode == AuthMode::Password && s.auth.password.size() < 8 && s.auth.passwordHash.empty()) w.warnings.push_back("web_password must have 8 characters or more");
     if (s.auth.mode == AuthMode::Invite && s.auth.invites.empty()) w.warnings.push_back("web_auth=invite but there is no web_invite yet: make one with the admin API");
     return w;
 }

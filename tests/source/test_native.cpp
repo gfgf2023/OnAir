@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The native radio drivers (source_native.cpp) against fake vendor libraries: listing, streaming a known tone, retuning, changing the rate, stopping.
 // (The SDRplay fake checks the driver's calls and settings; the struct layouts themselves are checked in sdrplay_api_min.h.)
 #include "dect2/source/source.h"
+#include "dect2/engine/rate_choice.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -320,6 +324,15 @@ static void radiosChecks(const char* dir, const char* ext) {
             TuneSettings t;
             t.centerHz = 7e6; t.sampleRate = 2.048e6; t.gainDb = 30; t.bandwidthMhz = 0.2;
             std::string e;
+            {   // #450: tuned above the direct-sampling threshold before the rate, so the library never retunes the fresh R820T to 0 Hz
+                const double z0 = std::max(0.0, st("rtl.rateAtZeroHz"));
+                TuneSettings v; v.centerHz = 136e6; v.sampleRate = 1e6; v.gainDb = 20; v.bandwidthMhz = 0.2;
+                std::string ve;
+                auto vs = makeSource(g);
+                const bool vok = vs->start(v, ring, ve);
+                CHECK(vok && st("rtl.freq") == 136e6 && std::max(0.0, st("rtl.rateAtZeroHz")) == z0, "136 MHz: rate set at 0 Hz %.0f times (%s)", std::max(0.0, st("rtl.rateAtZeroHz")) - z0, ve.c_str());
+                if (vok) vs->stop();
+            }
             const double calls = std::max(0.0, st("rtl.dsCalls"));
             // no frequency is refused: a generic dongle at 7 MHz is asked as it is, through the Q input (Auto), with a note that it has no HF input
             const bool g7 = src->start(t, ring, e);
@@ -379,7 +392,14 @@ static void radiosChecks(const char* dir, const char* ext) {
         t.centerHz = 7e6; t.sampleRate = 2.048e6; t.bandwidthMhz = 0.2;
         e.clear();
         CHECK(v4->start(t, ring, e), "V4 at 7 MHz: %s", e.c_str());
-        CHECK(std::max(0.0, st("rtl.dsCalls")) == calls && st("rtl.freq") == 7e6 && e.empty(), "V4: direct sampling switched (%.0f calls), note '%s'", st("rtl.dsCalls") - calls, e.c_str());
+        // the fake is a stock osmocom librtlsdr (no rtlsdr_check_dongle_model): a V4 below 24 MHz then gets the note that HF needs the Blog
+        // library (the macOS and Windows builds bundle it); with a Blog library there is no note
+        {
+            void* rh = dlopen((std::string(dir) + "/librtlsdr" + ext).c_str(), RTLD_NOW | RTLD_NOLOAD);
+            const bool blogFake = rh && dlsym(rh, "rtlsdr_check_dongle_model");
+            const bool noted = has(e, "this dongle is an RTL-SDR Blog V4: HF needs librtlsdr from rtl-sdr-blog");
+            CHECK(std::max(0.0, st("rtl.dsCalls")) == calls && st("rtl.freq") == 7e6 && noted != blogFake, "V4: direct sampling switched (%.0f calls), Blog library %d, note '%s'", st("rtl.dsCalls") - calls, blogFake, e.c_str());
+        }
         // a V4 goes down to 9 MHz (and below) and up through the same call: nothing is refused, direct sampling is never asked for
         for (double fq : {9e6, 100e3, 1e9, 2e9}) {
             t.centerHz = fq; e.clear();
@@ -834,10 +854,14 @@ static void radioSettingsChecks(const char* dir, const char* ext) {
         }
         src.reset();
         // a model with antenna power
+        // The listing no longer opens an HF+ once one was opened here (#78: list_devices races stop/close), so it shows what the radio said at
+        // its last open. In the app the first listing (before any open) reads it; here the radio was already used, so it is opened once first.
         set("airspyhf.biasCount", 1);
+        t.radio.clear(); t.biasTee = false;
+        { auto once = makeSource(d); e.clear(); if (once->start(t, ring, e)) once->stop(); }
         d = first("airspyhf");
         CHECK(d.hasBiasTee, "HF+ with a bias-tee: not offered");
-        t.radio.clear(); t.biasTee = true;
+        t.biasTee = true;
         auto b = makeSource(d);
         e.clear();
         ok = b->start(t, ring, e);
@@ -936,6 +960,16 @@ static void radioSettingsChecks(const char* dir, const char* ext) {
         const bool ok = src->start(t, ring, e);
         CHECK(ok && st("pluto.xoWrites") == kNone && st("pluto.phy:voltage0.gain_control_mode=manual") == 1, "Pluto defaults: xo writes %.0f (%s)", st("pluto.xoWrites"), e.c_str());
         CHECK(st("pluto.bufSamples") == 65536, "Pluto over USB: buffer of %.0f samples", st("pluto.bufSamples"));
+        {   // #420 #367: a chosen rate below the converter's minimum starts at 2.1 Msps instead of failing, and the rate list offers it
+            set("pluto.refuseLowRate", 1);
+            TuneSettings low = t; low.centerHz = 403e6; low.sampleRate = 2e6; low.rateChosen = true;
+            std::string le;
+            CHECK(src->retune(low, le) && st("pluto.phy:voltage0.sampling_frequency") == 2.1e6 && has(le, "2.1 Msps"), "Pluto chosen 2 Msps: %s (rate %.0f)", le.c_str(), st("pluto.phy:voltage0.sampling_frequency"));
+            set("pluto.refuseLowRate", 0);
+            bool listed2 = false;
+            for (const auto& en : rateEntries(rateLimitsOf(d), 0)) if (en.askHz == 2e6) listed2 = true;
+            CHECK(listed2, "Pluto rate list does not offer 2 Msps");
+        }
         if (ok) {
             t.radio["ppm"] = "10";
             CHECK(src->retune(t, e) && st("pluto.phy.xo_correction") == 40000400 && st("pluto.phy:altvoltage0.frequency") == 522e6, "Pluto 10 ppm: xo %.0f, freq %.0f", st("pluto.phy.xo_correction"), st("pluto.phy:altvoltage0.frequency"));
@@ -1612,7 +1646,8 @@ int main(int argc, char** argv) {
             auto toneHz = [&](IqRing& ring, double rate, double& amp) {
                 std::vector<cf32> buf(1 << 14), got;
                 while (ring.read(buf.data(), buf.size())) {}   // what the earlier rate left behind
-                const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+                // (a restart for another rate first collects the last stream's cancelled transfers, about 0.5 s: collectTransfers())
+                const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
                 while (std::chrono::steady_clock::now() < end && got.size() < 4096) {
                     const size_t n = ring.read(buf.data(), buf.size());
                     got.insert(got.end(), buf.begin(), buf.begin() + n);
@@ -1654,6 +1689,25 @@ int main(int argc, char** argv) {
                     t.gainDb = 40;
                     CHECK(src->retune(t, e), "retune failed: %s", e.c_str());
                     CHECK(st("airspyhf.att") == 1 && st("airspyhf.lna") == 0, "gain 40: att %.0f lna %.0f (1 and 0 expected)", st("airspyhf.att"), st("airspyhf.lna"));
+                    // (Discord, 3.8: "the gain slider does nothing") every slider position reaches the attenuator, live, in 6 dB steps, more gain =
+                    // less attenuation, the preamp only in the top step; the radio's AGC stays off so the attenuator is the slider's
+                    {
+                        auto fakeSet = (void (*)(const char*, double))dlsym(h, "fake_set");
+                        int prevAtt = 99, wrong = 0;
+                        for (int g = 0; g <= 48; g++) {
+                            t.gainDb = g;
+                            if (fakeSet) fakeSet("airspyhf.att", -1);   // each position must send its own call
+                            if (!src->retune(t, e)) { wrong++; continue; }
+                            const int want = (int)std::lround((48.0 - g) / 6.0);
+                            const int att = (int)st("airspyhf.att"), lna = (int)st("airspyhf.lna");
+                            if (att != want || att > prevAtt || lna != (g > 42 ? 1 : 0) || st("airspyhf.agc") != 0) {
+                                wrong++;
+                                printf("  gain %d: att %d (want %d) lna %d agc %.0f\n", g, att, want, lna, st("airspyhf.agc"));
+                            }
+                            prevAtt = att;
+                        }
+                        CHECK(wrong == 0, "HF+ gain sweep 0..48: %d positions did not reach the attenuator as expected", wrong);
+                    }
                     t.gainDb = 0; t.centerHz = 1e6;
                     CHECK(src->retune(t, e), "retune failed: %s", e.c_str());
                     CHECK(st("airspyhf.att") == 8 && st("airspyhf.lna") == 0 && st("airspyhf.freq") == 1e6, "gain 0: att %.0f lna %.0f freq %.0f", st("airspyhf.att"), st("airspyhf.lna"), st("airspyhf.freq"));

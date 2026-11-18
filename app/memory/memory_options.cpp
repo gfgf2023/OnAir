@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // What a memory captures from a receiver and how it is applied again (see memory_options.h). The option table lists the App fields of the
 // modes that keep their settings there; modes with state of their own register theirs (the general receiver: general_ui.cpp).
 #include "memory_options.h"
@@ -55,7 +58,7 @@ dect2::Memory memoryCapture(const App& a) {
     if (const dect2::SubMode* s = curSub(a)) m.subId = s->id;
     m.stdMode = engineStd(a);
     m.sampleRateHz = savedSampleRate(a);
-    m.bandwidthHz = a.tune.bandwidthMhz * 1e6;
+    m.bandwidthHz = a.tune.signalBwMhz() * 1e6;
     if (a.devIdx >= 0 && a.devIdx < (int)a.devices.size()) m.radio = a.devices[a.devIdx].name;
     m.hasGain = true; m.lna = a.tune.lnaDb; m.vga = a.tune.vgaDb; m.amp = a.tune.ampOn; m.gainDb = a.tune.gainDb;
     for (const MemoryOption& o : memoryOptions()) if (o.applies(a)) m.options[o.key] = o.get(a);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // VDES test signal: see vdes_gen.h.
 #include "dect2/vdes/vdes_gen.h"
 #include "dect2/dsp/gen_util.h"
@@ -137,7 +140,7 @@ std::vector<cf32> renderVdes(const std::vector<AisBurstSpec>& asmBursts, const s
     else {
         AisRenderConfig ac;
         ac.rate = c.rate; ac.durationSec = c.durationSec; ac.snrDb = -200; ac.cfoHz = c.cfoHz; ac.sroPpm = c.sroPpm;
-        ac.tuneOffsetHz = -((kVdesAsm1Hz - c.dialHz) + 25000.0);   // AIS 1 / AIS 2 sit at -25 / +25 kHz of the tuned frequency, minus this
+        ac.tuneOffsetHz = -((kVdesAsm1Hz - c.dialHz) + 25000.0);   // ASM 1 / ASM 2 sit at -25 / +25 kHz of the tuned frequency, minus this
         out = renderAisBursts(asmBursts, ac);
     }
     for (const auto& b : vdeBursts) addVde(out, b, c);

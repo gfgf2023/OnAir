@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.usb
 
 import org.junit.Assert.assertEquals
@@ -47,23 +50,28 @@ class DeviceFilterTest {
         assertEquals(UsbCatalog.all.keys, p.ids.toSet())
     }
 
-    @Test fun everyFamilyIsInTheFilterAndNoSdrplay() {
+    @Test fun everyFamilyIsInTheFilterAndOfSdrplayOnlyTheRsp1() {
         val ids = DeviceFilter.parse(filterXml()).ids.toSet()
         for (f in UsbCatalog.Family.entries) assertTrue(f.name, UsbCatalog.all.any { it.value == f && it.key in ids })
-        assertTrue(ids.none { it.vid == 0x1df7 })   // SDRplay: closed API, not on Android
+        // SDRplay: the closed API does not exist for Android; only the RSP1 (MSi2500 + MSi001), which OnAir drives itself, is in the filter
+        assertEquals(listOf(UsbCatalog.UsbId(0x1df7, 0x2500)), ids.filter { it.vid == 0x1df7 })
     }
 
     @Test fun identifiesModels() {
         assertEquals("RTL-SDR Blog V4", UsbCatalog.identify(0x0bda, 0x2838, "RTLSDRBlog", "Blog V4")?.name)
         assertEquals("RTL-SDR Blog V4L", UsbCatalog.identify(0x0bda, 0x2838, "RTLSDRBlog", "Blog V4L")?.name)
         assertEquals("RTL-SDR Blog V3", UsbCatalog.identify(0x0bda, 0x2838, "RTLSDRBlog", "Blog V3")?.name)
-        assertEquals("RTL-SDR (R820T)", UsbCatalog.identify(0x0bda, 0x2838, "Realtek", "RTL2838UHIDIR")?.name)
-        assertEquals("RTL-SDR (R820T)", UsbCatalog.identify(0x0bda, 0x2838, null, null)?.name)   // before the permission
+        assertEquals("RTL-SDR (RTL2832U)", UsbCatalog.identify(0x0bda, 0x2838, "Realtek", "RTL2838UHIDIR")?.name)
+        assertEquals("RTL-SDR (RTL2832U)", UsbCatalog.identify(0x0bda, 0x2838, null, null)?.name)   // before the permission
         assertEquals("HackRF One", UsbCatalog.identify(0x1d50, 0x6089, "Great Scott Gadgets", "HackRF One")?.name)
         assertEquals("HackRF Pro", UsbCatalog.identify(0x1d50, 0x6089, "Great Scott Gadgets", "HackRF Pro")?.name)
         assertEquals(UsbCatalog.Family.AIRSPY, UsbCatalog.identify(0x1d50, 0x60a1, "Airspy", "AIRSPY")?.family)
         assertEquals("Airspy HF+", UsbCatalog.identify(0x03eb, 0x800c, "Airspy", "AIRSPY HF+")?.name)
         assertNull(UsbCatalog.identify(0x1df7, 0x3000, "SDRplay", "RSP1A"))
+        val rsp1 = UsbCatalog.identify(0x1df7, 0x2500, null, null)!!
+        assertEquals(UsbCatalog.Family.MIRICS, rsp1.family)
+        assertTrue(rsp1.name.contains("RSP1") && rsp1.name.contains("untested"))
+        assertEquals(UsbCatalog.Family.MIRICS, UsbCatalog.identify(0x2040, 0xd300, "Hauppauge", "WinTV")?.family)
         assertNull(UsbCatalog.identify(0x046d, 0xc52b, "Logitech", "Receiver"))
     }
 

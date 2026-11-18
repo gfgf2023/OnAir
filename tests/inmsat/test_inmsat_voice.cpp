@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Stage 3 of the Inmarsat all-carriers mode: the voice mixer and recorder WITHOUT the codec (silence and the install message, the coded frames
 // are still saved) and with a fake test decoder (mute / solo, mixing, WAV recording). The real AMBE codec is never part of the tests; the C-channel
 // demodulator that would feed the mixer does not exist yet: needs a user test with a real capture.
@@ -75,7 +78,7 @@ int main() {
         m.pushFrame(1, 1545.5e6, frame(5), 0);
         const VoiceStatus s = m.status();
         printf("message: %s\n", s.message.c_str());
-        CHECK(s.message.find("AMBE") != std::string::npos && s.message.find("onair-codec-ambe") != std::string::npos && s.message.find("/Users/test/codecs") != std::string::npos,
+        CHECK(s.message.find("AMBE") != std::string::npos && s.message.find("onair-codec-aeroambe") != std::string::npos && s.message.find("/Users/test/codecs") != std::string::npos,
               "install message incomplete");
         int16_t out[160];
         m.mix(out, 160);

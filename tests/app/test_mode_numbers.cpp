@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mode numbers stay unique (docs/MODE-NUMBERS.md). Modes were added by separate branches that picked their numbers on their own, so
 // two of them could take the same family, engine standard or poll slot and still compile (a duplicate mode-table row or seqs[] slot is
 // not a compile error). This test fails on any such clash:
@@ -153,6 +156,13 @@ int main(int argc, char** argv) {
             if (std::regex_search(line, m, caseRe)) owner = "case " + m[1].str();
             for (auto it = std::sregex_iterator(line.begin(), line.end(), seqRe); it != std::sregex_iterator(); ++it) {
                 int s = 0;
+                if ((*it)[1].str() == "a - 1" && line.find("DECT2_X40_ACTIVE_CASES") != std::string::npos) {   // the 4.0 receiver: one slot per active standard in its macro (slot = active standard - 1)
+                    const std::string x40h = readFile("core/include/dect2/x40/x40_rx.h"); const size_t d = x40h.find("#define DECT2_X40_ACTIVE_CASES"); const size_t e = x40h.find('\n', d);
+                    const std::string def = d == std::string::npos ? std::string() : x40h.substr(d, e - d);
+                    static const std::regex caseN(R"(case\s+([0-9]+)\s*:)");
+                    for (auto c = std::sregex_iterator(def.begin(), def.end(), caseN); c != std::sregex_iterator(); ++c) slots[std::atoi((*c)[1].str().c_str()) - 1].insert("x40 receiver");
+                    continue;
+                }
                 if (!evalExpr((*it)[1].str(), s)) { CHECK(false, "cannot read the poll slot '%s'", (*it)[1].str().c_str()); continue; }
                 slots[s].insert(owner);
             }

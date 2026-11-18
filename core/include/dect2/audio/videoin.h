@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Video capture for the transmitter: cameras and HDMI / SDI capture cards, plus a looping file.
 // The device is never opened until start() — TxSession does that only on START TRANSMITTING.
 #pragma once
@@ -14,6 +17,7 @@ struct VideoInputDevice {
 };
 
 std::vector<VideoInputDevice> listVideoInputs();   // cameras and capture cards; default first when the OS has one
+bool videoInputSupported();                        // this build can open cameras at all (libavdevice v4l2 / dshow, or AVFoundation); Help > Hardware
 
 class VideoIn {
 public:
@@ -27,6 +31,9 @@ public:
     bool start(Kind k, const std::string& pathOrDevice, std::string& err);
     void stop();
     bool running() const { return running_; }
+    // A file plays against the consumer's clock, the time of the picture about to be sent (a file source has no speed of its own: #439); before the
+    // first call against the wall clock. waitMs > 0: wait that long at most for the frame of this time (for a consumer that runs faster than real time).
+    void setClock(double seconds, int waitMs = 0);
     Kind kind() const { return kind_; }
     int width() const;
     int height() const;

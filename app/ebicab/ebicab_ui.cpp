@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // EBICab / Eurobalise screens: the Eurobalise telegrams heard (SUBSET-036 coding, the SUBSET-026 header fields), the balises, and the FSK bursts
 // that gave no telegram (length and first bits; EBICab 700 / 900 formats are not published). "Needs a user test": no real recording was available.
 #include "app.h"
@@ -54,6 +57,7 @@ void telegramsView(App& a) {
         ImGui::TableNextColumn();
         ImGui::PushTextWrapPos(0);
         ImGui::TextDisabled("%s%s%s", t.inverted ? "inverted  " : "", t.header.qUpdown ? "up-link  " : "down-link  ", t.hex.substr(0, 40).c_str());
+        for (const auto& pk : t.packets) ImGui::Text("%d: %s", pk.nid, pk.text.c_str());
         ImGui::PopTextWrapPos();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.hex.c_str());
     }

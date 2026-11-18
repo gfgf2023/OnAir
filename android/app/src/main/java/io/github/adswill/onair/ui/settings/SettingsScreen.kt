@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui.settings
 
 import androidx.compose.foundation.background
@@ -19,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,7 +78,7 @@ interface SettingsActions {
     fun setDark(on: Boolean); fun setFollowSystemTheme(on: Boolean); fun setTypeLook(l: TypeLook); fun setColormap(i: Int)
     fun setRange(lo: Float, hi: Float); fun autoRange(); fun setPeakHold(on: Boolean); fun setCentreTuning(on: Boolean); fun setStepHz(hz: Double)
     fun setHideUnused(on: Boolean); fun setOnlyCapable(on: Boolean); fun setSound(volume: Float, muted: Boolean); fun setReduceMotion(on: Boolean)
-    fun setDiscovery(on: Boolean); fun setMapConsent(v: Int); fun setVerbose(on: Boolean)
+    fun setDiscovery(on: Boolean); fun setMapConsent(v: Int); fun setVerbose(on: Boolean); fun setAutoStart(on: Boolean)
 }
 
 private fun vmSettingsActions(vm: ReceiverViewModel) = object : SettingsActions {
@@ -92,6 +96,7 @@ private fun vmSettingsActions(vm: ReceiverViewModel) = object : SettingsActions 
     override fun setSound(volume: Float, muted: Boolean) = vm.setSound(volume, muted)
     override fun setReduceMotion(on: Boolean) = vm.setReduceMotion(on)
     override fun setDiscovery(on: Boolean) = vm.setDiscovery(on)
+    override fun setAutoStart(on: Boolean) = vm.setAutoStart(on)
     override fun setMapConsent(v: Int) = vm.setMapConsent(v)
     override fun setVerbose(on: Boolean) = vm.setVerbose(on)
 }
@@ -155,6 +160,14 @@ fun SettingsContent(
         SettingItem(3, stringResource(R.string.mute), "sound mute silence") {
             SwitchRow(stringResource(R.string.mute), s.muted, { vm.setSound(s.volume, it) })
         },
+        SettingItem(3, stringResource(R.string.auto_start), "one tap start mode pick automatic") {
+            SwitchRow(stringResource(R.string.auto_start), ui.autoStart, vm::setAutoStart, help = stringResource(R.string.auto_start_help))
+        },
+        SettingItem(3, stringResource(R.string.battery_title), "battery background killed stopped doze optimisation") {
+            val ctx = LocalContext.current
+            val exempt = remember { Battery.exempt(ctx) }
+            LinkRow(OnAirIcons.Info, stringResource(if (exempt) R.string.battery_ok else R.string.battery_title)) { Battery.request(ctx) }
+        },
         SettingItem(4, stringResource(R.string.reduce_motion), "motion animation accessibility") {
             SwitchRow(stringResource(R.string.reduce_motion), ui.reduceMotion, vm::setReduceMotion, help = stringResource(R.string.reduce_motion_help))
         },
@@ -165,6 +178,7 @@ fun SettingsContent(
             Dropdown(consent, s.mapConsent.coerceIn(0, 2), { vm.setMapConsent(it) }, label = stringResource(R.string.map_tiles))
         },
         SettingItem(6, stringResource(R.string.run_setup), "setup wizard first run lessons help") { LinkRow(OnAirIcons.Glyph, stringResource(R.string.run_setup), onRunSetup) },
+        SettingItem(6, stringResource(R.string.update_title), "update upgrade version apk download install mirror github china check") { UpdateSettings(s) },
         SettingItem(6, stringResource(R.string.verbose_log), "verbose logging debug usb diagnostics advanced") {
             SwitchRow(stringResource(R.string.verbose_log), s.verboseLog, vm::setVerbose, help = stringResource(R.string.verbose_log_help))
         },

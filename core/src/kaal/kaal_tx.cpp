@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // KAAL voice transmitter, streaming port of kaal_tx.py.
 #include "dect2/kaal/kaal_tx.h"
 #include "dect2/kaal/kaal_codec.h"
@@ -5,6 +8,7 @@
 #include "dect2/kaal/kaal_fec.h"
 #include "dect2/kaal/kaal_phy.h"
 #include "dect2/kaal/kaal_sweepid.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -43,10 +47,11 @@ public:
         buf_.insert(buf_.end(), in, in + n);
         while (true) {
             const int64_t i0 = (int64_t)std::floor(pos_);
-            if (i0 + kH >= base_ + (int64_t)buf_.size()) break;
             int p = (int)std::lround((pos_ - (double)i0) * kPhases);
             int64_t ii = i0;
             if (p >= kPhases) { p = 0; ii++; }
+            // the kernel reads buf_ up to ii + kH: checked after the phase rounded up to the next sample (it read one past the end, ASan)
+            if (ii + kH >= base_ + (int64_t)buf_.size()) break;
             const float* k = &tab_[(size_t)p * 2 * kH];
             const cf* v = &buf_[(size_t)(ii - kH + 1 - base_)];
             float ar = 0, ai = 0;
@@ -307,7 +312,10 @@ size_t VoiceTx::popIq(std::complex<float>* out, size_t maxSamples) {
     return n;
 }
 bool VoiceTx::setBitrate(int kbit) {
-    if (kbit != 0 && !KaalCodec3::validBitrate(kbit)) return false;
+    if (kbit != 0 && !KaalCodec3::validBitrate(kbit)) {
+        DIAG_DEBUG(436998, "The KAAL voice bitrate %d kbit/s is not one the codec offers, so the transmitter keeps its current bitrate.", kbit);
+        return false;
+    }
     p_->bitrate = kbit;
     if (kbit) p_->codec3 = KaalCodec3(kbit);
     p_->applyRate();
@@ -321,7 +329,10 @@ bool VoiceTx::setSweepCallsign(const std::string& callsign) {
     std::string base;
     int sfx = 0;
     p_->idSyms.fill(0);
-    if (!splitCallsign(callsign, base, sfx)) return false;
+    if (!splitCallsign(callsign, base, sfx)) {
+        DIAG_DEBUG(966826, "The KAAL callsign \"%s\" does not fit the sweep ID (6 characters and a suffix class), so the sweep goes out without a station ID.", callsign.c_str());
+        return false;
+    }
     p_->idSyms = sweepIdSymbols(base, sfx);
     return true;
 }

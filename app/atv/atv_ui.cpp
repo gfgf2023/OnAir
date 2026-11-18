@@ -1,8 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV screens: the picture with a line scope, the status lamps, the vertical-interval and level panels, the receiver readouts and the options
 // of the test signal. The receiver (AtvReceiver) makes the pictures; the telemetry carries the waveforms and the numbers.
 #include "app.h"
+#include "dect2/atv/atv_aspect.h"
+#include "dect2/atv/atv_ghost.h"
 #include "panels/enhance_ui.h"
+#include "ui/video_adjust.h"
 #include "dect2/atv/atv_std.h"
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -11,11 +18,13 @@ namespace {
 struct State {
     bool loaded = false, wasRunning = false;
     gfx::Image* img = nullptr;                  // the picture as a texture
+    vadj::Control adjust;                       // display brightness and contrast (#239)
     enhui::LiveTex enh;                         // the Enhance control on the frame grab (worked on the newest frame when the last is done)
     int imgW = 0, imgH = 0;
     uint64_t frameSeq = 0;
     std::shared_ptr<const AtvFrame> frame;      // the last picture (for the caption)
     int deint = 0;                              // 0 weave, 1 bob
+    int aspect[4] = {0, 0, 0, 0};               // picture format per modulation (AM, FM video, NBTV on AM, NBTV on FM): 0 Auto, 1 4:3, 2 16:9 (atv_aspect.h)
     int sysHint = -1, colHint = -1;             // -1 automatic
     bool colourOn = true;
     float saturation = 1.f, hue = 0.f;
@@ -41,6 +50,10 @@ void loadState() {
     S.loaded = true;
     S.deint = (int)plat::prefs().getI("atvDeint", 0) == 1 ? 1 : 0;
     S.snow = plat::prefs().getI("atvSnow", 0) != 0;
+    S.aspect[0] = (int)std::clamp(plat::prefs().getI("atvAspect0", 0), 0L, 2L);
+    S.aspect[1] = (int)std::clamp(plat::prefs().getI("atvAspect1", 0), 0L, 2L);
+    S.aspect[2] = (int)std::clamp(plat::prefs().getI("atvAspect2", 0), 0L, 2L);
+    S.aspect[3] = (int)std::clamp(plat::prefs().getI("atvAspect3", 0), 0L, 2L);
     S.dualCh = (int)plat::prefs().getI("atvDualCh", 0) == 1 ? 1 : 0;
 }
 
@@ -214,10 +227,20 @@ void uploadFrame(App& a) {
     }
     std::vector<uint32_t> px((size_t)f->width * f->height);
     memcpy(px.data(), f->rgba.data(), px.size() * 4);
+    S.adjust.load("atv");
+    dect2::video::apply(px.data(), px.size(), S.adjust.adj);   // display only: the frame itself is not changed
     S.img->update(0, 0, f->width, f->height, px.data());
     S.enh.e.setSource("Analog TV frame");
     if (S.enh.e.on()) S.enh.feed(px.data(), f->width, f->height, false);
     S.frame = f;
+}
+
+// The aspect the picture is shown with: the setting of the modulation, Auto from the WSS of line 23 (anamorphic 16:9). The NBTV pictures have their own shape.
+float pictureAspect(const App& a) {
+    const float own = S.img && S.imgH > 0 ? (float)S.imgW / S.imgH : 4.f / 3.f;
+    const int mod = a.rx.atv.modulation;
+    if (mod < 0 || mod > 1 || !live(a)) return own;
+    return (float)dect2::atvDisplayAspect(S.aspect[mod], a.rx.atv.wssText);
 }
 
 void picture(App& a, ImVec2 box) {
@@ -227,7 +250,7 @@ void picture(App& a, ImVec2 box) {
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##atvpic", box);
     dl->AddRectFilled(p0, ImVec2(p0.x + box.x, p0.y + box.y), IM_COL32(0, 0, 0, 255));
-    const float ar = S.img && S.imgH > 0 ? (float)S.imgW / S.imgH : 4.f / 3.f;
+    const float ar = pictureAspect(a);
     ImVec2 sz = box;
     if (box.x / box.y > ar) sz.x = box.y * ar; else sz.y = box.x / ar;
     const ImVec2 q0(p0.x + (box.x - sz.x) * 0.5f, p0.y + (box.y - sz.y) * 0.5f), q1(q0.x + sz.x, q0.y + sz.y);
@@ -300,6 +323,18 @@ void tab(App& a) {
         kv(a, "burst", on && t.colour ? num(true, "%.0f %%", t.burstLevel * 100) : "-", 96);
         kv(a, "sound", on && t.soundPresent ? num(true, "%.0f dBFS", t.soundLevelDb) : "-", 96);
         kv(a, "detector", on ? (t.syncDetector ? "synchronous" : "envelope") : "-", 96);
+        if (!t.wssText.empty()) kv(a, "picture format", t.wssText, 96);
+        if (!t.captions.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s: %s", tr("captions"), t.captions.c_str()); ImGui::PopTextWrapPos(); }
+        if (t.ttx && t.ttxPackets > 0 && ImGui::TreeNode(trw("Teletext"))) {
+            static int page = 100;
+            ImGui::SetNextItemWidth(90 * gUi); ImGui::InputInt("##atvttx", &page, 1, 10);
+            const auto pages = t.ttx->pages();
+            ImGui::SameLine(); ImGui::TextDisabled("%zu %s", pages.size(), tr("pages"));
+            TtxPage pg; TtxGrid grid;
+            if (t.ttx->page(page, pg)) { ttxRender(pg, grid); for (int r = 0; r < 25; r++) if (pg.rowMask & (1u << r)) ImGui::TextUnformatted(ttxRowText(grid, r).c_str()); }
+            ImGui::TreePop();
+        }
+        { dect2::AtvGhost gh; gh.found = t.ghostFound; gh.delayUs = t.ghostDelayUs; gh.levelDb = t.ghostDb; kv(a, "ghost", on ? dect2::atvGhostText(gh) : "-", 96); }
         ImGui::EndGroup();
     } else {
         const float scopeH = std::min(150.f * gUi, rest * 0.3f);
@@ -442,6 +477,7 @@ void receiver(App& a) {
         ImGui::EndTable();
     }
     ImGui::EndChild();
+    smart5AtvCard(a);   // round-5 smart checks (app/smart5, docs/SMART5-UI-3.9.md)
 }
 
 // Put the next control on the same line if it fits (the toolbar), else on the next one (the sidebar).
@@ -509,7 +545,7 @@ void tuner(App& a, bool& retune) {
     }
 }
 
-void decoder(App&, bool&) {
+void decoder(App& a, bool&) {
     loadState();
     ImGui::Checkbox("Colour", &S.colourOn);
     nextIf(120);
@@ -518,8 +554,21 @@ void decoder(App&, bool&) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Always use the envelope detector. The default locks to the carrier (synchronous detection), which\nsurvives ghosts and overmodulation better, and falls back to the envelope detector by itself.");
     ImGui::TextDisabled("Saturation"); ImGui::SameLine(0, 5 * gUi); ImGui::SetNextItemWidth(fit(90));
     ImGui::SliderFloat("##atvsat", &S.saturation, 0.f, 2.f, "%.2f");
+    nextIf(240);
+    if (S.adjust.controls("atv", fit(90))) S.frameSeq = 0;   // the newest frame again, so a still picture changes at once
     if (ImGui::Checkbox("Show snow when there is no picture", &S.snow)) { plat::prefs().setI("atvSnow", S.snow ? 1 : 0); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Without a picture signal, draw the noise of the channel as a TV does with no station (snow) instead of nothing.\nA weak carrier shows up in it before the picture locks. Off by default.");
+    if (a.rx.atv.modulation == 0 || a.rx.atv.modulation == 1) {   // not the NBTV pictures, which have their own shape
+        static const char* const kAspects[3] = {"Auto", "4:3", "16:9"};
+        int& asp = S.aspect[a.rx.atv.modulation];
+        static const char* const kAspectKeys[2] = {"atvAspect0", "atvAspect1"};
+        ImGui::TextDisabled("Aspect"); ImGui::SameLine(0, 5 * gUi); ImGui::SetNextItemWidth(fit(90));
+        if (ImGui::BeginCombo("##atvasp", kAspects[std::clamp(asp, 0, 2)])) {
+            for (int i = 0; i < 3; i++) if (ImGui::Selectable(kAspects[i], asp == i)) { asp = i; plat::prefs().setI(kAspectKeys[a.rx.atv.modulation], i); savePrefs(a); }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The shape of the picture on screen, saved for this kind of signal (AM or FM video). 16:9 stretches an anamorphic picture, as an Icom IC-905 sends it,\nback to its width. Auto follows the wide screen signalling (line 23, 625 lines) when the transmitter sends it, else 4:3.");
+    }
     ImGui::TextDisabled("Sound"); ImGui::SameLine(0, 5 * gUi); ImGui::SetNextItemWidth(fit(130));
     if (ImGui::BeginCombo("##atvsnd", S.soundSys == 0 ? "Automatic" : "FM / AM carrier only")) {
         if (ImGui::Selectable("Automatic", S.soundSys == 0)) S.soundSys = 0;
@@ -636,9 +685,13 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
-bool atvFullPicture(ImVec2 disp) {
+// The video-only view (double-click, F) draws instead of the tab, so it takes the new frames itself: without this the picture, and the
+// snow of an empty channel, stood still in full screen (#239)
+bool atvFullPicture(App& a, ImVec2 disp) {
+    loadState();
+    uploadFrame(a);
     if (!S.img || !S.frame) return false;
-    const float ar = S.imgH > 0 ? (float)S.imgW / S.imgH : 4.f / 3.f;
+    const float ar = pictureAspect(a);
     ImVec2 sz = disp;
     if (disp.x / disp.y > ar) sz.x = disp.y * ar; else sz.y = disp.x / ar;
     const ImVec2 q0((disp.x - sz.x) * 0.5f, (disp.y - sz.y) * 0.5f);

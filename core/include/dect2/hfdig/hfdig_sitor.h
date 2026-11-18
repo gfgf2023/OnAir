@@ -1,10 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // SITOR teleprinter decoder (ITU-R M.476, clean-room from the public description): 7-unit words of the CCIR 476 family carrying
 // ITA2 (ITU-T F.1) characters. This header and hfdig_sitor.cpp take already-demodulated 7-element words (bit 6 first, mark = 1);
 // the FSK front end is not part of this module.
 //   FEC-B: each word is one character, valid only with exactly four marks; a word that is not valid is counted as an error.
 //   FEC-A: time diversity. A word is accepted only when the same valid word arrives again `lag` words later; a single corrupted
 //          copy is dropped instead of printed.
-// The FEC-B word table is NOT the ITU-R M.476 table: it is the 32 smallest four-of-seven words, pending a check against M.476.
+// The word table is the ITU-R M.476 / M.625 one (shared with NAVTEX, marine_navtex.cpp); the idle and repeat words print nothing.
 #pragma once
 #include <cstdint>
 #include <string>

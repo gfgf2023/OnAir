@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The pure parts of the touch interface: no ImGui, no App, so the unit tests (tests/app/test_touch.cpp) run them directly.
 //   - Keypad: the number entry behind the on-screen numeric keypad (digits, '.', backspace, a unit) and parseFrequency().
 //   - Gestures: a recogniser fed with up to two pointers per frame (pinch scale, two-finger pan, one-finger pan, long press, swipe).
@@ -193,9 +196,72 @@ inline bool isDrag(float dx, float dy, float slop = 10.f) { return std::hypot(dx
 
 // First start on a small screen (a handheld, a 7 inch Raspberry Pi panel, a cyberdeck, #139): the touch interface is the better start than a
 // desktop layout squeezed into 800 x 480. Only when the user never chose (no saved touch setting) and the usable screen is small.
+// Whether the user already chose: the automatic start was offered once (touchAutoSeen), or the touch interface is on. The saved "touchUi" key alone
+// is not a choice: every save writes it (false by default), so an install from before 3.7 never got the automatic start (#139).
+inline bool touchChosen(bool savedTouchOn, bool autoSeen) { return savedTouchOn || autoSeen; }
 inline bool autoTouch(int workW, int workH, bool chosenBefore) {
     if (chosenBefore || workW <= 0 || workH <= 0) return false;
     return workW <= 1100 || workH <= 560;   // 800 x 480, 1024 x 600, 720 x 720: yes; a 1280 x 720 laptop: no
+}
+
+// ------------------------------------------------------------------------------------------------ control size (#139)
+// Settings > Touch control size (App::touchSize): Small .. Extra large scale the touch interface's button height, paddings and the top bar and
+// dock together; Default (2) is the size the touch interface always had. The 48 px target never falls under 32 px at Small: still a finger.
+constexpr int kTouchSizes = 5, kTouchSizeDefault = 2;
+#ifndef N_
+#define N_(s) s   // i18n.h's marker: the names are translated where they are shown (tr())
+#endif
+inline const char* const* touchSizeNames() { static const char* const n[kTouchSizes] = {N_("Small"), N_("Compact"), N_("Default"), N_("Large"), N_("Extra large")}; return n; }
+inline int clampTouchSize(int level) { return level < 0 ? 0 : level >= kTouchSizes ? kTouchSizes - 1 : level; }
+inline float touchSizeFactor(int level) { static const float f[kTouchSizes] = {0.70f, 0.85f, 1.f, 1.2f, 1.4f}; return f[clampTouchSize(level)]; }
+
+// The touch shell's frame for a display (pixels), the display scale and the control size factor: the top bar and dock rows, how many dock rows,
+// and whether the mode's status line sits above the tabs. A short screen (under 600 px of display-scale height: 640 x 480, 800 x 480) gets
+// tighter bars and, when eight buttons fit across, a one-row dock without the Step button (Step moves to More), so the panels get the height
+// (#139). sideGaps: the item spacing and window padding of one row, in pixels (7 spacings + 2 paddings).
+struct ShellLayout {
+    float target = 48;        // the smallest hit target, px
+    float topH = 0;           // the top bar's buttons
+    float rowH = 0;           // one dock row's buttons
+    int dockRows = 2;
+    bool stepInMore = false;  // the short one-row dock: the Step button is in the More sheet
+    bool shortScreen = false;
+    bool statusOnTop = false; // portrait: the status line above the tabs
+    bool narrow = false;      // under 800 px of display-scale width (#139): the secondary controls fold into More, the main ones get wider
+    bool secondaryInMore = false;   // narrow: Gain and Volume are in the More sheet, not in the dock
+    bool statusFolded = false;      // narrow portrait: the status line above the tabs is behind a toggle (More), off until chosen
+    bool topStateText = true;       // the Running / Stopped word in the top bar (narrow: the Start / Stop button says it, the mode chip gets the room)
+};
+inline float touchTarget(float dpi, float factor) { return std::max(32.f * dpi, 48.f * dpi * factor); }
+// the dock's weights: - 0.8, frequency 3, + 0.8 and Step 1.6 on the tuning row; Start 1.4 and four of 1 on the action row
+constexpr float kDockOneRowWeightNoStep = 0.8f + 3.f + 0.8f + 1.4f + 4.f;
+constexpr float kNarrowWidth = 800.f;
+inline ShellLayout shellLayout(float dispW, float dispH, float dpi, float factor, float sideGaps = 0) {
+    ShellLayout L;
+    if (!(dpi > 0)) dpi = 1;
+    L.target = touchTarget(dpi, factor);
+    L.shortScreen = dispH < 600.f * dpi;
+    L.topH = L.target * (L.shortScreen ? 0.95f : 1.1f);
+    L.rowH = L.target * (L.shortScreen ? 1.0f : 1.15f);
+    const bool wide = dispW >= 1000.f * dpi;
+    // the smallest buttons (- and +, weight 0.8) of a one-row dock without Step must keep 0.8 of a target across
+    const bool eightFit = (dispW - sideGaps) * 0.8f / kDockOneRowWeightNoStep >= 0.8f * L.target;
+    L.narrow = dispW < kNarrowWidth * dpi;
+    L.secondaryInMore = L.narrow;
+    L.topStateText = !L.narrow;
+    // the choice of rows is the same as before (docs/TOUCH-SIZE-4.1.md); a narrow dock has two fewer buttons, so the rest are wider
+    if (wide) L.dockRows = 1;
+    else if (L.shortScreen && eightFit) { L.dockRows = 1; L.stepInMore = true; }
+    else L.dockRows = 2;
+    L.statusOnTop = dispH >= dispW && !L.shortScreen;
+    L.statusFolded = L.narrow && L.statusOnTop;
+    return L;
+}
+// The height the shell leaves to the panels (the body), given the bars, item spacing and window padding: never negative.
+inline float shellBodyHeight(const ShellLayout& L, float dispH, float itemSpacingY, float windowPadY) {
+    const float dock = L.dockRows * L.rowH + (L.dockRows - 1) * itemSpacingY + 2 * windowPadY;
+    const float h = dispH - 2 * windowPadY - L.topH - itemSpacingY - dock - itemSpacingY;
+    return h > 0 ? h : 0;
 }
 
 }   // namespace touch

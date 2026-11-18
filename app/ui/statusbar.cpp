@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The status bar under the spectrum (lamps, lock state, signal readouts, level and quality gauges, advice) and the
 // gain control. Split from toolbar.cpp; the entry points statusBar() and gainControl() are declared in app.h.
 // Each line of the bar is one function: lamps, state and mode readouts, numbers, gauges, notes.
@@ -91,6 +94,7 @@ static void statusState(App& a, bool run, const RxTelemetry& rx) {
         ro(N_("Channel"), "6 MHz");
         snprintf(b, sizeof b, "%d", rx.atsc.fieldParity); ro("Field", b);
         ro("Pilot", tr(rx.atsc.pilot ? "locked" : "-"));
+        if (rx.atsc.mhPresent) { snprintf(b, sizeof b, "%s, %.0f%% %s", tr("present"), rx.atsc.mhSlotShare * 100, tr("of slots")); ro("ATSC-M/H", b); }
     } else if (run && rx.standard == 1 && rx.state >= 1) {
         ro("Mode", "DVB-T");
         ro("FFT", rx.fftN == 8192 ? "8K" : "2K");
@@ -211,8 +215,8 @@ void statusBar(App& a) {
             std::string l1, l2;
             if (mu->summary) mu->summary(a, l1, l2);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("State"); ImGui::SameLine();
-            ImGui::TextUnformatted(!a.engine.running() ? "stopped" : l2.empty() ? "running" : l2.c_str());
+            ImGui::TextDisabled("%s", tr("State")); ImGui::SameLine();
+            ImGui::TextUnformatted(!a.engine.running() ? tr("stopped") : l2.empty() ? tr("running") : l2.c_str());
             flowEnd(); return;
         }
     }

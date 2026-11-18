@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // OnAir Web session manager ("hub"): many listeners, one capture.
 //
 //   pushIq()  (the radio's thread: a copy into a bounded queue, never waits)
@@ -40,6 +43,12 @@ struct HubLimits {
     int publicMaxMin = 0;         // session time limit for open access (0: none)
     int memberMaxMin = 0;         // for password / invite users (an invite's own limit wins)
     int maxFps = 15, maxBins = 2048;
+    int maxAudioRate = 0;         // 0: any of the protocol's rates; else a listener's audio rate is lowered to this (bandwidth and quality)
+    // who may tune or change mode: everyone (the default), only people who gave the password or an invite, the one holder of a time-limited control slot, or nobody
+    enum { CtlEveryone = 0, CtlMembers = 1, CtlSlot = 2, CtlNobody = 3 };
+    int controlMode = CtlEveryone;
+    int controlSlotMin = 5;       // how long one person may hold the slot
+    bool listenerStart = true;    // web_listener_start=0: a listener who may tune cannot start a stopped receiver (only the owner, from /app or --autostart)
     bool spectrum = true;         // web_spectrum=0: audio only, listeners get no spectrum / waterfall rows (the setup window's "audio only")
     int threads = 0;              // worker threads (0: automatic)
     size_t queueBytes = 384 * 1024;   // outgoing queue of one listener
@@ -83,6 +92,10 @@ public:
     void rangesChanged();
     void setLogIp(bool on) { logIp_ = on; }
     void setLog(std::function<void(const std::string&)> f) { log_ = std::move(f); }
+    // The host's receiver, for listeners who press Play while it is stopped (#496). start: starts it (false + err when it fails; called on a
+    // thread of its own, never with a hub lock held). lastError: why the last start failed ("" when it did not). Without them a stopped receiver
+    // is only explained.
+    void setReceiverControl(std::function<bool(std::string&)> start, std::function<std::string()> lastError) { startRx_ = std::move(start); rxError_ = std::move(lastError); }
     void registerDecoder(DecoderFactory f);
     void start();
     void stop();
@@ -107,9 +120,15 @@ public:
     // admin
     std::string usersJson() const;
     bool kick(int id, const std::string& reason);
+    // Blocks the listener's address for `minutes` (0: until the server restarts is NOT meant: 0 means 24 hours at most; the maximum is 7 days) and kicks its sessions.
+    // False: no such session. Bans are in memory only (they end when the server stops).
+    bool ban(int id, int minutes, const std::string& reason);
+    bool unban(const std::string& tag);            // the "address" shown in bansJson (the same tag as in usersJson)
+    std::string bansJson() const;                  // {"bans":[{"address":..., "minutes_left":n}]}
     std::string statsJson() const;
     int userCount() const;
     void setServerInfo(const std::string& name, const std::string& location, const std::string& antenna);
+    std::string controlJson(int id) const;   // {"type":"control",...} as this session sees it
 
 private:
     struct Session;
@@ -117,9 +136,15 @@ private:
     struct Pool;
     mutable std::mutex mu_;              // sessions_, decs_, capture config
     std::map<int, std::shared_ptr<Session>> sessions_;
+    std::map<std::string, double> bans_;   // ip -> unix time the ban ends (under mu_)
     std::map<std::string, std::shared_ptr<SharedDec>> decs_;
     std::map<std::string, DecoderFactory> factories_;
     HubLimits lim_;
+    std::atomic<int> slotHolder_{0};     // the session holding the control slot (0: free)
+    std::atomic<double> slotUntil_{0};   // when it ends
+    std::atomic<bool> slotAnnounced_{true};
+    bool canTune(const Session& s, const HubLimits& L) const;
+    void controlChanged();               // tells every session the new state
     std::atomic<size_t> qCap_{384 * 1024};   // lim_.queueBytes, read without the lock
     WebPolicy policy_;
     std::function<std::string(int, const std::string&, const std::string&)> txHandler_;
@@ -128,6 +153,12 @@ private:
     std::mutex polMu_;
     std::atomic<bool> logIp_{false};
     std::function<void(const std::string&)> log_;
+    std::function<bool(std::string&)> startRx_;
+    std::function<std::string()> rxError_;
+    std::atomic<bool> starting_{false};      // a start asked for by a listener is in progress
+    std::atomic<double> startOkAt_{-1e9};    // when that start last succeeded (wallSeconds): no second start while its first samples are on the way
+    std::thread startThr_;                   // that start (joined in stop() and the destructor)
+    void receiverStopped(Session& s, bool mayTune);   // a tune while no samples come: start the receiver or say why not (under s.m)
     int nextId_ = 1;
     std::string srvName_ = "OnAir Web", srvLoc_, srvAnt_;
 

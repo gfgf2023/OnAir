@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HD Radio AM: the hybrid (MA1) and all-digital (MA3) waveforms through the receiver at the rates the HF radios give (200 ksps, an Airspy
 // HF+ at 912 and 768 ksps, 1 Msps, 2 Msps), with the faults of medium wave: small tuning errors (+-10 to +-100 Hz), +-100 ppm sample
 // clocks, and the slow deep fading of the sky wave at night (the amplitude swinging by 12 dB a few times a minute, and dips of 20 dB).
@@ -116,6 +119,25 @@ int main() {
         auto x = impair::clock(faded(m, 768000, 22, f), -100);
         impair::shift(x, -70, 768000);
         check(m == 3 ? "MA3 combined: 768 ksps, -70 Hz, -100 ppm, fading" : "MA1 combined: 768 ksps, -70 Hz, -100 ppm, fading", m, 768000, x, -70, 4);
+    });
+    // 3.9 acquisition (docs/SENSITIVITY-3.9-E.md): MA1 at 30 dB, no tuning error, started at several points of the signal: the first P1 frame
+    // within 10 s every time (sync after a few blocks plus the diversity delay of about 6 s). 3.8 switched the prefix filter in the middle of
+    // reading the block numbers and needed 11 s for one of these starts, and in a sens_sweep trial never locked at all.
+    for (double startSec : {0.0, 1.0, 4.0, 5.2}) jobs.add([=] {
+        const double r = 250000;
+        std::vector<cf32> x = make(1, r, 16 + startSec, 30);
+        x.erase(x.begin(), x.begin() + (long)(startSec * r));
+        HdrReceiver rx;
+        rx.configure(r);
+        double lockS = -1;
+        uint64_t seq = 0;
+        HdrTelemetry t;
+        for (size_t i = 0; i < x.size() && lockS < 0; i += 20000) {
+            rx.feed(x.data() + i, std::min<size_t>(20000, x.size() - i));
+            if (rx.telemetry(t, seq)) { seq = t.seq; if (t.blocksOk > 0) lockS = (double)(i + 20000) / r; }
+        }
+        jprintf("MA1 at 30 dB, started %.1f s into the signal: first P1 frame after %.2f s\n", startSec, lockS);
+        CHECK(lockS > 0 && lockS < 10.0, "start %.1f s: first P1 frame after %.2f s", startSec, lockS);
     });
     jobs.run();
     if (fails) { printf("%d check(s) failed\n", fails.load()); return 1; }

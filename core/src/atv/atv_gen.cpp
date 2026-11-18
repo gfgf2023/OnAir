@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV test signal, see atv_gen.h.
 //
 //   test card (field by field) -> composite video line by line at 12 Msps, timing from the half-line grid of BT.470-6
@@ -5,15 +8,19 @@
 //   -> interpolation to the output rate (position stepped in double precision, so a clock error is just a different step)
 //   + FM sound carrier made at the output rate, ghost, noise.
 #include "dect2/atv/atv_gen.h"
+#include "dect2/atv/atv_aspect.h"
+#include "dect2/atv/atv_vbi.h"
 #include "dect2/atv/atv_card.h"
 #include "dect2/atv/atv_nbtv.h"
 #include "dect2/atv/atv_sound2.h"
 #include "atv_dsp.h"
 #include "dect2/common/threadpool.h"
+#include "dect2/source/synth_media.h"
 #include "dect2/dsp/dsp_compat.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 namespace dect2 {
 
@@ -145,6 +152,8 @@ struct AtvGenerator::Impl {
         return (double)a * prog.gain(3000.0);
     }
     std::vector<float> liveY, liveU, liveV;
+    std::vector<float> asY, asU, asV;   // the picture of a field fitted into its frame (atv_aspect.h)
+    int aspectWss = -1;                 // the WSS the aspect setting sends (625 lines); -1: the one of the config, if any
     std::vector<cf32> ghost;
     size_t ghostPos = 0;
     NoiseSource noise;
@@ -350,7 +359,7 @@ struct AtvGenerator::Impl {
         cfg.cnrDb = c.cnrDb; cfg.cfoHz = c.cfoHz; cfg.sroPpm = c.sroPpm;
         cfg.echoDb = c.echoDb; cfg.echoDelayUs = c.echoDelayUs; cfg.echoPhaseDeg = c.echoPhaseDeg;
         cfg.syncCompression = c.syncCompression; cfg.humPct = c.humPct; cfg.humHz = c.humHz;
-        cfg.sound = c.sound; cfg.level = c.level;
+        cfg.sound = c.sound; cfg.level = c.level; cfg.aspect = c.aspect;
         step = kFi / cfg.rate / (1.0 + cfg.sroPpm * 1e-6);
         prog.mode = cfg.sound; prog.preUs = fmt.preEmphUs;
         const size_t d = (size_t)std::max(1.0, std::round(cfg.echoDelayUs * 1e-6 * cfg.rate));
@@ -368,7 +377,7 @@ struct AtvGenerator::Impl {
         if (cfg.pullVideo) {
             const int W = fmt.picW, H = fmt.picH;
             liveY.resize((size_t)W * (size_t)H); liveU = liveY; liveV = liveY;
-            if (cfg.pullVideo(W, H, liveY.data(), liveU.data(), liveV.data())) {
+            if (cfg.pullVideo(t, W, H, liveY.data(), liveU.data(), liveV.data())) {
                 const int rows = fmt.fieldRows;
                 for (int k = 0; k < rows; k++) {
                     const int r = std::min(2 * k + fld, H - 1);
@@ -380,7 +389,24 @@ struct AtvGenerator::Impl {
             }
         }
         if (!live) card->renderField(fld, t, frame, fy[fld].data(), fu[fld].data(), fv[fld].data());
+        applyAspect(fld, live);
         fieldFrame[fld] = (int64_t)frame;
+    }
+
+    // The aspect setting (atv_aspect.h): the source (a camera or file of its own aspect, or the 4:3 test card) is fitted into a 4:3 or an anamorphic 16:9
+    // frame without distortion, and the matching WSS is chosen for line 23. A source of the frame's own aspect is left alone (the default does nothing).
+    void applyAspect(int fld, bool live) {
+        double src = kAtvAspectValue43;
+        if (live && cfg.pullAspect) { const double a = cfg.pullAspect(); if (a > 0.1 && a < 10) src = a; }
+        const int frame = atvTxFrame(cfg.aspect, src);
+        aspectWss = fmt.lines == 625 ? atvTxWss(cfg.aspect, frame) : -1;
+        const AtvFit fit = atvFitSource(src, frame == kAtvAspect169 ? kAtvAspectValue169 : kAtvAspectValue43);
+        if (fit.identity()) return;
+        const size_t n = fy[fld].size();
+        if (n != (size_t)fmt.picW * (size_t)fmt.fieldRows) return;
+        asY.resize(n); asU.resize(n); asV.resize(n);
+        atvFitPlanes(fy[fld].data(), fu[fld].data(), fv[fld].data(), fmt.picW, fmt.fieldRows, fit, asY.data(), asU.data(), asV.data());
+        fy[fld].swap(asY); fu[fld].swap(asU); fv[fld].swap(asV);
     }
 
     // the tables of the picture part for lines whose first sample is u0 microseconds after the line start (see PicTab)
@@ -413,6 +439,55 @@ struct AtvGenerator::Impl {
             T.sT[(size_t)q] = (float)std::sin(j * dphi);
         }
         T.built = true;
+    }
+
+    // Teletext, WSS and line 21 captions in the blanking lines of the test signal: the level (white 1) of the pattern at time u in the line
+    void vbiData(int line, uint64_t frame, int count, float u0, float dtUs) {
+        const AtvFormat& F = fmt;
+        const auto bitsAt = [&](const std::vector<uint8_t>& b, double u, double start, double T, double amp) {
+            const double x = (u - start) / T - 0.5;
+            if (x < -1 || x >= (double)b.size()) return 0.0;
+            const int i = (int)std::floor(x); const double f = x - i, c = 0.5 - 0.5 * std::cos(kPi * f);
+            const double a = i >= 0 && i < (int)b.size() ? b[(size_t)i] : 0, d = i + 1 < (int)b.size() ? b[(size_t)(i + 1)] : 0;
+            return amp * (a * (1 - c) + d * c);
+        };
+        std::vector<uint8_t> bits; double start = 0, T = 1, amp = 0;
+        if (F.lines == 625 && cfg.vbiTestLine > 0) {   // insertion test lines (smart5/vits.h): a white bar on the line, a multiburst on the next
+            const int L = line > 313 ? line - 313 : line;
+            if (L == cfg.vbiTestLine) {
+                for (int j = 0; j < count; j++) { const double u = u0 + j * dtUs; if (u >= 12 && u < 22) lineV[(size_t)j] += 1.0f; }   // 100 IRE
+                return;
+            }
+            if (L == cfg.vbiTestLine + 1) {   // 50 IRE pedestal 12 - 62 us, packets of 6.5 us at 0.5, 1, 2, 3 and 4 MHz, 30 IRE
+                static const double mhz[5] = {0.5, 1.0, 2.0, 3.0, 4.0};
+                for (int j = 0; j < count; j++) {
+                    const double u = u0 + j * dtUs;
+                    double v = u >= 12 && u < 62 ? 0.5 : 0;
+                    for (int k = 0; k < 5; k++) { const double a = 14 + k * 9.5; if (u >= a && u < a + 6.5) v = 0.5 + 0.3 * std::sin(2 * kPi * mhz[k] * (u - a)); }
+                    lineV[(size_t)j] += (float)v;
+                }
+                return;
+            }
+        }
+        if (F.lines == 625 && cfg.vbiTeletext && ((line >= 7 && line <= 22) || (line >= 320 && line <= 335))) {
+            static const char* const body = "ONAIR TELETEXT TEST ROW";
+            const int k = (int)(((frame * 32 + (uint64_t)(line < 100 ? line - 7 : line - 320 + 16)) % 24));
+            bits = k == 0 ? atvTtxPacketBits(1, 0, 0x00, "ONAIR TEST PAGE") : atvTtxPacketBits(1, k, 0, std::string(body) + " " + std::to_string(k));
+            T = 1.0 / 6.9375; start = 12.0 - 12.5 * T; amp = 0.66;
+        } else if (F.lines == 625 && (aspectWss >= 0 || cfg.vbiWss >= 0) && line == 23) {
+            bits = atvWssElements(aspectWss >= 0 ? aspectWss : cfg.vbiWss); T = 0.2; start = 11.0; amp = 0.714;
+        } else if (F.lines == 525 && !cfg.vbiCaptions.empty() && line == 21) {
+            const size_t i = (size_t)frame * 2 % cfg.vbiCaptions.size();
+            const uint8_t c1 = (uint8_t)cfg.vbiCaptions[i], c2 = i + 1 < cfg.vbiCaptions.size() ? (uint8_t)cfg.vbiCaptions[i + 1] : (uint8_t)' ';
+            bits = atvCcBits(c1, c2); T = 1.0 / 0.5034965; start = 27.4; amp = 0.5;
+            for (int j = 0; j < count; j++) { const float u = u0 + j * dtUs; if (u > 10.5f && u < 10.5 + 7 * T) lineV[(size_t)j] += (float)(0.25 - 0.25 * std::cos(2 * kPi * (u - 10.5) / T)); }
+        } else return;
+        if (F.lines == 625 && line == 23) {   // WSS: the first half of line 23 is blanked for it (EN 300 294), the picture would sit under the bits
+            const double end = start + (bits.size() + 1) * T;
+            for (int j = 0; j < count; j++) { const float u = u0 + j * dtUs; if (u >= start - T && u < end) lineV[(size_t)j] = (float)bitsAt(bits, u, start, T, amp); }
+            return;
+        }
+        for (int j = 0; j < count; j++) { const float u = u0 + j * dtUs; lineV[(size_t)j] += (float)bitsAt(bits, u, start, T, amp); }
     }
 
     // ---- one line of composite video, appended as carrier amplitude to a[]
@@ -568,6 +643,7 @@ struct AtvGenerator::Impl {
             }
         }
         if (F.secam && type[0] == 1) secamChroma(line, li, fld, k, nStart, count, u0, dtUs);
+        vbiData(line, frame, count, u0, dtUs);
         if (tap) tap(lineV.data(), (size_t)count);
         // composite -> carrier amplitude
         const float m = (float)((100.0 - F.whitePct) / 100.0), sL = (float)F.syncLevel, comp = (float)cfg.syncCompression;
@@ -820,7 +896,23 @@ public:
     bool configure(const SynthConfig& s) override {
         AtvGenConfig c = gen_.config();
         if (!fromSynth(s, gen_.config().rate, c)) return false;
+        if (synthMediaOf(s).key() != mediaKey) return false;   // another file: a new generator
         return gen_.update(c);
+    }
+    std::string mediaKey = synthMediaOf(SynthConfig()).key();
+    // Synthetic content (synth_media.h; the picture is fitted into the frame with black bars by the reader): the picture or video of the user's file is the picture, its (or the chosen) sound the sound carrier
+    static void attachMedia(const SynthConfig& s, AtvGenConfig& c) {
+        if (auto v = synthMediaVideoFor(s)) {
+            auto mu = std::make_shared<std::mutex>();
+            auto buf = std::make_shared<std::vector<uint8_t>>();
+            c.pullVideo = [v, mu, buf](double t, int w, int h, float* y, float* u, float* vv) {
+                std::lock_guard<std::mutex> lk(*mu);
+                if (!v->rgb(t, w, h, *buf)) return false;
+                for (size_t i = 0, n = (size_t)w * (size_t)h; i < n; i++) atvRgbToYuv((*buf)[3 * i] / 255.f, (*buf)[3 * i + 1] / 255.f, (*buf)[3 * i + 2] / 255.f, y[i], u[i], vv[i]);
+                return true;
+            };
+        }
+        if (auto a = synthMediaAudioFor(s, 120)) c.pullAudio = [a](float* st, int n) { return a->read(st, n); };
     }
     static bool fromSynth(const SynthConfig& s, double rate, AtvGenConfig& c) {
         static const int kSys[13] = {kAtvG, kAtvB, kAtvI, kAtvDK, kAtvM, kAtvN, kAtvA, kAtvC, kAtvE, kAtvH, kAtvKp, kAtvL, kAtvLp};
@@ -895,8 +987,12 @@ std::unique_ptr<ModeSynth> makeAtvSynth(const SynthConfig& cfg, double sampleRat
     if (!extra.ident.empty()) c.ident = extra.ident;
     if (extra.pullAudio) c.pullAudio = extra.pullAudio;
     if (extra.pullVideo) c.pullVideo = extra.pullVideo;
+    if (extra.pullAspect) c.pullAspect = extra.pullAspect;
+    c.aspect = extra.aspect;
+    if (!c.pullVideo && !c.pullAudio) AtvSynth::attachMedia(cfg, c);
     auto s = std::make_unique<AtvSynth>(c);
     if (!s->ok()) return nullptr;
+    if (!extra.pullVideo && !extra.pullAudio) s->mediaKey = synthMediaOf(cfg).key();
     return s;
 }
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // TCI (Transceiver Control Interface of Expert Electronics' ExpertSDR3, spec 1.9 to 2.1; also served by SunSDR and other programs), receive only. A WebSocket
 // connection (ws://host:50001): text messages hold commands "name:arg,arg;" (several per message), binary messages hold stream blocks of a 64-byte
 // header (16 little-endian uint32: receiver, sample_rate, format, codec, crc, length, type, channels, reserv[8]) and the samples. After connecting the
@@ -8,10 +11,12 @@
 // Assumed (marked ASSUMED): the URL path "/", length being the real-sample count (the payload size is used instead), the VFO following the DDS being
 // accepted when it stays in the panorama, no RF gain existing (TCI has none for the receiver: only the AGC, which stays the server's).
 #include "../net/tcp_client.h"
+#include "dect2/common/diag.h"
 #include "../net/ws_client.h"
 #include "native_common.h"
 #include "dect2/net/netradio.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -86,27 +91,44 @@ std::string addrOf(const std::string& host, int port) { return (host.find(':') !
 bool connectAndAsk(WsClient& ws, const std::string& host, int port, int timeoutMs, TciInfo& info, std::string& err) {
     const std::string addr = addrOf(host, port);
     const sock_t s = tcpConnect(host, port, timeoutMs, err);
-    if (s == kBadSock) { err = "cannot connect to a TCI server at " + addr + ": " + err +
+    if (s == kBadSock) { DIAG_ERROR(975921, "Connecting to the TCI server at %s failed (%s), so the source stays closed.", addr.c_str(), err.c_str()); err = "cannot connect to a TCI server at " + addr + ": " + err +
         " (the TCI server is a part of ExpertSDR3 on the computer the SunSDR is connected to, not of the SunSDR itself: start ExpertSDR3, switch TCI on in its settings"
         " and, to reach it from another computer, set its TCI address to 0.0.0.0 instead of 127.0.0.1)"; return false; }
     ws.attach(s);
     sockRecvTimeout(s, timeoutMs);
     std::string e;
-    if (!ws.handshake(host, port, kPath, e)) { err = addr + ": " + e; return false; }
+    if (!ws.handshake(host, port, kPath, e)) { DIAG_ERROR(348271, "The WebSocket handshake with the TCI server at %s failed (%s), so the source stays closed.", addr.c_str(), e.c_str()); err = addr + ": " + e; return false; }
     std::vector<unsigned char> m;
     Cmds cs;
     for (int k = 0; k < 256 && !info.ready; k++) {
         const auto kind = ws.readMessage(m, kMaxMessage);
         if (kind == WsClient::Kind::Timeout) break;
-        if (kind == WsClient::Kind::Closed || kind == WsClient::Kind::Bad) { err = addr + " closed the connection or sent bad data"; return false; }
+        if (kind == WsClient::Kind::Closed || kind == WsClient::Kind::Bad) { DIAG_ERROR(886132, "The TCI server at %s closed the connection or sent bad data during start-up, so the source stays closed.", addr.c_str()); err = addr + " closed the connection or sent bad data"; return false; }
         if (kind == WsClient::Kind::Text && tciParseCommands(std::string(m.begin(), m.end()), cs)) absorb(cs, info);
     }
-    if (!info.ready && !info.haveProto) { err = addr + " answered, but not as a TCI server (no protocol or ready command); is it the TCI port (default 50001)?"; return false; }
+    if (!info.ready && !info.haveProto) { DIAG_ERROR(953443, "The server at %s answered but not as a TCI server, so the source stays closed (is it the TCI port, default 50001?).", addr.c_str()); err = addr + " answered, but not as a TCI server (no protocol or ready command); is it the TCI port (default 50001)?"; return false; }
     return true;
 }
 
 void closeWs(WsClient& ws) {
-    if (ws.sock() != kBadSock) { ws.sendClose(); sockShutdown(ws.sock()); sockClose(ws.sock()); ws.attach(kBadSock); }
+    if (ws.sock() == kBadSock) return;
+    // A graceful end: the commands sent last (iq_stop) must reach the server. Closing a socket that still has unread IQ in its receive queue
+    // makes Windows send a reset, and the reset throws away what was sent but not yet read by the server (iq_stop never arrived there).
+    // So: the close frame, the send side shut, and the incoming data read away for a moment until the server ends the stream or goes quiet.
+    ws.sendClose();
+#ifdef _WIN32
+    shutdown(ws.sock(), SD_SEND);
+#else
+    shutdown(ws.sock(), SHUT_WR);
+#endif
+    sockRecvTimeout(ws.sock(), 100);
+    {
+        char junk[8192];
+        const auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(400) && sockRecv(ws.sock(), junk, sizeof junk) > 0) {}
+    }
+    sockClose(ws.sock());
+    ws.attach(kBadSock);
 }
 
 } // namespace
@@ -157,10 +179,10 @@ protected:
     bool openDevice(const TuneSettings& s, std::string& err) override {
         std::string host;
         int port = 0;
-        if (!splitHostPort(addr_, host, port)) { err = "TCI: bad address " + addr_ + " (host:port)"; openFailure_ = OpenFailure::Final; return false; }
+        if (!splitHostPort(addr_, host, port)) { DIAG_ERROR(543843, "The TCI address %s is not in host:port form, so no connection is tried.", addr_.c_str()); err = "TCI: bad address " + addr_ + " (host:port)"; openFailure_ = OpenFailure::Final; return false; }
         TciInfo info;
         std::string e;
-        if (!connectAndAsk(ws_, host, port, kConnectMs, info, e)) { err = "TCI: " + e; openFailure_ = OpenFailure::Retry; return false; }
+        if (!connectAndAsk(ws_, host, port, kConnectMs, info, e)) { DIAG_ERROR(457869, "Connecting to the TCI server %s failed (%s), so the source stays closed.", addr_.c_str(), e.c_str()); err = "TCI: " + e; openFailure_ = OpenFailure::Retry; return false; }
         noteInfo(addr_, info);
         { std::lock_guard<std::mutex> lk(infoMu_); info_ = info; }
         sentFreq_ = sentRate_ = -1;
@@ -221,7 +243,7 @@ protected:
             const auto kind = ws_.readMessage(m, kMaxMessage);
             if (kind == WsClient::Kind::Timeout && !gotIq) { fprintf(stderr, "TCI: connected to %s but no IQ arrived in %d s (is the radio switched on in ExpertSDR3, and is the receiver number right?)\n", addr_.c_str(), kStallMs / 1000); fflush(stderr); }
             if (kind == WsClient::Kind::Closed || kind == WsClient::Kind::Timeout) break;
-            if (kind == WsClient::Kind::Bad) { fprintf(stderr, "TCI: bad data from %s, dropping the connection\n", addr_.c_str()); fflush(stderr); break; }
+            if (kind == WsClient::Kind::Bad) { DIAG(935324, "The TCI server %s sent bad data, so the connection is dropped.", addr_.c_str()); fprintf(stderr, "TCI: bad data from %s, dropping the connection\n", addr_.c_str()); fflush(stderr); break; }
             if (kind == WsClient::Kind::Text) {
                 if (!tciParseCommands(std::string(m.begin(), m.end()), cs)) continue;
                 TciInfo i;
@@ -265,12 +287,20 @@ protected:
         }
         if (bad) { fprintf(stderr, "TCI: %llu malformed or unusable blocks ignored\n", (unsigned long long)bad); fflush(stderr); }
         if (run_) {
-            fprintf(stderr, "TCI: lost the connection to the server at %s\n", addr_.c_str());
+             DIAG(966498, "The connection to the TCI server at %s was lost, so the source tries to reconnect.", addr_.c_str());
+             fprintf(stderr, "TCI: lost the connection to the server at %s\n", addr_.c_str());
             fflush(stderr);
             lostAt_ = std::chrono::steady_clock::now();
         }
     }
-    void interrupt() override {   /* read side only: closeDevice still has to send iq_stop */ if (ws_.sock() != kBadSock) sockShutdownRead(ws_.sock()); }
+    void interrupt() override {   /* read side only: closeDevice still has to send iq_stop */
+        if (ws_.sock() == kBadSock) return;
+#ifdef _WIN32
+        sockRecvTimeout(ws_.sock(), 50);   // Windows answers data that arrives after shutdown(SD_RECEIVE) with a reset: that would cut the connection before iq_stop is sent. A short receive timeout ends the read loop instead
+#else
+        sockShutdownRead(ws_.sock());
+#endif
+    }
 
 private:
     std::string addr_;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Vulkan compute LDPC decoder (Linux: NVIDIA, AMD, Intel and any other Vulkan 1.0 driver; no CUDA). The kernels are the Metal ones ported to
 // GLSL (core/src/dsp/vulkan/*.comp) and compiled once to SPIR-V that is committed (vulkan/ldpc_spirv.h, tools/gen_vulkan_spirv.sh), so the
 // build needs neither a shader compiler nor the Vulkan SDK: the loader (libvulkan.so.1) is opened at run time and the few declarations used
@@ -7,6 +10,7 @@
 // Environment: DECT2_NOGPU or DECT2_VULKAN=0 force the CPU decoder; DECT2_VULKAN=1 also accepts a CPU implementation of Vulkan (lavapipe,
 // SwiftShader: slower than the CPU decoder, skipped otherwise; for tests); DECT2_GPU_ADAPTER=<index> picks a device by its Vulkan index.
 #include "dect2/dsp/gpu_ldpc.h"
+#include "dect2/common/diag.h"
 #include "dect2/common/stable_random.h"
 #include "dect2/t2/t2fec.h"
 #include "vulkan/ldpc_spirv.h"
@@ -54,7 +58,11 @@ void* openLoader() {
     for (const char* n : {"libvulkan.1.dylib", "libMoltenVK.dylib"}) if (void* h = dlopen(n, RTLD_NOW | RTLD_LOCAL)) return h;
     return nullptr;
 #else
-    for (const char* n : {"libvulkan.so.1", "libvulkan.so"}) if (void* h = dlopen(n, RTLD_NOW | RTLD_LOCAL)) return h;
+    // the plain names first (the dynamic linker's search path), then the usual distribution directories for a loader outside it (an AppImage or
+    // a Flatpak sandbox changes the search path; a 64-bit Debian, Fedora or Arch layout)
+    for (const char* n : {"libvulkan.so.1", "libvulkan.so", "/usr/lib/x86_64-linux-gnu/libvulkan.so.1", "/usr/lib/aarch64-linux-gnu/libvulkan.so.1",
+                          "/usr/lib64/libvulkan.so.1", "/usr/lib/libvulkan.so.1", "/lib/x86_64-linux-gnu/libvulkan.so.1", "/usr/lib/x86_64-linux-gnu/GL/default/lib/libvulkan.so.1"})
+        if (void* h = dlopen(n, RTLD_NOW | RTLD_LOCAL)) return h;
     return nullptr;
 #endif
 }
@@ -138,6 +146,9 @@ struct GpuLdpc::Impl {
     PhysicalDeviceProperties props{};
     PhysicalDeviceMemoryProperties memProps{};
     std::string name = "none";
+    std::string reason = "the GPU decoder was not started";   // why it is not usable, for the Settings line
+    std::string deviceLog;                                      // one entry per Vulkan device seen, with why it was skipped
+    void note(const std::string& r) { reason = r; fprintf(stderr, "GpuLdpc: %s, using the CPU decoder\n", r.c_str()); }
     std::mutex mu;                     // every use of the queue and the buffers
     std::atomic<bool> ready{false};    // the T2/S2 kernel works (cleared for good when the device is lost)
     std::atomic<bool> qcReady{false};  // the DTMB kernel works
@@ -197,12 +208,12 @@ struct GpuLdpc::Impl {
     // ---- setup
     bool loadInstance() {
         lib = openLoader();
-        if (!lib) { fprintf(stderr, "GpuLdpc: no Vulkan loader (libvulkan), using the CPU decoder\n"); return false; }
+        if (!lib) { DIAG(543508, "No Vulkan loader (libvulkan) was found, so the CPU LDPC decoder is used."); note("no Vulkan loader found (libvulkan.so.1 is not installed: install your distribution's libvulkan1 / vulkan-icd-loader package)"); return false; }
         gipa = (PFN_GetInstanceProcAddr)loaderSym(lib, "vkGetInstanceProcAddr");
-        if (!gipa) { fprintf(stderr, "GpuLdpc: the Vulkan loader has no vkGetInstanceProcAddr, using the CPU decoder\n"); return false; }
+        if (!gipa) { DIAG(780588, "The Vulkan loader has no vkGetInstanceProcAddr entry point, so the CPU LDPC decoder is used."); note("the Vulkan loader has no vkGetInstanceProcAddr"); return false; }
         auto createInstance = (PFN_CreateInstance)gipa(nullptr, "vkCreateInstance");
         auto enumExt = (PFN_EnumerateInstanceExtensionProperties)gipa(nullptr, "vkEnumerateInstanceExtensionProperties");
-        if (!createInstance) return false;
+        if (!createInstance) { DIAG_DEBUG(695999, "The Vulkan loader has no vkCreateInstance entry point, so the CPU LDPC decoder is used."); return false; }
         // MoltenVK and other layered implementations are only listed with the portability enumeration extension
         bool portability = false;
         if (enumExt) {
@@ -218,7 +229,7 @@ struct GpuLdpc::Impl {
         InstanceCreateInfo ci{ST_INSTANCE_CREATE_INFO, nullptr, portability ? (Flags)INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0u, &app, 0, nullptr,
                               portability ? 1u : 0u, portability ? exts : nullptr};
         const Result r = createInstance(&ci, nullptr, &inst);
-        if (r != SUCCESS) { fprintf(stderr, "GpuLdpc: vkCreateInstance failed (%d), using the CPU decoder\n", (int)r); inst = nullptr; return false; }
+        if (r != SUCCESS) { DIAG(410293, "Creating the Vulkan instance failed with result %d, so the CPU LDPC decoder is used.", (int)r); note("vkCreateInstance failed (" + std::to_string((int)r) + ((int)r == -9 ? ": no Vulkan driver (ICD) could be loaded; for an AMD GPU install mesa-vulkan-drivers" : "") + ")"); inst = nullptr; return false; }
 #define VKI(n) n = (PFN_##n)gipa(inst, "vk" #n); if (!n) return false;
         VKI(DestroyInstance) VKI(EnumeratePhysicalDevices) VKI(GetPhysicalDeviceProperties) VKI(GetPhysicalDeviceQueueFamilyProperties)
         VKI(GetPhysicalDeviceMemoryProperties) VKI(CreateDevice) VKI(GetDeviceProcAddr) VKI(EnumerateDeviceExtensionProperties)
@@ -228,7 +239,7 @@ struct GpuLdpc::Impl {
 
     bool pickDevice(bool allowCpu) {
         uint32_t n = 0;
-        if (EnumeratePhysicalDevices(inst, &n, nullptr) != SUCCESS || n == 0) { fprintf(stderr, "GpuLdpc: no Vulkan device, using the CPU decoder\n"); return false; }
+        if (EnumeratePhysicalDevices(inst, &n, nullptr) != SUCCESS || n == 0) { DIAG(163928, "The Vulkan loader lists no device, so the CPU LDPC decoder is used."); note("the Vulkan loader lists no device (no Vulkan driver for this GPU; for AMD install mesa-vulkan-drivers, and check /dev/dri access)"); return false; }
         std::vector<PhysicalDevice> pds(n);
         if (EnumeratePhysicalDevices(inst, &n, pds.data()) < 0) return false;
         const char* fe = getenv("DECT2_GPU_ADAPTER");
@@ -249,6 +260,7 @@ struct GpuLdpc::Impl {
             const bool cpu = p.deviceType == PHYSICAL_DEVICE_TYPE_CPU;
             const char* why = fam < 0 ? "no compute queue" : !limitsOk ? "limits too small" : (cpu && !allowCpu) ? "a CPU implementation (DECT2_VULKAN=1 to use it)" : nullptr;
             fprintf(stderr, "GpuLdpc: Vulkan device %u: %s (type %u)%s%s\n", i, p.deviceName, p.deviceType, why ? ": skipped, " : "", why ? why : "");
+            if (why) deviceLog += (deviceLog.empty() ? "" : "; ") + std::string(p.deviceName) + ": " + why;
             if (why && forced != (int)i) continue;
             if (fam < 0 || !limitsOk) continue;
             static const int typeScore[5] = {1, 3, 4, 2, 0};   // other, integrated, discrete, virtual, CPU
@@ -256,7 +268,7 @@ struct GpuLdpc::Impl {
             if (forced >= 0 && forced != (int)i) score = -1;
             if (score > bestScore) { bestScore = score; phys = pds[i]; props = p; family = (uint32_t)fam; }
         }
-        if (!phys) { fprintf(stderr, "GpuLdpc: no usable Vulkan device, using the CPU decoder\n"); return false; }
+        if (!phys) { DIAG(469245, "No Vulkan device has a compute queue and the limits the LDPC kernels need, so the CPU LDPC decoder is used."); note("no usable Vulkan device (" + deviceLog + ")"); return false; }
         GetPhysicalDeviceMemoryProperties(phys, &memProps);
         name = props.deviceName;
         return true;
@@ -275,8 +287,8 @@ struct GpuLdpc::Impl {
         }
         DeviceCreateInfo dci{ST_DEVICE_CREATE_INFO, nullptr, 0, 1, &qi, 0, nullptr, (uint32_t)exts.size(), exts.empty() ? nullptr : exts.data(), nullptr};
         const Result r = CreateDevice(phys, &dci, nullptr, &dev);
-        if (r != SUCCESS) { fprintf(stderr, "GpuLdpc: vkCreateDevice failed (%d), using the CPU decoder\n", (int)r); dev = nullptr; return false; }
-#define VKD(n) n = (PFN_##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { fprintf(stderr, "GpuLdpc: Vulkan entry point vk" #n " missing\n"); return false; }
+        if (r != SUCCESS) { DIAG(972844, "Creating the Vulkan device failed with result %d, so the CPU LDPC decoder is used.", (int)r); note("vkCreateDevice failed on \"" + name + "\" (" + std::to_string((int)r) + ")"); dev = nullptr; return false; }
+#define VKD(n) n = (PFN_##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { note("the driver lacks Vulkan entry point vk" #n); return false; }
         VKD(DestroyDevice) VKD(GetDeviceQueue) VKD(DeviceWaitIdle) VKD(CreateBuffer) VKD(DestroyBuffer) VKD(GetBufferMemoryRequirements)
         VKD(AllocateMemory) VKD(FreeMemory) VKD(BindBufferMemory) VKD(MapMemory) VKD(UnmapMemory) VKD(CreateShaderModule) VKD(DestroyShaderModule)
         VKD(CreateDescriptorSetLayout) VKD(DestroyDescriptorSetLayout) VKD(CreatePipelineLayout) VKD(DestroyPipelineLayout)
@@ -312,7 +324,7 @@ struct GpuLdpc::Impl {
                                      {ST_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, SHADER_STAGE_COMPUTE_BIT, m, "main", spec}, pl, 0, -1};
         Pipeline p = 0;
         const Result r = CreateComputePipelines(dev, 0, 1, &ci, nullptr, &p);
-        if (r != SUCCESS) { fprintf(stderr, "GpuLdpc: Vulkan pipeline creation failed (%d)\n", (int)r); return 0; }
+        if (r != SUCCESS) { fprintf(stderr, "GpuLdpc: Vulkan pipeline creation failed (%d)\n", (int)r); DIAG(550299, "Creating a Vulkan compute pipeline failed with result %d, so that LDPC kernel is not used.", (int)r); return 0; }
         return p;
     }
     Pipeline qcPipeline(int z, int lvFloats) {
@@ -344,8 +356,9 @@ struct GpuLdpc::Impl {
         GetBufferMemoryRequirements(dev, b.b, &mr);
         const int t = host ? memType(mr.memoryTypeBits, MEMORY_PROPERTY_HOST_VISIBLE_BIT | MEMORY_PROPERTY_HOST_COHERENT_BIT, MEMORY_PROPERTY_HOST_CACHED_BIT)
                            : memType(mr.memoryTypeBits, MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-        if (t < 0) { free(b); return false; }
-        MemoryAllocateInfo ai{ST_MEMORY_ALLOCATE_INFO, nullptr, mr.size, (uint32_t)t};
+        const int t2 = (t < 0 && !host) ? memType(mr.memoryTypeBits, 0, 0) : t;   // no device-local type for it (some integrated GPUs): any type
+        if (t2 < 0) { free(b); return false; }
+        MemoryAllocateInfo ai{ST_MEMORY_ALLOCATE_INFO, nullptr, mr.size, (uint32_t)t2};
         if (AllocateMemory(dev, &ai, nullptr, &b.m) != SUCCESS) { b.m = 0; free(b); return false; }
         if (BindBufferMemory(dev, b.b, b.m, 0) != SUCCESS) { free(b); return false; }
         if (host && MapMemory(dev, b.m, 0, WHOLE_SIZE, 0, &b.map) != SUCCESS) { b.map = nullptr; free(b); return false; }
@@ -379,8 +392,10 @@ struct GpuLdpc::Impl {
     bool fail(const char* where, Result r) {
         if (r == ERROR_DEVICE_LOST || r == TIMEOUT || r == -1) {
             const bool wasT2 = ready.exchange(false), wasQc = qcReady.exchange(false);
-            if (wasT2 || wasQc)
+            if (wasT2 || wasQc) {
                 fprintf(stderr, "GpuLdpc: the Vulkan device failed (%s, %d), using the CPU decoder from now on\n", where, (int)r);
+                DIAG(486849, "The Vulkan device failed during %s with result %d, so the CPU LDPC decoder is used from now on.", where, (int)r);
+            }
         }
         return false;
     }
@@ -477,18 +492,20 @@ struct GpuLdpc::Impl {
     bool init() {
         const char* ev = getenv("DECT2_VULKAN");
         if (getenv("DECT2_NOGPU") || (ev && (!strcmp(ev, "0") || !strcmp(ev, "cpu") || !strcmp(ev, "off")))) {
-            fprintf(stderr, "GpuLdpc: GPU decoder switched off by the environment, using the CPU decoder\n");
+            DIAG(581705, "The GPU LDPC decoder is switched off by DECT2_NOGPU or DECT2_VULKAN, so the CPU LDPC decoder is used.");
+            note("switched off by the environment (DECT2_NOGPU or DECT2_VULKAN=0)");
             return false;
         }
         const bool force = ev && (!strcmp(ev, "1") || !strcmp(ev, "force") || !strcmp(ev, "on"));
         if (!loadInstance() || !pickDevice(force) || !createDevice()) return false;
         if (!layout(11, sizeof(T2Push), t2Dsl, t2Layout) || !layout(7, sizeof(QcPush), qcDsl, qcLayout) ||
             !makeModule(k_ldpc_t2_spv, sizeof k_ldpc_t2_spv, t2Module) || !makeModule(k_ldpc_qc_spv, sizeof k_ldpc_qc_spv, qcModule)) {
-            fprintf(stderr, "GpuLdpc: Vulkan shader setup failed on \"%s\", using the CPU decoder\n", name.c_str());
+            DIAG(899988, "Setting up the Vulkan LDPC shaders failed on \"%s\", so the CPU LDPC decoder is used.", name.c_str());
+            note("Vulkan shader setup failed on \"" + name + "\"");
             return false;
         }
         t2Pipe = pipeline(t2Module, t2Layout, nullptr);
-        if (!t2Pipe) { fprintf(stderr, "GpuLdpc: Vulkan pipeline failed on \"%s\", using the CPU decoder\n", name.c_str()); return false; }
+        if (!t2Pipe) { DIAG(537823, "Creating the Vulkan LDPC pipeline failed on \"%s\", so the CPU LDPC decoder is used.", name.c_str()); note("Vulkan pipeline creation failed on \"" + name + "\" (the driver rejected the decoder kernel)"); return false; }
         return true;
     }
 
@@ -534,7 +551,8 @@ GpuLdpc::GpuLdpc() : p_(new Impl) {
     if (!selfTest()) {
         d.ready = false;
         d.qcReady = false;
-        fprintf(stderr, "GpuLdpc: self-test failed on \"%s\", using the CPU decoder\n", d.name.c_str());
+        DIAG(989135, "The Vulkan LDPC self-test gave a wrong result on \"%s\", so the CPU LDPC decoder is used.", d.name.c_str());
+        d.note("the decoder self-test failed on \"" + d.name + "\" (the driver gave a wrong result, so the CPU is used to be safe)");
         return;
     }
     fprintf(stderr, "GpuLdpc: using Vulkan device \"%s\"%s\n", d.name.c_str(), d.qcReady ? "" : " (DTMB on the CPU)");
@@ -590,7 +608,7 @@ bool GpuLdpc::selfTest() {
             qcReference(q, &llr[(size_t)b * sent], 12, 0.6f, ri, rok, rit);
             good = rok == (bool)ok[(size_t)b] && rit == it[(size_t)b] && std::memcmp(ri.data(), &info[(size_t)b * q.infoBits()], ri.size()) == 0;
         }
-        if (!good) { d.qcReady = false; fprintf(stderr, "GpuLdpc: DTMB kernel self-test failed on \"%s\": DTMB decodes on the CPU\n", d.name.c_str()); }
+        if (!good) { d.qcReady = false; fprintf(stderr, "GpuLdpc: DTMB kernel self-test failed on \"%s\": DTMB decodes on the CPU\n", d.name.c_str()); DIAG(973839, "The Vulkan DTMB LDPC self-test gave a wrong result on \"%s\", so DTMB LDPC decodes on the CPU.", d.name.c_str()); }
     }
     return d.ready;
 }
@@ -598,6 +616,7 @@ bool GpuLdpc::selfTest() {
 GpuLdpc::~GpuLdpc() = default;
 GpuLdpc& GpuLdpc::instance() { static GpuLdpc g; return g; }
 bool GpuLdpc::available() const { return p_->ready; }
+const char* GpuLdpc::unavailableReason() const { return p_->ready ? "" : p_->reason.c_str(); }
 const char* GpuLdpc::deviceName() const { return p_->name.c_str(); }
 
 bool GpuLdpc::decode(const LdpcCode& code, const float* llr, int nb, int maxIter, uint8_t* hard, uint8_t* ok, int* iters, float alpha, bool /*boxCorr: plain min-sum here*/) {

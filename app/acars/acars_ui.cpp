@@ -1,9 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ACARS screens: the message list with a detail pane, the aircraft table and the channel bars.
+#include "../d40/d40_ui.h"
+#include "acars_wx_ui.h"
 #include "dect2/common/time_fmt.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/session_list.h"
 #include "ui/kit/mode_frame.h"
 #include "../panels/photo_links_ui.h"
 #include "../adsb/adsb_map.h"
+#include "../adsb/ac_card.h"
 #include "app.h"
 #include "map/pos_predict.h"
 #include "map/derived_kin.h"
@@ -113,6 +120,7 @@ void feedEstimates(const dect2::AcarsTelemetry& t) {
 void tick(App& a) {
     loadState();
     feedEstimates(a.rx.acars);
+    for (auto it = a.rx.acars.messages.rbegin(); it != a.rx.acars.messages.rend(); ++it) acarsWxFeed(0, it->serial, it->text, it->wallTime);   // airport weather (3.9)
     if (!a.engine.running()) { S.wasRunning = false; S.pushedCenter = 0; S.pushedThr = -1; S.pushedChans[0] = '\x01'; S.pushedChans[1] = 0; return; }
     dect2::AcarsReceiver& r = a.engine.acars();
     if (S.pushedCenter != a.freqMhz) { r.setCenterHz(a.freqMhz * 1e6); S.pushedCenter = a.freqMhz; }
@@ -177,7 +185,7 @@ void detailPane(const App& a, const dect2::AcarsMessage* m) {
     if (m->hasPos) kv("position", "%.4f %.4f", m->lat, m->lon);
     if (!m->adsc.empty()) {
         ImGui::Spacing();
-        ImGui::TextDisabled("Decoded ADS-C");
+        ImGui::TextDisabled("%s", m->adsc.rfind("FANS-1/A CPDLC", 0) == 0 ? "Decoded CPDLC (FANS-1/A)" : "Decoded ADS-C (FANS-1/A)");
         ImGui::PushFont(a.mono, 0);
         ImGui::TextUnformatted(m->adsc.c_str());
         ImGui::PopFont();
@@ -281,14 +289,15 @@ void mapCanvas(App& a, ImVec2 size) {
             S.map.zoom = std::max(2, std::min(10, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     const dect2::AcarsAircraft* hit = nullptr; float best = 18 * gUi;
     ImVec2 click; const bool clicked = adsbmap::clickedAt(click);
     int withPos = 0;
+    ImVec2 cardAt; adsbmap::AcCard card; bool haveCard = false;   // the picked aircraft's card (#394)
     std::vector<ImVec4> placed;              // label boxes already drawn (x0, y0, x1, y1), so labels do not cover each other
     if (on) {
         for (const auto& c : t.aircraft) {   // tracks and predicted routes first, so the planes sit on top
@@ -318,13 +327,19 @@ void mapCanvas(App& a, ImVec2 size) {
             const ImVec2 q = est ? adsbmap::project(pe.lat, pe.lon) : adsbmap::project(c.lat, c.lon);
             if (q.x < p0.x - 60 || q.y < p0.y - 60 || q.x > p0.x + size.x + 60 || q.y > p0.y + size.y + 60) continue;
             const bool sel = isSel(c);
+            if (sel) {
+                haveCard = true; cardAt = q;
+                card.icao = c.icao; card.reg = c.reg; card.flight = c.flight; card.lat = est ? pe.lat : c.lat; card.lon = est ? pe.lon : c.lon;
+                card.hasAlt = c.hasAlt; card.altFt = c.altFt;
+                card.source = (c.posKind.empty() ? std::string("position") : c.posKind) + (est ? " (estimated), " : ", ") + ago(t.nowSec, c.posTime) + " ago";
+            }
             if (est) { pospred::drawPredictionMarks(dl, pe, q, planeColour(c, t.nowSec), gPred.ellipses); pospred::hoverTooltip(pe, q); }
             if (c.hasTrack) drawPlane(dl, q, (float)c.trackDeg, (sel ? 12.f : 10.f) * gUi, planeColour(c, t.nowSec), sel);
             else {
                 dl->AddCircleFilled(q, 5 * gUi, planeColour(c, t.nowSec));
                 dl->AddCircle(q, 5 * gUi, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 150), 16, sel ? 1.6f : 1.f);
             }
-            if (S.map.zoom >= 5 || sel || withPos <= 12) {
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
                 std::string s = nameOf(c);
                 if (c.hasAlt) { char b[24]; snprintf(b, sizeof b, "  FL%03d", (c.altFt + 50) / 100); s += b; }
                 const ImVec2 ts = ImGui::CalcTextSize(s.c_str());
@@ -348,6 +363,7 @@ void mapCanvas(App& a, ImVec2 size) {
     }
     if (clicked) S.selReg = hit ? hit->reg : "";
     dl->PopClipRect();
+    if (haveCard && !S.selReg.empty() && S.selReg == card.reg) adsbmap::aircraftCard("##accarscard", p0, size, cardAt, card);
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 8 * gUi, p0.y + 8 * gUi));
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.06f, 0.07f, 0.08f, 0.85f));
     if (ImGui::Button("+", ImVec2(26 * gUi, 0))) { S.map.zoom = std::min(adsbmap::kMaxZoom, S.map.zoom + 1); S.mapFollow = false; } if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Zoom in"));
@@ -358,6 +374,8 @@ void mapCanvas(App& a, ImVec2 size) {
     ImGui::PopStyleColor();
     ImGui::SameLine(0, 6 * gUi);
     gPred.controls();
+    ImGui::SameLine(0, 6 * gUi);
+    if (gPred.clearButton()) a.engine.acars().clearResults();
     ImGui::SameLine(0, 6 * gUi);
     adsbmap::tileControls("never the position itself");
     plat::prefs().setI("acarsZoom", S.map.zoom);
@@ -502,6 +520,7 @@ void aircraftView(const App& a) {
 
 // one bar per channel: the level over a scale of -100 to -20 dB, a carrier marker, the counts as text
 void channelView(const App& a) {
+    d40AcarsLoadCard();   // 4.0: channel load ranking (app/d40)
     const dect2::AcarsTelemetry& t = a.rx.acars;
     const bool on = live(a);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -540,8 +559,9 @@ void channelView(const App& a) {
 void tab(App& a) {
     loadState();
     kit::modeHeader({16, "ACARS", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("acarsv", S.viewMode, {{tr("Live"), 0}, {tr("Tracks"), 4}, {tr("Map"), 1}, {tr("Aircraft"), 2, true}, {tr("Channels"), 3, true}});
+    kit::modeNav("acarsv", S.viewMode, {{tr("Live"), 0}, {tr("Tracks"), 4}, {tr("Map"), 1}, {tr("Aircraft"), 2, true}, {tr("Channels"), 3, true}, {tr("Weather"), 7, true}});
     if (S.viewMode == 4) { kit::sessionItems(16, 3, "acars"); return; }
+    if (S.viewMode == 7) { acarsWxView(); return; }
     if (S.viewMode == 0) messageView(a);
     else if (S.viewMode == 1) mapView(a);
     else if (S.viewMode == 2) aircraftView(a);
@@ -672,6 +692,15 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 // For the map upload (app/map/map_send.cpp)
 derivedkin::Info acarsKinematics(const dect2::AcarsAircraft& c, double now) { return kinOf(c, now); }
 
+// Simple view: the live messages, the aircraft and the channels side by side
+static void command(App& a) {
+    loadState();
+    kit::modeHeader({16, "ACARS", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##acmsgs", tr("Messages"), [&a] { messageView(a); }, 1.7f, 260.f},
+                      {"##acair", tr("Aircraft"), [&a] { aircraftView(a); }, 1.f, 220.f},
+                      {"##acchan", tr("Channels"), [&a] { channelView(a); }, 0.9f, 200.f}}, 320.f);
+}
+
 extern const ModeUi kAcarsUi;
 const ModeUi kAcarsUi = {
     .sideTitle = "AIRCRAFT",
@@ -687,4 +716,5 @@ const ModeUi kAcarsUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

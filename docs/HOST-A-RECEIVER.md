@@ -4,6 +4,9 @@ This guide is for people who have never done anything like this. You do not need
 
 At the end, anybody with a web browser can open a web page, tune your radio, and listen. Your radio can also appear in the public list at https://web.on-air.dev.
 
+
+From OnAir 3.7 the quickest way is inside the app: **Server > Share this radio**, one button, a link and a QR code; no port forwarding and no files to edit. The options below are for running a standalone server. Until the OnAir relay is hosted, that button gives a temporary Cloudflare link that changes each time you share; for a link that stays the same use Way A, B or C below.
+
 ## Read this first: what is tested and what is not
 
 Be honest with yourself about the state of this feature before you start.
@@ -339,7 +342,7 @@ The .deb already contains a service file, switched off. Switch it on:
 
 ## Step 7. List your receiver on web.on-air.dev (OnAir 3.2 or newer)
 
-> **Coming in 3.2.** The OnAir 3.1 download cannot talk to the directory (it has no HTTPS support built in), so listing does not work there. If you have 3.1, skip this step now and come back after you update to 3.2. Please do not build from source for this.
+> **OnAir 3.1 only.** The OnAir 3.1 download cannot talk to the directory (it has no HTTPS support built in), so listing does not work there. If you have 3.1, update to 3.2 or newer first. Please do not build from source for this.
 
 The list is at https://web.on-air.dev . It is optional, switched off by default, and nobody has to approve you. Your server signs each message with its own key, so nobody else can change your entry. It sends your name, description, public address, a rough location (you choose how rough), what your radio covers and the **number** of listeners, every 5 minutes. It never sends listener addresses or what they listen to.
 

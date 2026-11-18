@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wi-SUN FAN monitor (see wisun_rx.h).
 #include "dect2/dsp/fast_phase.h"
+#include "dect2/wirecap/wire.h"
 #include "dect2/common/thread_name.h"
 #include "dect2/wisun/wisun_rx.h"
+#include "dect2/voicekeys/voice_keys.h"
 #include "dect2/dsp/dsp_compat.h"
 #include "dect2/results/results_io.h"
 #include "dect2/wisun/wisun_proto.h"
@@ -787,6 +792,7 @@ struct WisunReceiver::Impl {
     }
 
     void accept(const std::vector<uint8_t>& psdu, bool fcs2, const Chan& ch, int br, float rssi, float snr, double sec) {
+        if (wire::on(wire::WiSun) && psdu.size() > (fcs2 ? 2u : 4u)) wire::Hub::get().publish(wire::WiSun, psdu.data(), psdu.size() - (fcs2 ? 2 : 4));   // as received, without the FCS (2 or 4 bytes, so the link type without FCS)
         using namespace wisun;
         const Frame f = parse(psdu.data(), psdu.size() - (fcs2 ? 2 : 4));
         tel.blocksOk++;
@@ -795,6 +801,14 @@ struct WisunReceiver::Impl {
         if (f.utt >= 0 && f.utt < kWsUttTypes) tel.perUtt[f.utt]++;
         else tel.plain++;
         if (f.encrypted) tel.encryptedFrames++;
+        std::string decryptedNote;
+        if (f.encrypted) {
+            voicekeys::CallKeyInfo ki; ki.protocol = voicekeys::Protocol::WiSun;
+            for (const auto& k : voicekeys::KeyStore::instance().candidates(ki)) {
+                std::vector<uint8_t> pl;
+                if (k.key.size() == 16 && decryptFrame(psdu.data(), psdu.size() - (fcs2 ? 2 : 4), f, k.key.data(), pl)) { char b[40]; snprintf(b, sizeof b, " [decrypted, %zu bytes]", pl.size()); decryptedNote = b; break; }
+            }
+        }
         if (ch.grid >= 0 && (size_t)ch.grid < tel.perChannel.size()) tel.perChannel[(size_t)ch.grid]++;
         const int64_t wall = (int64_t)time(nullptr);
         // the channel number in the plan of the frame's bit rate
@@ -812,7 +826,7 @@ struct WisunReceiver::Impl {
         lf.wallTime = wall; lf.sec = sec; lf.mhz = ch.mhz; lf.channel = chNum; lf.opClass = opClass; lf.bitRate = br;
         lf.utt = f.utt; lf.type = f.utt >= 0 ? uttName(f.utt) : frameTypeName(f.type);
         lf.src = srcText(f); lf.dst = dstText(f); lf.pan = pan; lf.len = (int)psdu.size();
-        lf.rssi = rssi; lf.snrDb = snr; lf.encrypted = f.encrypted; lf.ies = f.ies; lf.info = f.info;
+        lf.rssi = rssi; lf.snrDb = snr; lf.encrypted = f.encrypted && decryptedNote.empty(); lf.ies = f.ies; lf.info = f.info + decryptedNote;
         static const char kHex[] = "0123456789abcdef";
         for (size_t i = 0; i + (fcs2 ? 2 : 4) < psdu.size(); i++) { lf.hex += kHex[psdu[i] >> 4]; lf.hex += kHex[psdu[i] & 15]; }
         tel.log.insert(tel.log.begin(), std::move(lf));

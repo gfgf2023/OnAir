@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
+#include "dect2/common/stage_prof.h"
 #include "dect2/atsc3/atsc3_cellmux.h"
 #include "dect2/atsc3/atsc3_bb.h"
 #include <algorithm>
@@ -58,24 +63,36 @@ std::vector<cf32> modulateSubframe(const SubframeParams& s, const std::vector<cf
     return out;
 }
 
-bool demodulateSubframe(const SubframeParams& s, const cf32* x, size_t n, std::vector<cf32>& active, std::vector<float>* noiseVar) {
+bool demodulateSubframe(const SubframeParams& s, const cf32* x, size_t n, std::vector<cf32>& active, std::vector<float>* noiseVar, std::vector<float>* weights) {
     const size_t symLen = (size_t)s.fftSize + s.guard;
-    if (n < symLen * s.numSymbols) return false;
+    if (n < symLen * s.numSymbols) {
+        DIAG_DEBUG_EVERY(894789, 10.0, "An ATSC 3.0 subframe of %d symbols needs %zu samples but only %zu are present, so it is not demodulated.", s.numSymbols, symLen * (size_t)s.numSymbols, n);
+        return false;
+    }
     active.clear();
     // the channel estimate of every symbol is averaged with those of its neighbours (a few symbols are far shorter than the channel changes)
     std::vector<SymbolRx> rx((size_t)s.numSymbols);
+    DECT2_STAGE_VAR(stFft, "a3.ofdm.fft+est");
     for (int l = 0; l < s.numSymbols; l++)
-        if (!receiveSymbol(s, l, x + symLen * l, rx[(size_t)l])) return false;
+        if (!receiveSymbol(s, l, x + symLen * l, rx[(size_t)l])) {
+            DIAG_DEBUG_EVERY(253155, 10.0, "ATSC 3.0 OFDM symbol %d of a subframe could not be equalised, so the subframe is not demodulated.", l);
+            return false;
+        }
     const int half = 0;   // averaging over 2 symbols on each side made no difference on a real capture (-33 dB error vector at the decoder), so it is off
+    stFft.stop();
+    DECT2_STAGE("a3.ofdm.equalise");
     std::vector<cf32> h, cells;
+    std::vector<float> w;
+    if (weights) weights->clear();
     for (int l = 0; l < s.numSymbols; l++) {
         smoothChannel(rx, l, half, h);
-        symbolCells(s, l, rx[(size_t)l], h, cells);
+        symbolCells(s, l, rx[(size_t)l], h, cells, weights ? &w : nullptr);
         int nd = (int)cells.size();
         int nulls = isBoundarySymbol(s, l) ? s.sbsNullCells : 0;
         for (int i = nulls / 2; i < nd - (nulls - nulls / 2); i++) {
             active.push_back(cells[(size_t)i]);
             if (noiseVar) noiseVar->push_back(rx[(size_t)l].nv);
+            if (weights) weights->push_back(w[(size_t)i]);
         }
     }
     return true;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Multi-channel TV, the core: the channeliser (mix, low-pass, resample) and the slot scan, and MultiTv fed with two and three DVB-T2 channels
 // (and DVB-T) side by side in one wide capture. Every occupied channel must lock and show its own service list; an empty slot gets no receiver;
 // the cap holds; the selected channel's packets reach the sink and switching works. CPU per instance is printed.
@@ -6,6 +9,9 @@
 #include "multitv_testkit.h"
 #ifdef _WIN32
 #include <windows.h>
+#include "dect2/engine/crash_report.h"
+#include <fstream>
+#include <iostream>
 #else
 #include <sys/resource.h>
 #endif
@@ -138,7 +144,23 @@ static bool hasService(const Result& r, int slotOffsetSign, const std::string& n
     return false;
 }
 
+#ifdef _WIN32
+// A crash on a Windows CI runner leaves no trace in the ctest log: write the crash report (code, address, stack) and print it to standard error.
+static LPTOP_LEVEL_EXCEPTION_FILTER gPrevFilter = nullptr;
+static LONG WINAPI printCrash(EXCEPTION_POINTERS* ep) {
+    const LONG r = gPrevFilter ? gPrevFilter(ep) : EXCEPTION_EXECUTE_HANDLER;
+    std::ifstream f("multitv_crash.txt");
+    std::cerr << "multitv crashed:\n" << f.rdbuf() << std::endl;
+    return r;
+}
+#endif
+
 int main() {
+#ifdef _WIN32
+    setvbuf(stdout, nullptr, _IONBF, 0);   // so the ctest log shows how far the run got
+    dect2::crash::install("multitv_crash", ".");
+    gPrevFilter = SetUnhandledExceptionFilter(printCrash);
+#endif
     testFilter();
     testScan();
     {   // two DVB-T2 channels at 20 Msps, the capture centred between them (a radio tuned to the boundary)

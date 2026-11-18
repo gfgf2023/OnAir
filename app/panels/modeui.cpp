@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The screens of the modes added after FM: the table that maps a family to its ModeUi, and small helpers for the shell.
 #include "../app.h"
 
@@ -38,10 +41,14 @@ extern const ModeUi kMacUi;
 extern const ModeUi kGsmrUi;
 extern const ModeUi kDvbcUi;
 extern const ModeUi kIsdbsUi;
+extern const ModeUi kDvbshUi;
 extern const ModeUi kOrbcommUi;
 extern const ModeUi kTetraUi;
 extern const ModeUi kTetrapolUi;
 extern const ModeUi kElektroUi;
+extern const ModeUi kFy4LritUi;
+extern const ModeUi kFy4aHritUi;
+extern const ModeUi kFy2SvissrUi;
 extern const ModeUi kUatUi;
 extern const ModeUi kPskUi;
 extern const ModeUi kJs8Ui;
@@ -52,6 +59,7 @@ extern const ModeUi kAleUi;
 extern const ModeUi kAstroUi;
 extern const ModeUi kP25Ui;
 extern const ModeUi kBleUi;
+extern const ModeUi kBtcUi;
 extern const ModeUi kIonoUi;
 extern const ModeUi kQo100Ui;
 extern const ModeUi kWifiUi;
@@ -63,7 +71,10 @@ extern const ModeUi kPluginUi;
 extern const ModeUi kModeBuilderUi;
 extern const ModeUi kVdesUi;
 extern const ModeUi kZigbeeUi;
+extern const ModeUi kThreadUi;
 extern const ModeUi kFlarmUi;
+extern const ModeUi kAdslUi;
+extern const ModeUi kAvRoadUi[12];
 extern const ModeUi kHfbeaconUi;
 extern const ModeUi kDjiUi;
 extern const ModeUi kNbiotUi;
@@ -97,14 +108,29 @@ extern const ModeUi kZwaveUi;
 extern const ModeUi kMscatterUi;
 extern const ModeUi kArdopUi;
 extern const ModeUi kGoesDcsUi;
+extern const ModeUi kHrdcpUi;
 extern const ModeUi kBletrkUi;
+extern const ModeUi kSatDetectUi;
+extern const ModeUi kNavicUi;
+extern const ModeUi kCisBeeUi, kCis14Ui, kCis12Ui, kCis36Ui, kCisHdrUi, kCis128Ui, kCis3000Ui;   // app/cishf
+extern const ModeUi kW1aPacketUi, kW1aInvertUi, kW1aEltUi;   // app/w1a
 extern const ModeUi kSatbeaconUi;
 extern const ModeUi kRidUi;
+extern const ModeUi kEspnowUi;
 extern const ModeUi kMeteorUi;
 extern const ModeUi kNrUi;
 extern const ModeUi kGoesUi;
 extern const ModeUi kDmeUi;
 extern const ModeUi kHrptUi;
+#include "dect2/wxsat/wxsat_tel.h"
+#include "dect2/sd3/sd3_tel.h"
+using dect2::kWxNumProfiles;
+extern const ModeUi kFy3AhrptUi;
+extern const ModeUi kWxsatUi[kWxNumProfiles];
+extern const ModeUi kSd3Ui[kSd3NumProfiles];
+#include "dect2/xband/xband_tel.h"
+extern const ModeUi kXbandUi[kXbNumProfiles];
+extern const ModeUi kFy3MptUi;
 extern const ModeUi kLbjUi;
 extern const ModeUi kKlwUi;
 extern const ModeUi kTdcsUi;
@@ -116,6 +142,9 @@ extern const ModeUi kNfcUi;
 extern const ModeUi kMpt1327Ui;
 extern const ModeUi kFusionUi;
 extern const ModeUi kLtrUi;
+extern const ModeUi kSmartnetUi;
+extern const ModeUi kTetraDmoUi;
+extern const ModeUi kOpenSkyUi;
 extern const ModeUi kEdacsUi;
 extern const ModeUi kP25p2Ui;
 extern const ModeUi kMilhfUi;
@@ -124,18 +153,39 @@ extern const ModeUi kAsterixUi;
 extern const ModeUi kArgosUi;
 extern const ModeUi kSigfoxUi;
 extern const ModeUi kMarineVhfUi;
+extern const ModeUi kChanVoiceUi;
 extern const ModeUi kLorawanUi;
 extern const ModeUi kLoraSatUi;
 extern const ModeUi kPactorUi;
+extern const ModeUi kHfuUi[dect2::kHfuKindsAll];
+extern const ModeUi kPactor2Ui, kPactor3Ui, kPactor4Ui;
 extern const ModeUi kEsubghzUi;
+extern const ModeUi kRprUi;
 extern const ModeUi kRoshfUi;
 extern const ModeUi kSsdvUi;
 extern const ModeUi kEbicabUi;
 extern const ModeUi kInmsatUi;
 extern const ModeUi kIptvUi;
+extern const ModeUi kRcLinkUi;
+extern const ModeUi kXlinkUi;
 extern const ModeUi kNrf24Ui;
+extern const ModeUi kSensorsUi;
+extern const ModeUi kBganUi;
+extern const ModeUi kSfericsUi;
+extern const ModeUi kLtposUi;
+extern const ModeUi kFbrUi;
+extern const ModeUi kX40Ui[55];   // app/x40: the 4.0 signal modes (families 881 - 895 and 752 - 759)
+extern const ModeUi kHamsciUi[16];   // app/hamsci: the ham science modes by kind (families 460 - 465, 500 - 502, 750, event monitors 820, 823 .. 835)
 extern const ModeUi kAtisUi;
+extern const ModeUi kSelcalUi;
+extern const ModeUi kUmtsUi;
+extern const ModeUi kCdmaUi;
+extern const ModeUi kTdscdmaUi;
+extern const ModeUi kVdl3Ui;
+extern const ModeUi kCp16Ui;
 extern const ModeUi kShortwaveUi;
+extern const ModeUi kGk2aLritUi;
+extern const ModeUi kGk2aHritUi;
 extern const ModeUi kPskdUi;
 
 // ---- whole-span decoding ("wide decode"): the families whose receivers can decode everything in the visible span (widespan.h) ----
@@ -181,6 +231,7 @@ const ModeUi* modeUi(int family) {
     case 41: return &kSpecxUi;
     case 40: return &kDvbcUi;
     case 154: return &kIsdbsUi;
+    case 746: return &kDvbshUi;
     case 44: return &kOrbcommUi;
     case 46: return &kTetraUi;
     case 36: return &kPskUi;
@@ -191,16 +242,20 @@ const ModeUi* modeUi(int family) {
     case 48: return &kAstroUi;
     case 50: return &kP25Ui;
     case 51: return &kBleUi;
+    case 380: return &kBtcUi;
     case 52: return &kIonoUi;
     case 53: return &kQo100Ui;
     case 54: return &kWifiUi;
     case 55: return &kGeneralUi;
     case 58: return &kTimeUi;
-    case 61: return &kCubesatUi;
+    case 61: case 840: case 843: case 846: case 849: case 852: case 855: return &kCubesatUi;   // 840 .. 855: one framing each, the same panel (cubesat_rx.h: cubesatViews)
     case 62: return &kGlobalstarUi;
     case 63: return &kVdesUi;
     case 65: return &kZigbeeUi;
+    case 244: return &kThreadUi;
     case 66: return &kFlarmUi;
+    case 300: return &kAdslUi;
+    case 400: case 401: case 402: case 403: case 404: case 405: case 406: case 407: case 408: case 409: case 410: case 411: return &kAvRoadUi[family - 400];
     case 67: return &kHfbeaconUi;
     case 68: return &kDjiUi;
     case 69: return &kNbiotUi;
@@ -222,6 +277,9 @@ const ModeUi* modeUi(int family) {
     case 128: return &kFusionUi;
     case 129: return &kLtrUi;
     case 130: return &kEdacsUi;
+    case 320: return &kSmartnetUi;
+    case 321: return &kTetraDmoUi;
+    case 322: return &kOpenSkyUi;
     case 180: return &kP25p2Ui;
     case 145: return &kMilhfUi;
     case 150: return &kSbasUi;
@@ -229,8 +287,14 @@ const ModeUi* modeUi(int family) {
     case 152: return &kArgosUi;
     case 153: return &kSigfoxUi;
     case 155: return &kMarineVhfUi;
+    case 340: case 341: case 342: case 343: case 344: case 345: case 346: case 347: return &kChanVoiceUi;
     case 200: return &kLorawanUi;
     case 201: return &kLoraSatUi;
+    case 430: case 431: case 432: case 433: case 434: case 435: case 436: case 437: case 438: case 439: return &kHfuUi[family - 430];
+    case dect2::kHfuHdrFamily: return &kHfuUi[dect2::kHfuKindHdr];
+    case dect2::kHfuAle3gFamily: return &kHfuUi[dect2::kHfuKindAle3g];
+    case dect2::kHfuLink11Family: return &kHfuUi[dect2::kHfuKindLink11];
+    case dect2::kHfu4481Family: return &kHfuUi[dect2::kHfuKind4481];
     case 203: return &kPactorUi;
     case 204: return &kEsubghzUi;
     case 205: return &kRoshfUi;
@@ -238,9 +302,47 @@ const ModeUi* modeUi(int family) {
     case 207: return &kEbicabUi;
     case 208: return &kInmsatUi;
     case 209: return &kIptvUi;
+    case 360: return &kRcLinkUi;
+    case 600: return &kXlinkUi;
     case 210: return &kNrf24Ui;
+    case 241: return &kSensorsUi;
+    case 245: return &kBganUi;
+    case 243: return &kSfericsUi;
+    case 790: return &kLtposUi;
+    case 870: return &kFbrUi;
+    case 881: case 882: case 883: case 884: case 885: case 886: case 887: case 888: case 889: case 890: case 891: case 892: case 893: case 894: case 895: return &kX40Ui[family - 881];
+    case 752: case 753: case 754: case 755: case 756: case 757: case 758: case 759: case 760: case 761: case 762: case 763: case 764: case 765: case 766: case 767: case 768: case 769: case 770: case 771: case 772: case 773: case 774: case 775: case 776: case 777: case 778: case 779: case 780: case 781: case 782: return &kX40Ui[15 + family - 752];
+    case 785: return &kX40Ui[53];   // STL link
+    case 862: return &kX40Ui[54];   // SCADA radio telemetry
+    case 370: case 371: case 372: case 373: case 374: case 375: return &kX40Ui[46 + family - 370];   // the Rivet HF modes (x40 variants 46 - 51)
+    case 330: return &kX40Ui[52];
+    case 460: case 461: case 462: case 463: case 464: case 465: return &kHamsciUi[family - 460];
+    case 500: case 501: case 502: return &kHamsciUi[6 + family - 500];
+    case 750: return &kHamsciUi[9];
+    case 820: case 823: case 826: case 829: case 832: case 835: return &kHamsciUi[10 + (family - 820) / 3];
     case 211: return &kAtisUi;
+    case 240: return &kSelcalUi;
+    case 480: return &kUmtsUi;
+    case 660: return &kCdmaUi;
+    case 661: return &kTdscdmaUi;
+    case 640: return &kVdl3Ui;
+    case 880: return &kCp16Ui;
     case 212: return &kShortwaveUi;
+    case 230: return &kGk2aLritUi;
+    case 231: return &kGk2aHritUi;
+    case 232: return &kFy4LritUi;
+    case 233: return &kFy4aHritUi;
+    case 234: return &kFy2SvissrUi;
+    case 260: case 261: case 262: case 263: case 264: case 265: case 266: case 267: case 268: case 269: case 270: case 271: return &kWxsatUi[family - 260];
+    case 290: case 291: case 292: case 293: case 294: case 295: case 296: case 297: case 298: case 299: return &kSd3Ui[family - 290];
+    case 510: return &kSd3Ui[10];
+    case 530: case 531: case 532: case 533: case 534: case 535: case 536: case 537: case 538: case 539:
+    case 540: case 541: case 542: case 543: case 544: case 545: case 546: case 547: case 548: case 549: return &kXbandUi[family - 530];
+    case 235: return &kFy3AhrptUi;
+    case 236: return &kFy3MptUi;
+    case 237: return &kPactor2Ui;
+    case 238: return &kPactor3Ui;
+    case 239: return &kPactor4Ui;
     case 202: return &kPskdUi;
     case 83: return &kUatUi;
     case 75: return &kMultitoneUi;
@@ -269,9 +371,24 @@ const ModeUi* modeUi(int family) {
     case 104: return &kMscatterUi;
     case 140: return &kArdopUi;
     case 141: return &kGoesDcsUi;
+    case 700: return &kHrdcpUi;
     case 143: return &kBletrkUi;
+    case 550: case 551: case 552: case 553: case 554: case 555: case 556: case 557: case 558: case 559: case 560: case 562: return &kSatDetectUi;
+    case 561: return &kNavicUi;
+    case 620: return &kCisBeeUi;
+    case 621: return &kCis14Ui;
+    case 622: return &kCis12Ui;
+    case 623: return &kCis36Ui;
+    case 624: return &kCisHdrUi;
+    case 625: return &kCis128Ui;
+    case 626: return &kCis3000Ui;
+    case 800: return &kW1aPacketUi;
+    case 801: return &kW1aInvertUi;
+    case 802: return &kW1aEltUi;
     case 144: return &kSatbeaconUi;
     case 56: return &kRidUi;
+    case 898: return &kEspnowUi;
+    case 899: return &kRprUi;
     case 59: return &kMeteorUi;
     case 57: return &kNrUi;
     case 60: return &kGoesUi;
@@ -368,7 +485,7 @@ void secondModeTabs(App& a) {
 #include "../platform/platform.h"
 static std::set<int>& wideFamilies() {
     // DMR, M17, D-STAR, NXDN, dPMR, P25, pagers, APRS / packet, MPT1327, Yaesu Fusion, LTR, EDACS: one decoder per carrier (core/wide_modes.h)
-    static std::set<int> s = {9, 31, 33, 38, 45, 50, 23, 24, 127, 128, 129, 130};
+    static std::set<int> s = {9, 10, 21, 31, 33, 38, 45, 49, 50, 23, 24, 127, 128, 129, 130};
     return s;
 }
 bool modeSupportsWideChannels(int family) { return family == 27 || family == 35; }   // VDL2, HFDL: the receiver decodes every channel in the capture (setWholeSpan)
@@ -411,7 +528,7 @@ void wideSync(App& a) {
 
 void wideCarrierCell(const App& a, int carrierId, double relHz) {
     if (carrierId <= 0) { ImGui::TextDisabled("-"); return; }
-    ImGui::Text("%.4f", radioCenterMhz(a) + relHz / 1e6);
+    ImGui::Text("%.5f", radioCenterMhz(a) + relHz / 1e6);   // 10 Hz: a 6.25 / 12.5 kHz channel centre is not a round 100 Hz
 }
 
 namespace {

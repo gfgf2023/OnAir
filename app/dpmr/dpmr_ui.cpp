@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // dPMR screens: the current call (own / called id, call type, colour code, voice), the call log (voice, status, short messages, packet
 // data), the decoded headers and end frames, the PMR446 channel presets with "scan all 16", and a "?" about the mbelib library the
 // voice needs (docs/CODECS.md).
 #include "dect2/common/time_fmt.h"
 #include "app.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "voice/voice_monitor_ui.h"
@@ -172,7 +176,7 @@ void tuner(App& a, bool& retune) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Step through the 16 PMR446 channels (half a second each) and stay where a call is heard.\nTune to a PMR446 channel first: all 16 fit in the captured band.");
 }
 
-void tab(App& a) {
+void voiceBar(App& a) {
     {   // the voice monitor's strip, the same in every voice mode
         const dect2::DpmrTelemetry& t = a.rx.dpmr;
         voiceui::Link l;
@@ -181,6 +185,10 @@ void tab(App& a) {
         l.errorRate = l.locked ? t.berPct / 100.f : -1.f;
         voiceui::strip(a, "dpmr", "dPMR", l);
     }
+}
+
+void tab(App& a) {
+    voiceBar(a);
     kit::modeHeader({45, "dPMR", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
     kit::modeNav("dpmrv", S.view, {{tr("Live"), 0}, {tr("Calls"), 3}, {tr("Call list"), 1, true}, {tr("Messages"), 2, true}});
     if (S.view == 3) { kit::sessionItems(45, 1, "dpmr"); return; }
@@ -252,6 +260,15 @@ void summary(const App& a, std::string& l1, std::string& l2) {
 
 } // namespace
 
+// Simple view: the voice strip, then what is on air, the call list and the messages side by side
+static void command(App& a) {
+    voiceBar(a);
+    kit::modeHeader({45, "dPMR", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    modepanel::panes({{"##dpcnow", tr("On air"), [&a] { nowView(a); }, 0.9f, 220.f},
+                      {"##dpccalls", tr("Calls"), [&a] { callsView(a); }, 1.5f, 240.f},
+                      {"##dpcmsg", tr("Messages"), [&a] { messageView(a); }, 1.f, 200.f}}, 300.f);
+}
+
 extern const ModeUi kDpmrUi;
 const ModeUi kDpmrUi = {
     .sideTitle = "RADIOS",
@@ -264,4 +281,5 @@ const ModeUi kDpmrUi = {
     .summary = summary,
     .tuner = tuner,
     .tick = tick,
+    .command = command,
 };

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/source/hamlib_rig.h"
 #include "dect2/source/hamlib_link.h"
 #include <algorithm>
@@ -185,6 +188,7 @@ std::vector<DeviceInfo> hamlibRigDevices(const std::vector<HamlibRig>& v) {
 
 #ifndef DECT2_HAVE_HAMLIB
 bool hamlibSupported() { return false; }
+bool hamlibLibraryReady(std::string* why) { if (why) *why = "this build has no Hamlib"; return false; }
 std::unique_ptr<IqSource> makeHamlibSource(const DeviceInfo&) { return nullptr; }
 std::unique_ptr<TxSink> makeHamlibTxSink(const DeviceInfo&) { return nullptr; }
 struct HamlibLink::Impl {};

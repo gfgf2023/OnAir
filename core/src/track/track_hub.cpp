@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/track/track_hub.h"
 #include "dect2/acars/acars_tel.h"
 #include "dect2/adsb/adsb_tel.h"
@@ -145,6 +148,35 @@ void TrackHub::purge(double now, double maxAgeSec) {
         const double last = std::max(it->second.lastT, it->second.stationT);
         if (now - last > maxAgeSec) it = e_.erase(it); else ++it;
     }
+}
+
+namespace {
+std::vector<const TrackHub*>& hubs() { static auto* v = new std::vector<const TrackHub*>; return *v; }   // never destroyed: the screens' hubs unregister at program exit
+}
+
+void registerHub(const TrackHub* h) {
+    auto& v = hubs();
+    if (std::find(v.begin(), v.end(), h) == v.end()) v.push_back(h);
+}
+
+void unregisterHub(const TrackHub* h) {
+    auto& v = hubs();
+    v.erase(std::remove(v.begin(), v.end(), h), v.end());
+}
+
+bool liveFix(Key k, double& lat, double& lon) {
+    double best = -1e18;
+    bool got = false;
+    for (const TrackHub* h : hubs()) {
+        const TrackEstimator* e = h->find(k);
+        if (!e) continue;
+        const double t = e->lastFixT();
+        if (t <= best) continue;
+        PosEstimate p;
+        if (!h->estimate(k, t, p, true) || !p.valid) continue;
+        lat = p.lat; lon = p.lon; best = t; got = true;
+    }
+    return got;
 }
 
 }  // namespace dect2::track

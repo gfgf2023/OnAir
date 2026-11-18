@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRA sound of a TV service through the user's add-on (tv_dra.h).
 #include "dect2/tv/tv_dra.h"
 #include <algorithm>
 #include <cmath>
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -39,7 +43,7 @@ void TvDraDecoder::drop() {
 bool TvDraDecoder::open() {
     if (h_) return true;
     api_ = explicitApi_ ? explicitApi_ : cdr::draApi();     // the add-on may have been installed while running
-    if (!api_) return false;
+    if (!api_) { DIAG_DEBUG(792632, "The user-installed DRA audio add-on is not available, so DRA sound is not decoded."); return false; }
     h_ = api_->create();
     return h_ != nullptr;
 }

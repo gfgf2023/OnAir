@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The KAPP (family 124, engine standard 126, telemetry 125) and KAFT (family 125, engine standard 127, telemetry 126) modes in the group "Kris custom
 // modes": the mode-table rows (no longer work in progress), the unique family numbers, the modeui cases, the receive panels, the transmit options, the
 // engine wiring and the transmit registration are in the sources. Text checks only, so it builds without the app.
@@ -50,8 +53,13 @@ int main() {
             const std::string num = line.substr(5, comma - 5);
             if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos) continue;
             const int fam = std::stoi(num);
+            {   // a protocol entry (a subId after the accent colour) shares its family on purpose: test_mode_numbers checks (family, subId)
+                const size_t acc = line.rfind("ImVec4(");
+                const size_t close = acc == std::string::npos ? acc : line.find(')', acc);
+                if (close != std::string::npos && line.compare(close + 1, 3, ", \"") == 0) continue;
+            }
             rows++;
-            if (fam >= 122 && ++seen[fam] > 1) { std::printf("FAIL: family %d appears twice in the mode table\n", fam); fails++; }   // the Kris group and everything after it
+            if (fam >= 122 && fam != 360 && ++seen[fam] > 1) { std::printf("FAIL: family %d appears twice in the mode table\n", fam); fails++; }   // the Kris group and everything after it
         }
         if (rows < 100) { std::printf("FAIL: only %d mode rows parsed\n", rows); fails++; }
     }
@@ -151,8 +159,13 @@ int main() {
     need("app/panels/tx_ui.cpp", txui, "makeIqFileTxSink(fc)");   // the IQ-file destination serves every transmit mode
     need("app/panels/tx_ui.cpp", txui, "!txModeFinite(*mode)");
     const std::string pay = readSource("app/panels/tx_payload_ui.cpp");
-    need("app/panels/tx_payload_ui.cpp", pay, "case TxPayloadKind::Kapp:");
-    need("app/panels/tx_payload_ui.cpp", pay, "case TxPayloadKind::Kaft:");
+    const std::string txpar = readSource("core/src/tx/tx_params.cpp");
+    need("core/src/tx/tx_params.cpp", txpar, "case TxPayloadKind::Kapp:");   // 4.0: the KA* panels are custom rows of the parameter table
+    need("core/src/tx/tx_params.cpp", txpar, "custom(\"kapp.panel\"");
+    need("app/panels/tx_payload_ui.cpp", pay, "k == \"kapp.panel\") kappPanel(s, running);");
+    need("core/src/tx/tx_params.cpp", txpar, "case TxPayloadKind::Kaft:");   // 4.0: the KA* panels are custom rows of the parameter table
+    need("core/src/tx/tx_params.cpp", txpar, "custom(\"kaft.panel\"");
+    need("app/panels/tx_payload_ui.cpp", pay, "k == \"kaft.panel\") kaftPanel(s, running);");
     const std::string txset = readSource("app/panels/tx_step_settings.cpp");
     need("app/panels/tx_step_settings.cpp", txset, "destinationPanel(s, *mode, running);");
 

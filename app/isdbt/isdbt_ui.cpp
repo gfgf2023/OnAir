@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ISDB-T: the status bar and the Receiver tab (lock, carrier layout, the three hierarchical layers with their statistics)
 #include "app.h"
 #include "dect2/isdbt/isdbt.h"
@@ -11,7 +14,7 @@ void setIsdbtBandwidth(App& a, int mhz) {
     if (a.engine.running()) startReceiver(a);   // the receiver takes the width (and the radio its rate) when it starts
 }
 
-static bool telemI(App& a) { return a.engine.running() && a.rx.standard == 5; }
+static bool telemI(App& a) { return a.engine.running() && (a.rx.standard == 5 || a.rx.standard == 731); }   // ISDB-T, ISDB-TSB
 
 static isdbt::Params paramsOf(const RxTelemetry& t) {
     isdbt::Params p;
@@ -106,6 +109,7 @@ void isdbtReceiverTab(App& a) {
     }
     row("carrier offset", "%+.1f Hz", t.cfoHz);
     row("sample clock", "%+.1f ppm corrected", t.sroPpm);
+    if (t.isdbt.tmccOk && t.isdbt.emergency) ImGui::TextColored(ImVec4(1.f, 0.55f, 0.3f, 1), "%s", tr("Emergency warning: the broadcaster has set the alert start flag (TMCC)"));
     if (t.isdbt.tmccOk) {
         row("signal to noise", "%.1f dB (pilots)", t.dataSnrDb);
         row("TMCC", "%s%s, parameter switching %s, emergency alert flag %s", t.isdbt.partial ? "one-segment partial reception layer present" : "no partial reception layer",

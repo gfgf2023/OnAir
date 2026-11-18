@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.netradio
 
 import io.github.adswill.onair.netradio.AddNetworkRadioForm.Field
@@ -55,7 +58,8 @@ class NetworkRadioTest {
 
     @Test fun offeredTypes() {
         assertFalse(NetRadioType.SOAPY_REMOTE in NetRadioType.offered)
-        assertTrue(NetRadioType.offered.containsAll(listOf(NetRadioType.RTL_TCP, NetRadioType.SPYSERVER, NetRadioType.KIWISDR, NetRadioType.TCI)))
+        assertTrue(NetRadioType.offered.containsAll(listOf(NetRadioType.RTL_TCP, NetRadioType.SPYSERVER, NetRadioType.KIWISDR, NetRadioType.TCI, NetRadioType.SDRPP)))
+        assertEquals("sdrpp,10.0.0.5,5259", NetworkRadio(NetRadioType.SDRPP, "10.0.0.5", 0).spec)
         for (t in NetRadioType.entries) assertEquals(t, NetRadioType.ofKey(t.key))
     }
 }

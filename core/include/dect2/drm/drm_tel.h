@@ -1,6 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRM receiver telemetry, shared by the receiver and the UI.
 #pragma once
+#include "dect2/drm/drm_msg.h"
 #include "dect2/common/ring.h"
+#include "drm_afs.h"
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -36,6 +41,7 @@ struct DrmService {
 };
 
 struct DrmTelemetry {
+    drm::SdcExtra sdcExtra;           // schedules, regions, announcements, alternative frequencies, CA, packet FEC (SDC types 2, 3, 4, 6, 7, 14)
     // ---- the part every mode has: the engine copies it into RxTelemetry; keep these members and what they mean
     uint64_t seq = 0;            // grows with every report and never restarts (not even after reset())
     int state = 0;               // 0 searching, 1 partly locked (synchronised, the FAC is read), 2 locked and decoding (SDC and MSC)
@@ -104,6 +110,7 @@ struct DrmTelemetry {
     std::string textMessage;     // text message of the audio service
     uint64_t textSegmentsOk = 0, textSegmentsBad = 0;
     std::string status;          // one line: what the receiver is doing
+    std::vector<DrmAltFreq> altFreqs;   // other frequencies of this multiplex and the same programme elsewhere (SDC types 3, 4, 11)
 };
 
 inline const char* drmServiceKind(const DrmService& s) { return s.audio ? "audio" : "data"; }

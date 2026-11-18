@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // RTTY decoder of the HF digital receiver (hfdig_rx.h): gets the 8 kHz upper sideband audio and decodes ITA2 (Baudot) frequency shift
 // keying: 1 start, 5 data (least significant bit first), 1.5 stop bits; 45.45, 50, 75 or 100 baud; shifts of 170, 200, 425, 450 or
 // 850 Hz. Normal: the mark tone is the lower one. The decoder looks for the pair of tones itself (300 .. 3300 Hz) and locks to it.
@@ -16,16 +19,32 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace dect2 {
 
-constexpr int kRttyBauds = 4, kRttyShifts = 5;
+constexpr int kRttyBauds = 4, kRttyShifts = 6;
+constexpr int kRttyShiftsAuto = 5;   // Auto searches the first five only: 85 Hz lies too close to 170 / 200 Hz for a safe automatic lock (manual choice, #539)
 constexpr double kRttyBaudTable[kRttyBauds] = {45.45, 50.0, 75.0, 100.0};
-constexpr double kRttyShiftTable[kRttyShifts] = {170.0, 200.0, 425.0, 450.0, 850.0};
+constexpr double kRttyShiftTable[kRttyShifts] = {170.0, 200.0, 425.0, 450.0, 850.0, 85.0};   // 85 Hz appended: saved settings keep their indices (DWD 147.3 kHz, #539)
 constexpr size_t kRttyTextMax = 8000;   // characters kept in the telemetry text
 
 // what the test transmission sends in one loop (a line feed ends it; letters, figures and the shifts between them)
 constexpr const char* kRttyTestText = "RYRYRY CQ CQ DE ONAIR TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\n";
+
+// One guess of the signal's parameters (rttyAutoAnalyse): the pair of tones, shift, speed and polarity, with how well the text came out
+struct RttyAutoHyp {
+    double lowHz = 0;                // the lower tone, Hz
+    double shiftHz = 0, baud = 0;    // from the tables
+    int shiftIdx = 0, baudIdx = 0;
+    bool reverse = false;            // the mark is the upper tone
+    float score = 0;                 // good characters minus 2.5 per framing error, over the audio analysed
+    uint32_t chars = 0, errors = 0;
+};
+// One click: finds the pair of tones (the two spectral lines, shift from the table), then runs the decoder over the audio for every speed and both
+// polarities and ranks the guesses by the text they give. audio: 8000 Hz, a few seconds to about 20 s of a signal that is on. Best first, at most
+// maxHyps; empty when nothing sends RTTY.
+std::vector<RttyAutoHyp> rttyAutoAnalyse(const float* audio, size_t n, int maxHyps = 3);
 
 class HfdigTestAudio;
 // Custom RTTY audio (8000 Hz). Empty text sends kRttyTestText. reverse: the mark is the upper tone. USB/LSB is the HF mixer, not this flag.
@@ -41,6 +60,9 @@ struct HfdigRttyTelemetry {
     double baud = 45.45, shiftHz = 170;
     bool reverse = false, unshiftOnSpace = false;
     float quality = 0;               // 0 .. 1: how clean the signal is
+    int autoState = 0;               // auto lock: 0 not asked, 1 waiting for audio, 2 done and applied, 3 nothing found
+    bool autoOn = false, autoLocked = false;   // Auto is on / it has found the signal and the decoder is on it
+    std::vector<RttyAutoHyp> autoHyps;   // its guesses, best first (the first one is in use)
 };
 
 // One RTTY signal found by whole-span decoding (hfdig_wide.h): its own pair of tones, speed and text
@@ -70,6 +92,11 @@ public:
     void setFixedPair(double lowToneHz);   // whole-span decoding: the pair is given (lower tone, Hz), the decoder does not search (0: it does)
     void setReverse(bool r);
     void setUnshiftOnSpace(bool u);    // a space returns the figures shift to letters
+    // Auto: speed, shift and polarity follow the signal (on by default in the receiver). The analysis runs when the decoder has no good text
+    // and re-runs when the text stops or turns to framing errors. setBaudIndex, setShiftIndex and setReverse turn it off: the user decides.
+    void setAuto(bool on);
+    bool autoOn() const;
+    void autoLock();                   // one click: speed, shift and polarity from the last seconds of audio (needs about 6 s of signal), see rttyAutoAnalyse
     void clearText();
     void setText(const std::string& text, uint64_t chars);   // the receiver thread: a loaded results file (reset() keeps the text)
     int baudIndex() const;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Radiosonde frame decoders that work on demodulated FSK symbols (no radio): one per sonde type, and the symbol
 // streams of single frames for the test signal. The receiver's channels demodulate to hard symbols at symbolRate()
 // and push them into every decoder whose rate matches, until one reports frames.
@@ -24,6 +27,7 @@ struct SondeFix {
     int sats = -1;
     bool hasTime = false;
     double unixTime = 0;                // UTC seconds since 1970 from the sonde
+    double sondeAheadS = 0;             // sonde's own time minus unixTime (RS41 sends GPS time: 18), see SondeInfo
     bool hasTemp = false, hasHumidity = false, hasPressure = false;
     double tempC = 0, humidity = 0, pressureHpa = 0;
     double batteryV = -1;
@@ -39,12 +43,24 @@ public:
     // hard symbols (0/1) at symbolRate(); the decoder handles Manchester coding, both polarities and frame sync itself
     virtual void push(const uint8_t* sym, size_t n, double timeSec, std::vector<SondeFix>& out) = 0;
     virtual void reset() = 0;
+    virtual bool midpointSlicer() const { return false; }   // the short preamble does not settle the mean: slice between the extremes
+    // deviation of about +-2.4 kHz: the receiver demodulates it through a second, tighter channel filter (4 dB less noise bandwidth)
+    virtual bool narrowChannel() const { return false; }
+    virtual bool isAfsk() const { return false; }           // symbols come from 1200 / 2200 Hz tones in the FM audio (iMet-1 / iMet-4)
+    // 4.1: decoders that use soft symbols (soft[i] > 0 means 1, the size says how sure; sym[i] is its hard decision). The default ignores the soft values.
+    virtual bool wantsSoft() const { return false; }
+    virtual void pushSoft(const uint8_t* sym, const float* soft, size_t n, double timeSec, std::vector<SondeFix>& out) { (void)soft; push(sym, n, timeSec, out); }
 };
 
 std::unique_ptr<SondeBitDecoder> makeDfmDecoder();
 std::unique_ptr<SondeBitDecoder> makeM10Decoder();
 std::unique_ptr<SondeBitDecoder> makeM20Decoder();
 std::unique_ptr<SondeBitDecoder> makeLms6Decoder();
+std::unique_ptr<SondeBitDecoder> makeImetDecoder();     // iMet-1 / iMet-4
+std::unique_ptr<SondeBitDecoder> makeImet54Decoder();
+std::unique_ptr<SondeBitDecoder> makeMrzDecoder();
+std::unique_ptr<SondeBitDecoder> makeMeiseiDecoder();   // iMS-100
+std::unique_ptr<SondeBitDecoder> makeGthDecoder();      // Chinese GTH family: HT03G-1U / GTH3 / GTH6 (2400 baud, 109 byte frames)
 
 // What the test signal wants a sonde to send
 struct SondeTruth {
@@ -89,6 +105,18 @@ bool m10ParseFrame(const uint8_t* f, size_t n, SondeFix& out);
 bool m20ParseFrame(const uint8_t* f, size_t n, SondeFix& out);
 bool lms6ParseFrame(const uint8_t* f, size_t n, SondeFix& out);
 uint16_t sondeLms6Crc16(const uint8_t* msg, size_t len);
+bool mrzParseFrame(const uint8_t* f, size_t n, SondeFix& out);
+bool imet54ParseFrame(const uint8_t* f, size_t n, SondeFix& out);
+std::vector<uint8_t> imetBits(const SondeTruth& t);                            // UART bits, for tests that bypass the AFSK
+std::vector<uint8_t> imetSymbols(const SondeTruth& t);                         // AFSK sub-symbols, 26400 a second (22 per bit)
+std::vector<uint8_t> mrzFrameBytes(const SondeTruth& t, int sub, bool latLon);
+std::vector<uint8_t> mrzSymbols(const SondeTruth& t, int sub, bool latLon);
+std::vector<uint8_t> imet54FrameBytes(const SondeTruth& t, int serial);
+std::vector<uint8_t> imet54Symbols(const SondeTruth& t, int serial);
+std::vector<uint8_t> meiseiSymbols(const SondeTruth& t, int cnt, int serial);
+bool gthParseFrame(const uint8_t* f, size_t n, SondeFix& out);                 // a whole 109 byte frame (preamble, sync, data); true when the CRC is right
+std::vector<uint8_t> gthFrameBytes(const SondeTruth& t, int frame, uint32_t sn);   // 109 bytes
+std::vector<uint8_t> gthSymbols(const SondeTruth& t, int frame, uint32_t sn);      // on-air bits, 2400 a second
 uint16_t sondeM10Checksum(const uint8_t* msg, size_t len);
 // Hamming(8,4) of the DFM frames: codeword = d0 d1 d2 d3 p0 p1 p2 p3 (d0 first on air), nibble bit 3 = d0.
 uint8_t sondeHamming84Encode(uint8_t nibble);

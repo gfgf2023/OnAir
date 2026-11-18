@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The "?" button next to the sound of each mode whose voice or audio needs a codec that OnAir does not ship (docs/CODECS.md). It says whether
 // the codec was found and where, what it is, how to install it on this computer, where to put it, a link to the full page, and "Look again".
 #include "../app.h"
@@ -130,11 +133,28 @@ Text textOf(CodecHelp c) {
 #endif
                 true};
     case CodecHelp::AeroAmbe:
-        return {"AMBE (Inmarsat Aero voice)",
-                "Aero C channel voice uses an AMBE vocoder, which is patented. OnAir decodes the P channel data only; it does not tune voice "
-                "channels and cannot load an AMBE library.",
-                "There is nothing to install for OnAir. Some separate programs (for example JAERO, github.com/jontio/JAERO) work on C channels.",
-                false};
+        return {"AMBE 4800x3600 (Inmarsat Aero voice)",
+                "Aero C channel voice uses an AMBE vocoder, which is patented, so OnAir ships none. OnAir finds the C channels, demodulates them and decodes the "
+                "frames (framing and coding as in JAERO), and hands each 12 byte voice frame, as JAERO hands it to libaeroambe, to a codec plug-in you build "
+                "yourself. Without it the calls are listed and the coded frames saved (.bits). Unencrypted traffic only. Using the codec may need a patent "
+                "licence: check the rules where you live first.",
+#if defined(_WIN32)
+                "Build the plug-in yourself (full steps in docs/CODECS.md; the OnAir source has tools/addons/aeroambe). In MSYS2 MINGW64:\n"
+                "  pacman -S --needed git mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake make\n"
+                "  git clone https://github.com/jontio/libaeroambe\n"
+                "  cmake -S libaeroambe/mbelib-master -B libaeroambe/mbelib-master/build -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && cmake --build libaeroambe/mbelib-master/build\n"
+                "  git clone https://github.com/adswill/OnAir && cd OnAir/tools/addons/aeroambe\n"
+                "  cmake -S . -B build -G \"MSYS Makefiles\" -DAEROAMBE_MBELIB=../../../../libaeroambe/mbelib-master && cmake --build build\n"
+                "Copy onair-codec-aeroambe.dll into the codecs folder below. Use 64-bit if OnAir is 64-bit.",
+#else
+                "Build the plug-in yourself (full steps in docs/CODECS.md; the OnAir source has tools/addons/aeroambe):\n"
+                "  git clone https://github.com/jontio/libaeroambe\n"
+                "  cmake -S libaeroambe/mbelib-master -B libaeroambe/mbelib-master/build -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && cmake --build libaeroambe/mbelib-master/build\n"
+                "  git clone https://github.com/adswill/OnAir && cd OnAir/tools/addons/aeroambe\n"
+                "  cmake -S . -B build -DAEROAMBE_MBELIB=../../../../libaeroambe/mbelib-master && cmake --build build\n"
+                "Copy the library the build made (onair-codec-aeroambe.dylib or .so) into the codecs folder below, then accept the notice once.",
+#endif
+                true};
     case CodecHelp::IridiumAmbe:
         return {"AMBE (Iridium voice)",
                 "Iridium voice uses an AMBE-family vocoder, which is patented, so OnAir ships none. It lists the voice calls and hands each "
@@ -266,6 +286,7 @@ void codecHelpButton(CodecHelp c, const char* label) {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30);
         ImGui::TextUnformatted(t.title);
         ImGui::Separator();
+        if (ImGui::SmallButton("All optional libraries: which, where, official sources")) dect2::openUrl("https://github.com/adswill/OnAir/blob/main/docs/OPTIONAL-LIBRARIES.md");
         // a codec that crashed or hung this run (codec_guard.h): said first; Look again tries it once more
         if (const std::string gm = dect2::codec::guardAllMessages(); !gm.empty()) { ImGui::TextColored(pal::warnAmber(), "%s", gm.c_str()); ImGui::Separator(); }
         appcodec::codecArchLines(true);   // OnAir's processor, Rosetta notice, which architecture to build for
@@ -301,6 +322,7 @@ void codecHelpButton(CodecHelp c, const char* label) {
             if (ImGui::Button("Look again")) dect2::avsPlusLibrary(true);
             ImGui::SameLine();
             if (ImGui::Button("Full instructions")) dect2::openUrl(kDocUrl);
+            appcodec::discordCodecButton();
             ImGui::PopTextWrapPos();
             ImGui::EndPopup();
             ImGui::PopID();
@@ -393,6 +415,7 @@ void codecHelpButton(CodecHelp c, const char* label) {
         }
         if (ImGui::Button("Full instructions")) dect2::openUrl(kDocUrl);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kDocUrl);
+        if (!t.loadable) appcodec::discordCodecButton();   // the loadable topics got it with the folder buttons above
         ImGui::PopTextWrapPos();
         ImGui::EndPopup();
     }

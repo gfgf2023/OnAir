@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Automatic gain for every radio and every mode (docs/AUTOGAIN.md). One system with four parts, all plain logic with no clock of its own
 // (the caller passes the time), so it is tested against a simulated radio (tests/source/autogain_sim.h):
 //
@@ -54,6 +57,8 @@ struct GainStage {
     std::string settingKey;       // a stage reached through a radio setting (TuneSettings::radio[settingKey]); empty: a gain field of TuneSettings
     bool settingIsIndex = false;  // the setting holds the step index (SDRplay rfgr: state 0 = most gain), not dB
     std::string note;             // what this gain does, for the user
+    std::string manualKey;        // the driver setting (TuneSettings::radio[manualKey], "-1" = follow the overall gain) that sets this stage by hand (#233);
+                                  // the Auto modes never move it. Empty: the stage cannot be set by hand
     std::vector<double> actualDb; // measured real gain of each step (same size as steps; empty: the nominal steps are right), from GainCalibration
 
     double minDb() const { return steps.empty() ? 0 : steps.front(); }
@@ -70,9 +75,15 @@ struct RadioProfile {
     std::vector<GainStage> stages;   // in signal order: antenna first
     bool hasAmp = false, hasBias = false;
     bool driverSplits = false;    // one overall gain for OnAir; the driver spreads it over its stages itself
+    std::string splitKey;         // a driver setting (TuneSettings::radio[splitKey]) that takes the policy ("linearity" / "sensitivity") where the driver
+                                  // spreads one overall gain over LNA and IF itself (SDRplay: the LNA state vs the IF gain reduction); empty: none
+    bool stepsUncertain = false;  // the step table is an index of an unknown radio behind the driver (SpyServer, a Kiwi, a generic radio): a "dB" can be 3 real dB;
+                                  // the slope test (products / compression) waits until the controller has measured the real step (unitScale_)
     bool remote = false;          // a radio over the network (rtl_tcp, SpyServer): each change takes a round trip, settle longer
     double settleSec = 0.25;      // how long a gain change takes to reach the samples (USB buffers, the tuner's own settling)
     double postIip3Dbm = 10;      // IIP3 of what follows the front stages (mixer, filter, ADC driver), at their output: front gain costs linearity
+    bool levelCompensated = false;   // AirspyHF+: the output level does not follow the gain (the firmware's own gain distribution): the level-driven
+                                     // steps are skipped, the gain stays at the top of what is allowed unless it clips or the quality guard undoes a step
     std::string ampNote, notes;
 
     int stageIndex(const std::string& id) const;
@@ -94,6 +105,18 @@ const RadioProfile* radioProfileById(const std::string& id);
 RadioProfile radioProfileFor(const DeviceInfo& d);
 RadioProfile genericProfile(const std::string& name, double minDb, double maxDb, double stepDb);
 
+// ---- manual stage controls (#233): one slider per stage the driver lets the user set by hand (the Advanced area of the gain row)
+constexpr const char* kManualFollow = "-1";                       // a stage's setting value: follow the overall gain
+std::vector<int> manualStages(const RadioProfile& r);             // indexes of the stages with a manualKey
+// Sets a stage by hand: the dB snaps to the stage's steps and goes to TuneSettings::radio[manualKey]. False: the stage has no manual control
+bool setManualStage(const RadioProfile& r, int stage, double db, TuneSettings& tune);
+// The stage's manual value in dB; false when it follows the overall gain
+bool manualStageValue(const RadioProfile& r, int stage, const TuneSettings& tune, double& db);
+// "Reset to overall gain": every manual stage follows the overall gain again
+void resetManualStages(const RadioProfile& r, TuneSettings& tune);
+// True when any manual stage is set
+bool anyManualStage(const RadioProfile& r, const TuneSettings& tune);
+
 enum class Policy { Sensitivity, Balanced, Linearity };
 const char* policyName(Policy p);
 
@@ -103,7 +126,9 @@ struct StagePlan {
     double nfDb = 0;              // cascaded noise figure (Friis) of the plan
     double iip3Dbm = 0;           // cascaded input IP3 of the front stages
     bool ampOn = false;
-    bool operator==(const StagePlan& o) const { return db == o.db && ampOn == o.ampOn; }
+    Policy pol = Policy::Balanced;   // the policy the plan was made for
+    bool polMatters = false;         // a radio whose driver splits one overall gain by policy (RadioProfile::splitKey): two plans of one gain differ
+    bool operator==(const StagePlan& o) const { return db == o.db && ampOn == o.ampOn && (!polMatters || pol == o.pol); }
 };
 
 // Spreads totalDb over the stages. mask: bit i set = stage i may move (the rest stay at fixed[i], or their lowest step when fixed is short).
@@ -196,8 +221,12 @@ struct ModeTarget {
 // freqHz > 0 adds the band's bias: HF and the strong broadcast / mobile bands want headroom and a linear front end, quiet microwave bands
 // want sensitivity (bandBiasNote in the target says so in one line)
 ModeTarget modeTargetFor(int stdMode, double chanBwHz, double rateHz, double freqHz = 0);
+// The per-mode refinement over the class numbers (inside modeTargetFor); exposed so the tests can tell which modes it changes
+void applyModeRefinement(ModeTarget& t, int stdMode);
 // A short id of the band a frequency is in ("hf", "fm", "tv-uhf", "cell", "microwave" ...): gain memory and the app re-optimise when it changes
 const char* bandIdFor(double freqHz);
+// A frequency change that needs a new gain search: more than 5 % of the capture rate away, or another band (a VFO step inside the span changes nothing the radio sees)
+bool retuneNeedsSearch(double deltaHz, double rateHz, bool bandChanged);
 
 // ============================================================================================================================ 4. control
 enum class AgMode { Off, Auto, Once, Safe };
@@ -372,6 +401,13 @@ private:
     struct Run { double n = 0, mean = 0, m2 = 0; void add(double x) { n += 1; const double d = x - mean; mean += d / n; m2 += d * (x - mean); } double var() const { return n > 1 ? m2 / (n - 1) : 1.0; } };
     bool tickClimb(const AgInput& in, AgCommand& out);
     bool objective(double& j) const;
+    bool decoderValue(double& v) const;          // the decoder's own number while it is locked (MER, SNR, BER, lock): never mixed into the level objective
+    bool hasSignal() const;                      // something to judge a gain by: a locked decoder, messages, or a channel well over the floor
+    double clipLimitNow() const;                 // the clipped fraction that counts as overload now: tighter when a weak channel sits far under strong carriers
+    double minHead_() const;                     // the headroom floor in force (a radio whose steps are not known yet keeps the safe value)
+    bool floorFine() const;                      // the floor is high enough over the ADC's own noise that more gain buys nothing on an empty channel
+    void settleHere(const AgInput& in);          // the loop rests at this gain: remembers the world it rests in
+    bool worldChanged(const AgInput& in, std::string& why);   // settled: the floor or the out-of-band signals moved, so the gain may be wrong now
     bool comfortable() const;
     double effHeadroom(const AgInput& in) const;
     void climbSample(const AgInput& in, double j);
@@ -385,6 +421,18 @@ private:
     double trialAt_ = 0, settledAt_ = -1e9, settledJ_ = 0, clStep_ = 2, lockLostAt_ = -1;
     bool wasLocked_ = false;
     Run base_, tri_, mBase_, mTri_;   // the objective and the noise floor over the ADC's own noise, at the baseline and at the trial
+    Run decB_, decT_;                 // the decoder's number while locked (the level objective above never sees it: a lock flickering must not read as 50 dB)
+    double settledDec_ = -1e9, floorRef_ = 0, oobRef_ = 0, chanRef_ = -300, headRef_ = 0; bool refValid_ = false;   // the world the loop settled in
+    double lastSearchAt_ = -1e9, lastWakeAt_ = -1e9, imdAt_ = -1e9;
+    bool blindRest_ = false, splitTried_ = false, splitKept_ = false;
+    bool cutActive_ = false; double cutFrom_ = -1e9, cutAt_ = -1e9;   // a cut (clip or headroom floor) took the gain down from cutFrom_: recovery aims back at it, whatever the cause was
+    void noteCut(double now);
+    double cutOobIn_ = -300;
+    int specBins_ = 0;
+    double nowT_ = 0, headRiseAt_ = -1;
+    bool bracketedOnce_ = false;          // the first search of this start has run: later ones wait for something to judge by
+    bool cutWasOob_ = false;              // the cut came from a signal outside the channel (it can leave while the channel stays idle)
+    double lastSigAt_ = -1e9, lastRecoverAt_ = -1e9, recWait_ = 1.5;   // when a signal was last seen (the gain holds through a call that ended), the back-off of re-clipping recoveries
     StagePlan basePlan_; Policy basePol_ = Policy::Balanced;
     std::vector<double> specPow_; int specCnt_ = 0;     // mean power spectrum of this dwell (linear)
     std::vector<float> specBase_;                        // ... of the baseline, dB
@@ -395,6 +443,7 @@ private:
     PulseJudge pj_;   // pulsed modes: messages per second and loud share at the present gain
     double floorBase_ = -200;
     std::string status_, limit_, lastDecision_, retuneWhy_;
+    bool unitLearned_ = false;             // unitScale_ was measured on this unit (a radio with RadioProfile::stepsUncertain is not judged by the slope test before)
     double slope_ = 1, unitScale_ = 1;     // unitScale_: the real dB per nominal dB of this unit, learned from the strongest line's rise on each step
     int rejectRun_ = 0, rejUp_ = 0, idleCycles_ = 0;
     double goodGain_ = -1e9;     // the gain the loop last settled at without clipping (a burst is recovered to this, not to the gain that clipped)

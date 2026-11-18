@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRM data services: packet reassembly -> MSC data groups -> MOT objects (slide show, broadcast website, EPG) and TPEG frames, see drm_data.h.
 #include "dect2/drm/drm_data.h"
 #include "dect2/dab/dab.h"
 #include "dect2/dab/dab_pad.h"
 #include "dect2/drm/drm_proto.h"
+#include "dect2/common/diag.h"
 #include <mutex>
 #include <set>
 #include <algorithm>
@@ -95,7 +99,7 @@ void DrmDataService::unit(const uint8_t* g, size_t n) {
     if (view_.userApp == 0x004) {                                // TPEG: transport frames, a sync byte 0xFF, a 16 bit length, the frame
         size_t len = 0;
         const uint8_t* p = groupPayload(g, n, len);
-        if (!p) { view_.mot.groupsBad++; return; }
+        if (!p) { DIAG_DEBUG_EVERY(808699, 10, "A DRM TPEG data group is damaged (its headers or CRC do not match), so it is dropped."); view_.mot.groupsBad++; return; }
         view_.mot.groups++;
         view_.tpegBytes += len;
         for (size_t i = 0; i + 3 <= len;) {
@@ -146,7 +150,10 @@ picture:
         if (v.userApp == 0x002) {
             if (h == slideHash_) return;                           // the same picture again under a new transport id
             DrmSlide s;
-            if (!decodeSlideImage(m.body.data(), m.body.size(), m.subtype, s.w, s.h, s.rgba)) return;
+            if (!decodeSlideImage(m.body.data(), m.body.size(), m.subtype, s.w, s.h, s.rgba)) {
+                DIAG_DEBUG_EVERY(504125, 10, "A DRM slideshow picture (%s, %zu bytes) could not be decoded as an image, so it is skipped.", m.name.c_str(), m.body.size());
+                return;
+            }
             slideHash_ = h;
             s.seq = v.slide.seq + 1;
             s.name = m.name; s.caption = m.caption; s.category = m.category; s.clickUrl = m.clickUrl; s.altUrl = m.altUrl;

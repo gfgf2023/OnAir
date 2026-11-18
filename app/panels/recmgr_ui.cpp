@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Tools > Recordings: one window over every folder the program records into (recordings, audio, tv, clips, goes, dab, sstv, screenshots): IQ, audio,
 // transport streams, pictures, decoded logs and SigMF. Columns, search, preview (audio plays, pictures show, IQ replays through the engine as the
 // file source), rename, trim to exact samples, export / convert, delete to a trash with undo, tags and notes, the per-folder size budget and the
@@ -19,6 +22,7 @@
 #include <ctime>
 #include <filesystem>
 #include <memory>
+#include "dect2/common/diag.h"
 
 bool recordingOpenPath(App& a, const std::string& path, uint64_t firstSample, uint64_t endSample);   // recording_library_ui.cpp
 
@@ -50,11 +54,11 @@ struct Player {   // a WAV (16-bit PCM or 32-bit float) played through its own a
     bool start(const std::string& p, std::string& err) {
         stop();
         if (!rm::readWavInfo(p, wi, err)) return false;
-        if (!((wi.format == 1 && wi.bits == 16) || (wi.format == 3 && wi.bits == 32)) || wi.channels < 1 || wi.channels > 2) { err = "only 16-bit and float WAV files play here"; return false; }
+        if (!((wi.format == 1 && wi.bits == 16) || (wi.format == 3 && wi.bits == 32)) || wi.channels < 1 || wi.channels > 2) { DIAG_DEBUG(132161, "The recording %s is not 16-bit or float WAV with one or two channels, so it cannot be played here.", p.c_str()); err = "only 16-bit and float WAV files play here"; return false; }
         f = dect2::u8fopen(p, "rb");
-        if (!f) { err = "cannot read the file"; return false; }
+        if (!f) { DIAG_DEBUG(201141, "The recording %s could not be opened for playback, so nothing plays.", p.c_str()); err = "cannot read the file"; return false; }
         out = std::make_unique<dect2::AudioOut>();
-        if (!out->start((int)wi.rate)) { err = "no audio output"; stop(); return false; }
+        if (!out->start((int)wi.rate)) { DIAG(782462, "The audio output did not start at %d Hz for recording playback, so nothing plays.", (int)wi.rate); err = "no audio output"; stop(); return false; }
         path = p; pos = 0; playing = true;
         seek(0);
         return true;

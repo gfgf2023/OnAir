@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // OnAir Web protocol: the JSON reader, every client message's validation, the forbidden types, WebSocket framing both ways, SHA-1 / base64
 // (RFC vectors), IMA ADPCM, the binary frames, and a fuzz run: hundreds of thousands of mutated and random messages through the parser and the
 // frame reader must never crash, never hang, and never produce an accepted message with a value out of its range.
@@ -191,6 +194,12 @@ static void fuzz() {
 }
 
 int main() {
+    {
+        onair_web::ClientMsg cm; std::string code, why;
+        CHECK(onair_web::parseClientMsg("{\"type\":\"control\",\"take\":true}", cm, code, why) && cm.type == onair_web::ClientMsg::Control && cm.take, "control message parses");
+        CHECK(!onair_web::parseClientMsg("{\"type\":\"control\"}", cm, code, why) && code == onair_web::err::BadMessage, "control needs take");
+        CHECK(!onair_web::parseClientMsg("{\"type\":\"control\",\"take\":1}", cm, code, why), "take must be a boolean");
+    }
     testJson();
     testMessages();
     testForbidden();

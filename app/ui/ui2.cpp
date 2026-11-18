@@ -1,12 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The new interface, in a plain developer-tool style: flat, dense and monochrome. A text list of modes with keyboard shortcuts
 // on the left, square bordered panes and hairlines instead of cards, one muted accent. It reuses every panel of the classic
 // interface (main.cpp). This file holds the entry point drawShell2() and the Sidebar / Scope / Tiles layouts; the others
 // are in ui2_faces.cpp, the shell in ui2_shell.cpp, the theme in ui2_theme.cpp.
 #include "ui2_internal.h"
 #include "input_map.h"
+#include "../general/general_panels.h"
+#include "../canvas/canvas.h"
 #include "dect2/dsp/baseband_filter.h"
+#include "ui_preview.h"
 
 using namespace ui2;
+
+#include "overview_layout_ui.inc"   // fittedArea(): the main area with the panels sized to their content
 
 namespace ui2 {
 
@@ -69,6 +77,7 @@ void bodyParent(App& a, float bodyH, ImVec2 disp) {
     // the analysis row gives up height (down to 150) before the tabs above it go below 240; the list on the right narrows with the window
     const float availH = ImGui::GetContentRegionAvail().y;
     const bool uni = a.layoutUnified && !tx && !a.atsc3Mode;   // Unified: nothing in the central area stays empty (docs/UI-LAYOUT.md)
+    if (!uni) { fittedArea(a, tx); ImGui::PopStyleVar(); ImGui::EndChild(); return; }   // the spectrum, the list and the lower row (docs/LAYOUT-4.0.md)
     ImGuiStorage* stg = ImGui::GetStateStorage();
     const ImGuiID kRightEmpty = ImGui::GetID("##uniRightEmpty"), kAnaFold = ImGui::GetID("##uniAnaFold");
     const bool running = a.engine.running();
@@ -260,12 +269,16 @@ void drawShell2(App& a, ImVec2 disp) {
             const bool spaceTaken = gSpaceClaimFrame >= ImGui::GetFrameCount() - 1 || txViewFlag();   // the TV picture or the transmitter has it
             if (!spaceTaken && inputmap::pressed(inputmap::Action::StartStop)) { if (a.engine.running()) a.engine.stop(); else startReceiver(a); }
             if (inputmap::pressed(inputmap::Action::Mute)) { a.muted = !a.muted; a.engine.player().setMuted(a.muted); a.engine.dabAudio().setMuted(a.muted); }
+            if (inputmap::pressed(inputmap::Action::ControlsWin)) inputmap::windowOpen() = !inputmap::windowOpen();
+            if (inputmap::pressed(inputmap::Action::RecordIq)) toggleIqRecording(a);
         }
     }
     if (a.kitGallery) { kit::gallery(a, disp); return; }
+    if (uiprev::galleryOn()) { uiprev::gallery(a, disp.x, disp.y); return; }   // dev: --previewgallery (ui_preview.h)
     {   // Ctrl/Cmd+Shift+L: Classic <-> Unified (the receiver keeps running)
         ImGuiIO& io = ImGui::GetIO();
-        if ((io.KeyCtrl || io.KeySuper) && io.KeyShift && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_L, false)) { a.layoutUnified = !a.layoutUnified; savePrefs(a); }
+        if (inputmap::pressed(inputmap::Action::LayoutToggle)) { a.layoutUnified = !a.layoutUnified; savePrefs(a); }
+        (void)io;
     }
     if (a.devViewMenu > 0) {   // dev: --viewmenu opens the View menu by a click, for a hidden screenshot
         static int n = 0; ImGuiIO& io = ImGui::GetIO();
@@ -283,6 +296,7 @@ void drawShell2(App& a, ImVec2 disp) {
         wasRunning = run;
         if (run && !done && ImGui::GetTime() - t0 > 2.5) { autoRange(a); done = true; }
     }
+    if (canvas::active(a) && !hamViewFlag() && !txViewFlag()) { canvas::frame(a, disp, menuH); return; }   // View > Layout > Workspace: blocks on a canvas (app/canvas)
     pal::panel() = a.uiVariant == 7;
     const bool face = a.uiVariant == 3 || a.uiVariant == 7;
     ImGui::SetNextWindowPos(ImVec2(0, menuH));
@@ -296,6 +310,7 @@ void drawShell2(App& a, ImVec2 disp) {
     ImGui::SetCursorPos(ImVec2(6 * gUi, 4 * gUi));
     txViewSwitch(a);   // RX / TX, top left
     ImGui::SetCursorPosX(0);
+    // const float sbH = 2 * statusStripBlockHeight() + 8 * gUi; // give footer enough space
     const float sbH = statusStripBlockHeight() + 8 * gUi;
     if (hamViewFlag()) {}   // the Ham view has no top bar of its own: the receiver keeps its
     else if (txViewFlag()) txTopBar(a, disp);   // the transmit view has its own top bar (the same frequency digits) and no side list
@@ -317,6 +332,7 @@ void drawShell2(App& a, ImVec2 disp) {
         if (a.lightUi) ImGui::PopStyleVar();
         ImGui::EndChild();
     } else if (dockActive(a)) dockBody(a, bodyH);   // View > Docking: the panels are windows in a dock space
+    else if (generalScreenActive(a)) generalScreen(a, bodyH, disp);   // 4.0: the General receiver's own screen (general/general_screen.cpp)
     else switch (a.uiVariant) {
     case 1: bodyScope(a, bodyH, disp); break;
     case 2: bodyTiles(a, bodyH, disp); break;

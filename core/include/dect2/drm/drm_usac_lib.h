@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Optional USAC (xHE-AAC) decoder that the user installs: libfdk-aac, found and loaded at run time. It is never shipped or linked.
 // Only the six C functions below are used (TT_MP4_RAW transport, the AudioSpecificConfig built from the DRM config).
 #pragma once
@@ -36,6 +39,7 @@ struct UsacLib {
     // The process-wide library the DRM decoder uses: loaded on first use, and again after rescan() (a file dropped in while OnAir runs).
     static UsacLib shared();
     static void rescan();
+    static void setSharedForTest(const UsacLib& l);        // tests: what shared() returns until the next rescan()
     static uint64_t generation();                    // bumped by rescan(): a decoder that opened before reopens to pick the new library up
 };
 
@@ -47,11 +51,16 @@ public:
     UsacSession(const UsacSession&) = delete;
     UsacSession& operator=(const UsacSession&) = delete;
     bool open(const std::vector<uint8_t>& asc);
-    // Interleaved PCM of one access unit; false when the decoder gave nothing. rate/channels as the decoder reports them.
+    // Interleaved PCM of one access unit; false when the decoder gave nothing. True with lastError() != 0: libfdk-aac concealed a frame it could not parse. rate/channels as the decoder reports them.
     bool decode(const std::vector<uint8_t>& au, std::vector<int16_t>& pcm, int& rate, int& channels);
     void close();
     bool isOpen() const { return h_ != nullptr; }
+    // The last AAC_DECODER_ERROR code that open() or decode() got from the library (0 = none), and the step that gave it.
+    int lastError() const { return err_; }
+    const char* lastStep() const { return step_; }
 private:
+    int err_ = 0;
+    const char* step_ = "";
     UsacLib lib_;
     void* h_ = nullptr;
 };

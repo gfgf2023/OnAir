@@ -1,4 +1,7 @@
-// Internet TV: a small HTTP/1.1 client (GET only). Plain http goes over our own sockets everywhere; https goes through OpenSSL when the
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+// Internet TV: a small HTTP/1.1 client (GET; PUT / POST with a body for the SondeHub upload). Plain http goes over our own sockets everywhere; https goes through OpenSSL when the
 // build has it (Linux), else through the system's own TLS (macOS: NSURLSession, Windows: WinHTTP/Schannel), see iptv_http_cocoa.mm / iptv_http_win.cpp.
 #include "dect2/tv/iptv.h"
 #include "../net/tcp_client.h"
@@ -7,6 +10,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include "dect2/common/diag.h"
 
 namespace dect2::iptv {
 
@@ -151,10 +155,10 @@ std::unique_ptr<HttpBody> httpOpen(const std::string& urlIn, const HttpOptions& 
         r = HttpResult();
         r.finalUrl = url;
         const Url u = parseUrl(url);
-        if (!u.ok || (u.scheme != "http" && u.scheme != "https")) { r.error = "not a valid http(s) address: " + redactUrl(url); return nullptr; }
+        if (!u.ok || (u.scheme != "http" && u.scheme != "https")) { r.error = "not a valid http(s) address: " + redactUrl(url); DIAG_DEBUG(862743, "The address %s is not a valid http or https address, so it is not opened.", redactUrl(url).c_str()); return nullptr; }
         if (u.scheme == "https") {
 #if !defined(__APPLE__) && !defined(_WIN32)
-            if (!tls::available()) { r.error = httpsMissingText(); return nullptr; }
+            if (!tls::available()) { DIAG(330912, "No TLS library is available for %s, so this https address cannot be opened.", u.host.c_str()); r.error = httpsMissingText(); return nullptr; }
 #else
             bool handled = false;
             auto b = httpOpenPlatform(url, o, r, handled);
@@ -164,7 +168,7 @@ std::unique_ptr<HttpBody> httpOpen(const std::string& urlIn, const HttpOptions& 
         auto c = std::make_unique<Conn>();
         std::string err;
         c->s = tcpConnect(u.host, u.port, o.connectTimeoutMs, err);
-        if (c->s == kBadSock) { r.error = err.empty() ? "could not connect to " + u.host : err; return nullptr; }
+        if (c->s == kBadSock) { DIAG_DEBUG(778759, "Could not connect to %s, so the request fails.", u.host.c_str()); r.error = err.empty() ? "could not connect to " + u.host : err; return nullptr; }
         sockRecvTimeout(c->s, 500);
         if (u.scheme == "https") {
             c->ctx = tls::makeClientCtx(err, o.insecureTls);
@@ -172,12 +176,15 @@ std::unique_ptr<HttpBody> httpOpen(const std::string& urlIn, const HttpOptions& 
             c->tc = tls::connect(c->ctx, c->s, u.host, err);
             if (!c->tc) { r.error = err + (o.insecureTls ? "" : " (Advanced > Ignore certificate errors can be ticked for a stream you trust)"); return nullptr; }
         }
-        std::string req = "GET " + u.path + " HTTP/1.1\r\nHost: " + (u.ipv6 ? "[" + u.host + "]" : u.host);
+        const bool upload = !o.method.empty() && o.method != "GET";
+        std::string req = (upload ? o.method : std::string("GET")) + " " + u.path + " HTTP/1.1\r\nHost: " + (u.ipv6 ? "[" + u.host + "]" : u.host);
         if ((u.scheme == "http" && u.port != 80) || (u.scheme == "https" && u.port != 443)) req += ":" + std::to_string(u.port);
         req += "\r\nUser-Agent: " + (o.userAgent.empty() ? std::string("OnAir") : o.userAgent) + "\r\nAccept: */*\r\nConnection: close\r\n";
         if (!o.referer.empty()) req += "Referer: " + o.referer + "\r\n";
         for (auto& h : o.headers) if (h.first.find_first_of("\r\n") == std::string::npos && h.second.find_first_of("\r\n") == std::string::npos) req += h.first + ": " + h.second + "\r\n";
+        if (upload) req += "Content-Length: " + std::to_string(o.requestBody.size()) + "\r\n";
         req += "\r\n";
+        if (upload) req += o.requestBody;
         if (!c->wr(req.data(), req.size())) { r.error = "the connection was closed while sending the request"; return nullptr; }
         // headers
         std::string head;
@@ -207,11 +214,11 @@ std::unique_ptr<HttpBody> httpOpen(const std::string& urlIn, const HttpOptions& 
         }
         r.contentType = r.headers.count("content-type") ? r.headers["content-type"] : "";
         if (r.headers.count("content-length")) r.contentLength = atoll(r.headers["content-length"].c_str());
-        if (r.status >= 300 && r.status < 400 && r.headers.count("location")) {
+        if (!upload && r.status >= 300 && r.status < 400 && r.headers.count("location")) {
             url = resolveUrl(url, r.headers["location"]);
             continue;
         }
-        if (r.status < 200 || r.status >= 300) { r.error = statusText(r.status); return nullptr; }
+        if (r.status < 200 || r.status >= 300) { DIAG_DEBUG(703935, "The server %s answered with HTTP status %d, so the request is treated as failed.", u.host.c_str(), r.status); r.error = statusText(r.status); if (!o.keepErrorBody) return nullptr; }
         auto b = std::make_unique<SocketBody>();
         b->c = std::move(c);
         b->pre = std::move(body);
@@ -221,6 +228,7 @@ std::unique_ptr<HttpBody> httpOpen(const std::string& urlIn, const HttpOptions& 
         b->remaining = b->chunked ? -1 : r.contentLength;
         return b;
     }
+    DIAG_DEBUG(290642, "The request was redirected more than %d times, so it is given up.", o.maxRedirects);
     r.error = "too many redirects";
     return nullptr;
 }
@@ -233,9 +241,23 @@ bool httpGetAll(const std::string& url, const HttpOptions& o, std::string& body,
     for (;;) {
         const long k = b->read(buf, sizeof buf);
         if (k == 0) return true;
-        if (k < 0) { if (!body.empty() && r.contentLength < 0) return true; r.error = "the download stopped (timeout or connection lost)"; return false; }
+        if (k < 0) { if (!body.empty() && r.contentLength < 0) return true; DIAG_DEBUG(610407, "The download stopped after %zu bytes (timeout or connection lost), so it is treated as failed.", body.size()); r.error = "the download stopped (timeout or connection lost)"; return false; }
         body.append(buf, (size_t)k);
-        if (body.size() > maxBytes) { r.error = "the file is larger than " + std::to_string(maxBytes >> 20) + " MB"; return false; }
+        if (body.size() > maxBytes) { DIAG_DEBUG(180704, "The download is larger than the limit of %zu bytes, so it is given up.", maxBytes); r.error = "the file is larger than " + std::to_string(maxBytes >> 20) + " MB"; return false; }
+    }
+}
+
+bool httpRequestAll(const std::string& url, const HttpOptions& o, std::string& body, HttpResult& r, size_t maxBytes) {
+    body.clear();
+    auto b = httpOpen(url, o, r);
+    if (!b) return false;
+    char buf[16384];
+    for (;;) {
+        const long k = b->read(buf, sizeof buf);
+        if (k == 0) return true;
+        if (k < 0) return !body.empty() || r.status > 0;   // the status line came: the answer counts even when its text was cut short
+        body.append(buf, (size_t)k);
+        if (body.size() > maxBytes) { body.resize(maxBytes); return true; }
     }
 }
 

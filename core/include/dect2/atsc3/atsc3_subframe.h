@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ATSC 3.0 subframe OFDM symbols (A/322 7.2.4, 7.2.6, 7.3 and 8.1): data symbols with scattered pilots, subframe boundary symbols, continual
 // and edge pilots, null cells, frequency interleaving, and the modulator and demodulator for one symbol.
 #pragma once
@@ -46,7 +49,8 @@ struct SymbolRx {
 };
 bool receiveSymbol(const SubframeParams& s, int l, const cf32* x, SymbolRx& rx);
 void smoothChannel(const std::vector<SymbolRx>& rx, int l, int half, std::vector<cf32>& out);
-void symbolCells(const SubframeParams& s, int l, const SymbolRx& rx, const std::vector<cf32>& hch, std::vector<cf32>& cells);
+// weights (optional): the channel state of each cell, |h|^2 against the symbol's mean (0 for an erased cell), in the order of `cells`
+void symbolCells(const SubframeParams& s, int l, const SymbolRx& rx, const std::vector<cf32>& hch, std::vector<cf32>& cells, std::vector<float>* weights = nullptr);
 
 } // namespace atsc3
 } // namespace dect2

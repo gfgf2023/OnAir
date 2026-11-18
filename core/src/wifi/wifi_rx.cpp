@@ -1,5 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wi-Fi network monitor (see wifi_rx.h).
 #include "dect2/wifi/wifi_rx.h"
+#include "dect2/wirecap/wire.h"
+#include <random>
 #include "dect2/results/results_io.h"
 #include "dect2/wifi/wifi_tel.h"
 #include "dect2/wifi/wifi_proto.h"
@@ -8,6 +13,7 @@
 #include "dect2/engine/channelizer.h"
 #include "dect2/dsp/gen_util.h"
 #include <algorithm>
+#include <cstdint>
 #include <atomic>
 #include <cmath>
 #include <complex>
@@ -38,12 +44,21 @@ uint16_t sfdPattern() {   // the SFD as the history register holds it (newest bi
     return p;
 }
 const uint16_t kSfdPat = sfdPattern();
+uint16_t sfdShortPattern() {
+    uint16_t p = 0;
+    for (int k = 0; k < 16; k++) p = (uint16_t)(p << 1 | (wifi::kSfdShort >> k & 1));
+    return p;
+}
+const uint16_t kSfdShortPat = sfdShortPattern();
+constexpr int kAllOne = 1 << 30;          // demod(): no DQPSK part
 } // namespace
 
 struct WifiReceiver::Impl {
     std::mutex mu;
     std::function<void(const std::string&)> log;
     std::function<void(const uint8_t*, size_t, float)> onFrame;
+    std::function<void(const uint8_t*, size_t, const WifiFrameMeta&)> onMeta;
+    std::atomic<bool> ofdmQpsk{false};
     double rateSet = 0, offsetSet = 0;
     std::atomic<bool> resetReq{true}, clearReq{false};
     std::atomic<double> centerHz{0};
@@ -66,6 +81,9 @@ struct WifiReceiver::Impl {
     // front end: mixer and linear interpolation to 20 Msps
     std::complex<double> lo{1, 0}, loStep{1, 0};
     int loCount = 0;
+    static constexpr int kBlock = 1024;   // input samples mixed at a time
+    std::vector<std::complex<float>> stepTab, mixed;   // loStep^j for j < kBlock (the mixer without a recurrence); a mixed block
+    std::vector<float> linR, linI, corR, corI;         // at 20 Msps: the last kSps - 1 mixed samples and the block after them; the block's correlations
     double step = 1;
     bool direct = true;
     int64_t outK = 0;
@@ -78,12 +96,13 @@ struct WifiReceiver::Impl {
     // correlator output and input power, from global index base
     std::vector<float> cr, ci, pw;
     int64_t base = 0, g = -1;
+    int64_t doneTo = INT64_MAX;          // inside workBlock: cr / pw hold the block ahead of the search; process() looks only up to here
     // the 20 phase detectors
     struct Chain { std::complex<float> prev{0, 0}; uint8_t scr = 0; uint64_t h = 0; float e = 0; };
     Chain ch[kSps];
-    bool winOpen = false; int64_t winStart = 0, winBest = 0; float winE = 0;
-    // the packet being decoded
-    struct Pend { int64_t at = 0; int stage = 0; int64_t need = 0; int bytes = 0; };
+    bool winOpen = false, winShort = false; int64_t winStart = 0, winBest = 0; float winE = 0;
+    // the packet being decoded; shortPre: the short preamble (header at 2 Mbit/s); rate: the MPDU's (1 or 2 Mbit/s)
+    struct Pend { int64_t at = 0, alt = 0; int stage = 0; int64_t need = 0; int bytes = 0; bool shortPre = false; int rate = 1; };
     bool pending = false;
     Pend pd;
     int64_t busyUntil = 0;
@@ -124,6 +143,7 @@ struct WifiReceiver::Impl {
             sb->cf.configure(rate, offs[i], kOut);
             Sub* sp = sb.get();
             sb->rx.setCallback([this, sp](const uint8_t* p, size_t n, const wifi::ofdm::Info& in) { onOfdm(*sp, p, n, in); });
+            sb->rx.setAllowQpsk(ofdmQpsk.load());
             subs.push_back(std::move(sb));
         }
         tel.subChannels = (int)subs.size();
@@ -136,12 +156,15 @@ struct WifiReceiver::Impl {
         const int b = sb.freqMhz > 0 ? wifi::bandOfMhz(sb.freqMhz) : -1;
         const int ch = b >= 0 ? wifi::bandChannelOf(b, sb.freqMhz, b == wifi::Band24 ? 1.0 : 2.5) : 0;
         tel.phy = 1;
+        if (onMeta) { WifiFrameMeta m; m.rssiDbfs = in.rssiDb; m.rateKbps = in.rateMbps * 1000; m.ofdm = true; m.cfoHz = in.cfoHz; m.snrDb = in.snrDb; onMeta(p, n, m); }
         accept(p, n, (int)n + 4, in.rssiDb, sigSec(), ch, b);
     }
 
     void initFront() {
         lo = 1; loCount = 0;
         loStep = rate > 0 ? std::polar(1.0, -2 * kPi * offset / rate) : std::complex<double>(1, 0);
+        stepTab.resize(kBlock); mixed.resize(kBlock);
+        for (int j = 0; j < kBlock; j++) { const std::complex<double> v = std::polar(1.0, rate > 0 ? -2 * kPi * offset / rate * j : 0.0); stepTab[(size_t)j] = std::complex<float>((float)v.real(), (float)v.imag()); }
         direct = std::fabs(rate - kOut) < 1;
         step = rate / kOut;
         outK = 0; nIn = 0;
@@ -150,6 +173,8 @@ struct WifiReceiver::Impl {
         for (float& v : hr) v = 0;
         for (float& v : hi) v = 0;
         hp = 0; nOut = 0;
+        linR.assign((size_t)(kSps - 1 + kBlock), 0.f); linI.assign((size_t)(kSps - 1 + kBlock), 0.f);
+        corR.assign((size_t)kBlock, 0.f); corI.assign((size_t)kBlock, 0.f);
     }
 
     void resetDemod() {
@@ -202,25 +227,76 @@ struct WifiReceiver::Impl {
 
     // ---------------------------------------------------------------- front end
 
-    void input(float re, float im) {
-        // the two complex products written out (the same bits as std::complex<double>, without its NaN-recovery call)
-        const double lr = lo.real(), li = lo.imag(), sr = loStep.real(), si = loStep.imag();
-        const std::complex<double> v((double)re * lr - (double)im * li, (double)re * li + (double)im * lr);
-        lo = std::complex<double>(lr * sr - li * si, lr * si + li * sr);
-        if (++loCount >= 4096) { lo /= std::abs(lo); loCount = 0; }
-        const std::complex<float> y((float)v.real(), (float)v.imag());
-        if (direct) { work(y); nIn++; return; }
-        // linear interpolation between the previous input sample (index nIn - 1) and this one
-        const int64_t i = nIn;
-        for (;;) {
-            const double t = outK * step;
-            if (t > (double)i) break;
-            const float fr = (float)(t - (double)(i - 1));
-            work(yPrev * (1 - fr) + y * fr);
-            outK++;
+    // A block of input (at most kBlock samples), mixed to 0 Hz with the phase at its start times a table of the step's powers (no dependency
+    // from one sample to the next, so it vectorises; the phase at the start goes on in double precision), then sample by sample through the
+    // correlator. A frame whose samples are all in is decoded at once, not at the end of feed(): a pending frame holds the search for the next.
+    void block(const cf32* x, int k) {
+        const std::complex<float> l0((float)lo.real(), (float)lo.imag());
+        const std::complex<float>* st = stepTab.data();
+        std::complex<float>* y = mixed.data();
+        double pwr = 0;
+        for (int j = 0; j < k; j++) {
+            float re = x[j].real(), im = x[j].imag();
+            if (!(std::fabs(re) <= 3.0e38f) || !(std::fabs(im) <= 3.0e38f)) re = im = 0;   // not finite
+            pwr += (double)re * re + (double)im * im;
+            const std::complex<float> w = l0 * st[j];
+            y[j] = std::complex<float>(re * w.real() - im * w.imag(), re * w.imag() + im * w.real());
         }
-        yPrev = y;
-        nIn++;
+        power += pwr;
+        lo *= std::polar(1.0, -2 * kPi * offset / rate * k);
+        if (++loCount >= 64) { lo /= std::abs(lo); loCount = 0; }
+        if (direct) { workBlock(y, k); return; }
+        for (int j = 0; j < k; j++) {
+            {
+                // linear interpolation between the previous input sample (index nIn - 1) and this one
+                const int64_t i = nIn;
+                for (;;) {
+                    const double t = outK * step;
+                    if (t > (double)i) break;
+                    const float fr = (float)(t - (double)(i - 1));
+                    work(yPrev * (1 - fr) + y[j] * fr);
+                    outK++;
+                }
+                yPrev = y[j];
+                nIn++;
+            }
+            if (pending && base + (int64_t)cr.size() - kSps >= pd.need) process();
+        }
+    }
+
+    // work() for a block at 20 Msps: the power and the Barker correlations of the whole block first (a short FIR along the block, which
+    // vectorises), then the preamble search sample by sample
+    void workBlock(const std::complex<float>* y, int k) {
+        float* lr = linR.data();
+        float* li = linI.data();
+        for (int j = 0; j < k; j++) { lr[kSps - 1 + j] = y[j].real(); li[kSps - 1 + j] = y[j].imag(); }
+        const size_t o = pw.size();
+        pw.resize(o + (size_t)k); cr.resize(o + (size_t)k); ci.resize(o + (size_t)k);
+        float* pp = pw.data() + o;
+        for (int j = 0; j < k; j++) pp[j] = lr[kSps - 1 + j] * lr[kSps - 1 + j] + li[kSps - 1 + j] * li[kSps - 1 + j];
+        float* ar = corR.data();
+        float* ai = corI.data();
+        for (int j = 0; j < k; j++) { ar[j] = 0; ai[j] = 0; }
+        for (int t = 0; t < kSps; t++) {   // the window of sample j: samples j - kSps + 1 .. j, oldest first
+            const float h = taps[t];
+            const float* sr = lr + t;
+            const float* si = li + t;
+            for (int j = 0; j < k; j++) { ar[j] += h * sr[j]; ai[j] += h * si[j]; }
+        }
+        // the history of the next block, and the ring work() uses
+        for (int t = 0; t < kSps - 1; t++) { lr[t] = lr[k + t]; li[t] = li[k + t]; }
+        for (int j = std::max(0, k - kSps); j < k; j++) { hr[hp] = hr[hp + kSps] = y[j].real(); hi[hp] = hi[hp + kSps] = y[j].imag(); hp = hp + 1 == kSps ? 0 : hp + 1; }
+        // cr / ci / pw hold the whole block now; process() is held to the samples searched so far (doneTo), so it trims nothing still needed
+        const int64_t first = base + (int64_t)o;   // global index of the block's first sample in cr / pw
+        for (int j = 0; j < k; j++) {
+            g++;
+            nIn++;
+            const int64_t at = first + j - base;
+            if (nOut < kSps && ++nOut < kSps) { cr[(size_t)at] = 0; ci[(size_t)at] = 0; continue; }   // the first kSps - 1 samples: no full window yet
+            cr[(size_t)at] = ar[j]; ci[(size_t)at] = ai[j];
+            detect(std::complex<float>(ar[j], ai[j]));
+            if (pending && first + j + 1 - kSps >= pd.need) { doneTo = first + j + 1; process(); doneTo = INT64_MAX; }
+        }
     }
 
     __attribute__((always_inline)) void work(std::complex<float> y) {   // inlined: a call per sample stored the two floats and loaded them as one 8-byte value (store-forwarding stall)
@@ -251,11 +327,26 @@ struct WifiReceiver::Impl {
         if (winOpen && at > winStart + kWin) {
             winOpen = false;
             tel.sfdHits++;
-            if (!pending && winBest >= busyUntil) { pending = true; pd = Pend(); pd.at = winBest; pd.need = winBest + (int64_t)49 * kSps + kMargin; busyUntil = pd.need; }
+            if (!pending && winBest >= busyUntil) {
+                // The phase whose SFD came first is not always the correlation peak: a radio rate resampled to 20 Msps (24 or 26 Msps) lets a weak
+                // phase on the Barker sidelobes decode the preamble first while the peak's own detector misses the window. The header is read at
+                // the phase with the most energy within half a symbol, and at the first phase when that fails.
+                int64_t peak = winBest; float pe = -1;
+                for (int o = -kSps / 2; o < kSps / 2; o++) {
+                    const float e = ch[(size_t)(((winBest + o) % kSps + kSps) % kSps)].e;
+                    if (e > pe) { pe = e; peak = winBest + o; }
+                }
+                pending = true; pd = Pend(); pd.at = peak; pd.alt = winBest; pd.shortPre = winShort;
+                pd.need = std::max(peak, winBest) + (int64_t)(winShort ? 26 : 50) * kSps + kMargin;   // one symbol more: the peak may belong to the next   // the header: 48 bits at 1 Mbit/s, or at 2 Mbit/s after the short SFD
+                busyUntil = pd.need;
+            }
         }
         if ((uint16_t)k.h == kSfdPat && popc(k.h >> 16 & 0xFFFFFFFFull) >= 31 && at >= busyUntil) {
-            if (!winOpen) { winOpen = true; winStart = at; winBest = at; winE = k.e; }
-            else if (k.e > winE) { winE = k.e; winBest = at; }
+            if (!winOpen) { winOpen = true; winStart = at; winBest = at; winE = k.e; winShort = false; }
+            else if (k.e > winE) { winE = k.e; winBest = at; winShort = false; }
+        } else if ((uint16_t)k.h == kSfdShortPat && popc(k.h >> 16 & 0xFFFFFFFFull) <= 1 && at >= busyUntil) {   // short preamble: SYNC is scrambled zeros
+            if (!winOpen) { winOpen = true; winStart = at; winBest = at; winE = k.e; winShort = true; }
+            else if (k.e > winE) { winE = k.e; winBest = at; winShort = true; }
         }
     }
 
@@ -277,57 +368,113 @@ struct WifiReceiver::Impl {
 
     struct Demod { std::vector<uint8_t> bits; double angSum = 0, angSq = 0; int nAng = 0; int64_t end = 0; };
 
-    // the descrambled bits after the SFD (nsym of them), with an early / late timing tracker
-    void demod(int64_t at, int nsym, Demod& out) {
+    // nBits descrambled bits after the SFD, with an early / late timing tracker. Bits from qpskFrom on come two to a symbol (DQPSK, clause
+    // 16.2.3.6: the phase change of dibit d0 d1 is 00 0, 01 pi/2, 11 pi, 10 -pi/2), the ones before it one to a symbol (DBPSK).
+    static int symbolsFor(int nBits, int qpskFrom) { return qpskFrom >= nBits ? nBits : qpskFrom + (nBits - qpskFrom + 1) / 2; }
+    void demod(int64_t at, int nBits, int qpskFrom, Demod& out) {
         out.bits.clear();
+        {   // start on the correlation peak: the largest magnitude within half a symbol, summed over the last 8 preamble symbols (a phase on the
+            // Barker sidelobes can decode the preamble, and a resampled radio rate can hand the SFD to it first)
+            int best = 0; float bm = -1;
+            for (int o = -kSps / 2; o < kSps / 2; o++) {
+                float m = 0;
+                for (int sy = 0; sy < 8; sy++) m += mag(at - (int64_t)sy * kSps + o);
+                if (m > bm) { bm = m; best = o; }
+            }
+            at += best;
+        }
         int64_t t = at - (int64_t)kBack * kSps;
-        std::complex<float> prev = cAt(t);
+        std::complex<float> prev = cAt(t - 1) + cAt(t) + cAt(t + 1);
         uint8_t scr = 0;
-        double acc = 0;
+        // Timing: the correlation magnitudes one sample early, on time and late, each smoothed over the symbols; the timing moves one sample
+        // when a neighbour stands 15 % above the one in use (it follows a sample clock error, and a resampled radio rate whose peak shape changes
+        // from symbol to symbol does not push it off the peak). Decisions use the sum of the three correlations: the Barker peak is under two
+        // samples wide at 20 Msps, and the sum keeps a symbol whose peak fell between samples.
+        float sm[3] = {mag(t - 1), mag(t), mag(t + 1)};
+        auto descr = [&](uint8_t bit) { const uint8_t desc = (uint8_t)(bit ^ (scr >> 3 & 1) ^ (scr >> 6 & 1)); scr = (uint8_t)(((scr << 1) | bit) & 0x7F); return desc; };
+        const int nsym = symbolsFor(nBits, qpskFrom);
         for (int j = -kBack + 1; j <= nsym; j++) {
             t += kSps;
-            const double e = (mag(t + 1) - mag(t - 1)) / (mag(t) + 1e-12);
-            acc = 0.9 * acc + e;
-            if (acc > 2.5) { t++; acc = 0; } else if (acc < -2.5) { t--; acc = 0; }
-            const std::complex<float> c = cAt(t);
+            for (int o = 0; o < 3; o++) sm[o] = 0.8f * sm[o] + 0.2f * mag(t + o - 1);
+            if (sm[2] > 1.15f * sm[1] && sm[2] >= sm[0]) { t++; sm[0] = sm[1]; sm[1] = sm[2]; }
+            else if (sm[0] > 1.15f * sm[1]) { t--; sm[2] = sm[1]; sm[1] = sm[0]; }
+            const std::complex<float> c = cAt(t - 1) + cAt(t) + cAt(t + 1);
             const std::complex<float> d = c * std::conj(prev);
             prev = c;
-            const uint8_t bit = d.real() < 0 ? 1 : 0;
-            const uint8_t desc = (uint8_t)(bit ^ (scr >> 3 & 1) ^ (scr >> 6 & 1));
-            scr = (uint8_t)(((scr << 1) | bit) & 0x7F);
-            if (j >= 1) out.bits.push_back(desc);
-            if (j >= -kBack + 8) {
-                const double a = std::arg(bit ? -d : d);
-                out.angSum += a; out.angSq += a * a; out.nAng++;
+            const bool two = j >= 1 && (int)out.bits.size() >= qpskFrom;
+            double a;
+            if (!two) {
+                const uint8_t bit = d.real() < 0 ? 1 : 0;
+                const uint8_t desc = descr(bit);
+                if (j >= 1) out.bits.push_back(desc);
+                a = std::arg(bit ? -d : d);
+            } else {
+                // the nearest of 0, pi/2, pi, -pi/2
+                const double ph = std::arg(d);
+                const int qd = ((int)std::lround(ph / (kPi / 2)) % 4 + 4) % 4;   // 0 .. 3 quarter turns
+                static const uint8_t kD0[4] = {0, 0, 1, 1}, kD1[4] = {0, 1, 1, 0};   // 0: 00, 1 (+pi/2): 01, 2 (pi): 11, 3 (-pi/2): 10
+                out.bits.push_back(descr(kD0[qd]));
+                if ((int)out.bits.size() < nBits) out.bits.push_back(descr(kD1[qd]));
+                a = std::remainder(ph - qd * (kPi / 2), 2 * kPi);
             }
+            if (j >= -kBack + 8) { out.angSum += a; out.angSq += a * a; out.nAng++; }
         }
         out.end = t + kSps;
     }
+    void emitMeta(const uint8_t* f, size_t n, float rssi, bool ok, const Demod& dm) {
+        if (!onMeta) return;
+        WifiFrameMeta m;
+        m.rssiDbfs = rssi; m.rateKbps = pd.rate * 1000; m.shortPreamble = pd.shortPre; m.fcsOk = ok;
+        if (dm.nAng > 8) {
+            const double mu = dm.angSum / dm.nAng, var = std::max(1e-6, dm.angSq / dm.nAng - mu * mu);
+            m.snrDb = (float)(10 * std::log10(1 / var));
+            m.cfoHz = mu / (2 * kPi) * wifi::kSymRate;
+        }
+        onMeta(f, n, m);
+    }
+    float frameRssi(const Demod& dm) const {
+        double p = 0; int np = 0;
+        for (int64_t k = std::max(base, pd.at - (int64_t)kBack * kSps); k < std::min(dm.end, base + (int64_t)pw.size()); k++) { p += pw[(size_t)(k - base)]; np++; }
+        return (float)(10 * std::log10(p / std::max(1, np) + 1e-20));
+    }
 
     void process() {
-        const int64_t end = base + (int64_t)cr.size() - kSps;   // the last symbol start with its correlation in
+        const int64_t end = std::min(base + (int64_t)cr.size(), doneTo) - kSps;   // the last symbol start with its correlation in (and searched)
         while (pending && end >= pd.need) {
             if (pd.stage == 0) {
                 Demod dm;
-                demod(pd.at, 48, dm);
-                if (dm.bits.size() < 48) { tel.headersBad++; pending = false; busyUntil = 0; break; }
-                uint16_t crc = 0;
-                for (int k = 0; k < 16; k++) crc = (uint16_t)(crc << 1 | dm.bits[(size_t)(32 + k)]);
-                if (wifi::crc16(dm.bits.data(), 32) != crc) { tel.headersBad++; pending = false; busyUntil = 0; break; }
+                auto headerOk = [&](int64_t at) {
+                    demod(at, 48, pd.shortPre ? 0 : kAllOne, dm);
+                    if (dm.bits.size() < 48) return false;
+                    uint16_t crc = 0;
+                    for (int k = 0; k < 16; k++) crc = (uint16_t)(crc << 1 | dm.bits[(size_t)(32 + k)]);
+                    return wifi::crc16(dm.bits.data(), 32) == crc;
+                };
+                // the peak, the first phase, and the peak a symbol either side (half a symbol from the first phase it may be the neighbour's)
+                bool ok = false;
+                const int64_t cands[4] = {pd.at, pd.alt, pd.at - kSps, pd.at + kSps};
+                for (int ci = 0; ci < 4 && !ok; ci++) {
+                    if (ci == 1 && pd.alt == pd.at) continue;
+                    if (headerOk(cands[ci])) { pd.at = cands[ci]; ok = true; }
+                }
+                if (!ok) { tel.headersBad++; pending = false; busyUntil = 0; break; }
                 uint8_t h[4] = {};
                 for (int i = 0; i < 32; i++) h[i / 8] |= (uint8_t)(dm.bits[(size_t)i] << (i % 8));
                 tel.headersOk++;
                 const int lenUs = h[2] | h[3] << 8;
-                if (h[0] != wifi::kSignal1M) { tel.otherRate++; pending = false; busyUntil = pd.at + (int64_t)lenUs * kSps; break; }
-                const int bytes = lenUs / 8;
-                if (bytes < 14 || bytes > wifi::kMaxMpdu || lenUs % 8) { tel.headersBad++; pending = false; busyUntil = 0; break; }
+                const bool r1 = h[0] == wifi::kSignal1M && !pd.shortPre, r2 = h[0] == wifi::kSignal2M;
+                if (!r1 && !r2) { tel.otherRate++; pending = false; busyUntil = pd.at + (int64_t)lenUs * kSps; break; }
+                pd.rate = r2 ? 2 : 1;
+                const int usPerByte = r2 ? 4 : 8;
+                const int bytes = lenUs / usPerByte;
+                if (bytes < 14 || bytes > wifi::kMaxMpdu || lenUs % usPerByte) { tel.headersBad++; pending = false; busyUntil = 0; break; }
                 pd.stage = 1; pd.bytes = bytes;
-                pd.need = pd.at + (int64_t)(49 + 8 * bytes) * kSps + kMargin;
+                pd.need = pd.at + (int64_t)(1 + symbolsFor(48 + 8 * bytes, pd.shortPre ? 0 : r2 ? 48 : kAllOne)) * kSps + kMargin;
                 busyUntil = pd.need;
                 continue;
             }
             Demod dm;
-            demod(pd.at, 48 + 8 * pd.bytes, dm);
+            demod(pd.at, 48 + 8 * pd.bytes, pd.shortPre ? 0 : pd.rate == 2 ? 48 : kAllOne, dm);
             pending = false;
             busyUntil = dm.end;
             if (pd.bytes < 14 || dm.bits.size() < (size_t)48 + 8 * (size_t)pd.bytes) { tel.blocksBad++; break; }
@@ -336,10 +483,9 @@ struct WifiReceiver::Impl {
                 for (int k = 0; k < 8; k++) f[(size_t)i] |= (uint8_t)(dm.bits[(size_t)(48 + 8 * i + k)] << k);
             const size_t n = f.size() - 4;
             const uint32_t got = (uint32_t)f[n] | (uint32_t)f[n + 1] << 8 | (uint32_t)f[n + 2] << 16 | (uint32_t)f[n + 3] << 24;
-            if (wifi::crc32(f.data(), n) != got) { tel.blocksBad++; break; }
-            double p = 0; int np = 0;
-            for (int64_t k = std::max(base, pd.at - (int64_t)kBack * kSps); k < std::min(dm.end, base + (int64_t)pw.size()); k++) { p += pw[(size_t)(k - base)]; np++; }
-            const float rssi = (float)(10 * std::log10(p / std::max(1, np) + 1e-20));
+            if (wifi::crc32(f.data(), n) != got) { tel.blocksBad++; emitMeta(f.data(), n, frameRssi(dm), false, dm); break; }
+            const float rssi = frameRssi(dm);
+            emitMeta(f.data(), n, rssi, true, dm);
             if (dm.nAng > 8) {
                 const double m = dm.angSum / dm.nAng, var = std::max(1e-6, dm.angSq / dm.nAng - m * m);
                 const double snr = 10 * std::log10(1 / var);
@@ -362,15 +508,20 @@ struct WifiReceiver::Impl {
 
     // A frame whose FCS passed: count it, and for beacons, probe responses and FILS discovery frames update the access point's row.
     // tuned / bnd: the channel and band the frame was heard on (0 / -1: unknown, a file); the DSSS chain passes -1 and gets the radio's.
+    WifiClientTracker clients{(uint32_t)std::random_device{}()};
+
     void accept(const uint8_t* p, size_t n, int len, float rssi, double sec, int tuned = -1, int bnd = -2) {
         tel.blocksOk++;
         lastGood = sigSec();
         if (onFrame) onFrame(p, n, rssi);
         if (tuned < 0) tuned = tunedChannel();
         if (bnd == -2) { const double c = centerHz.load(); bnd = c > 0 ? wifi::bandOfMhz((c + offset) / 1e6) : -1; }
+        if (wire::on(wire::Wifi)) wire::Hub::get().publish(wire::Wifi, wire::radiotap80211(p, n, (bnd >= 0 && tuned > 0) ? (int)std::lround(wifi::bandChannelMhz(bnd, tuned)) : 0, rssi));   // as received: a protected payload stays encrypted
         wifi::Frame f;
         if (!wifi::parseFrame(p, n, f, bnd)) return;
         if (f.type >= 0 && f.type < 3) tel.perType[f.type]++;
+        clients.observe(p, n, wifi::macText(f.bssid), (int64_t)time(nullptr), sec);
+        tel.clients = clients.clients(); tel.floodAlarms = clients.alarms(); tel.deauthFrames = clients.deauths(); tel.handshakeFrames = clients.handshakes();
         if (!f.beacon && !f.probeResp && !f.fils) return;   // data and the other frames: counted only
         // A 40 / 80 / 160 MHz BSS sends its non-HT frame on every 20 MHz part (clause 17.3.8.2): the copies heard away from the primary channel are not new beacons
         if (bnd >= wifi::Band5 && tuned && f.channel && f.channel != tuned && wifi::validChannel(bnd, f.channel) && !f.fils) { tel.dupFrames++; return; }
@@ -516,11 +667,12 @@ void WifiReceiver::feed(const cf32* x, size_t n) {
         while ((double)m.nIn >= m.nextReport) { m.nextReport += m.reportSec * m.rate; m.report(); }
         return;
     }
-    for (size_t i = 0; i < n; i++) {
-        float re = x[i].real(), im = x[i].imag();
-        if (!std::isfinite(re) || !std::isfinite(im)) re = im = 0;
-        m.power += (double)re * re + (double)im * im;
-        m.input(re, im);
+    for (size_t i = 0; i < n;) {
+        // in blocks, cut at the reports
+        const int64_t toReport = std::max<int64_t>(1, (int64_t)std::ceil(m.nextReport) - m.nIn);
+        const int k = (int)std::min<int64_t>({(int64_t)(n - i), (int64_t)Impl::kBlock, toReport});
+        m.block(x + i, k);
+        i += (size_t)k;
         if ((double)m.nIn >= m.nextReport) { m.process(); m.nextReport += m.reportSec * m.rate; m.report(); }
     }
     m.nPower += (int64_t)n;
@@ -553,6 +705,8 @@ bool WifiReceiver::telemetry(WifiTelemetry& out, uint64_t lastSeq) {
 }
 void WifiReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->log = std::move(cb); }
 void WifiReceiver::setFrameCallback(std::function<void(const uint8_t*, size_t, float)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->onFrame = std::move(cb); }
+void WifiReceiver::setFrameMetaCallback(std::function<void(const uint8_t*, size_t, const WifiFrameMeta&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->onMeta = std::move(cb); }
+void WifiReceiver::setOfdmQpsk(bool on) { if (p_->ofdmQpsk.exchange(on) != on) p_->centerChanged = true; }
 
 ModeTuning wifiTuning() {
     ModeTuning t;

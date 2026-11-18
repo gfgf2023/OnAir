@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Modes that may run as the second decoder (Engine::setSecondary): for each of the narrow-channel modes added after the first allow-list, the mode's
 // own test signal is written as a recording; it must decode (a) as the first mode alone and (b) as the second mode beside VDL Mode 2 (which only sees
 // noise in it), through latestRx2(), with the same kind of result. Modes that stay refused must say why. SEC_MODES="65 67" limits the run.
@@ -15,6 +18,7 @@
 #include <vector>
 using namespace dect2;
 #include "../common/test_util.h"
+#include "../common/test_long.h"
 
 static std::string writeCapture(int sm, double rate, double secs) {
     SynthConfig cfg;
@@ -89,6 +93,8 @@ int main() {
         double rate = mt->sampleRate;
         if (!Engine::secondaryCheck(29, sm, 100e6, rate, 100e6).empty()) rate *= 2;
         printf("%s (mode %d), %.2f Msps, allowed as second: %s\n", mt->name, sm, rate / 1e6, Engine::secondaryAllowed(sm) ? "yes" : "no");
+        // a refused mode's alone run has no check: by default it is left out (ONAIR_TEST_LONG=1 runs it, as before)
+        if (!testLong() && !Engine::secondaryAllowed(sm)) continue;
         const std::string path = writeCapture(sm, rate, 8.0);
         if (path.empty()) { CHECK(false, "no test signal for mode %d", sm); continue; }
         int rep = 0, wrong = 0;

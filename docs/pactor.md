@@ -7,11 +7,13 @@ Mode list: **HF UTILITY > PACTOR-I (experimental)**.
 **Experimental.** It was written from the public descriptions only (listed below). No real PACTOR recording was available, so it has been checked
 against its own test signal and nothing else. If you hear PACTOR-I, a short IQ or audio recording would help a lot: please send one.
 
-## PACTOR-II, -III and -IV are not supported
+## PACTOR-II, -III and -IV: the physical layer only
 
-PACTOR-II, -III and -IV are proprietary protocols of SCS (Special Communications Systems). Their modulation, framing and compression are not
-published, and OnAir does not reverse engineer proprietary protocols. The only way to read them is the SCS modems; the HF waveform identifier
-(mode **HF waveform ID**) can still tell you that a signal looks like PACTOR, and then names this mode for PACTOR-I-like FSK.
+PACTOR-II, -III and -IV are proprietary protocols of SCS (Special Communications Systems). Their channel coding, framing and compression are not
+published, and OnAir does not reverse engineer proprietary protocols. They have their own modes (**PACTOR-II**, **PACTOR-III**, **PACTOR-IV**,
+docs/pactorhf.md) that measure what the signal itself shows (carriers, symbol clock, phase steps, repeating frame structure) and produce no text.
+The HF waveform identifier (mode **HF waveform ID**) can still tell you that a signal looks like PACTOR.
+
 
 ## What it decodes
 
@@ -59,3 +61,10 @@ noise, FEC repeats, memory ARQ, noise only; engine run) and `tests/app/test_pact
 
 ARRL, "PACTOR" (arrl.org/pactor); Wavecom "PACTOR" decoder notes and the SCS protocol pages for the cycle, packet sizes, control signals and CRC; the
 sigidwiki page for PACTOR I. Facts only, no code taken. See THIRD_PARTY.md.
+
+## PACTOR-II / -III on the channel
+
+While this mode runs, the same signal-level analysis as the PACTOR-II mode runs on the channel. If it sees the carriers of a PACTOR-II or PACTOR-III
+signal, the state line says "PACTOR-II signal detected (...)" or "PACTOR-III signal detected, speed level N (...)", always with "data not decodable
+(proprietary)". Nothing is decoded: the coding of PACTOR-II, -III and -IV is not public (docs/PACTOR-RESEARCH.md). The PACTOR-II / -III / -IV modes show the symbols.
+Tested on generator signals only (`tests/pactor/test_pactor_hfid.cpp`).

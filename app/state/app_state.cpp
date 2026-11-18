@@ -1,13 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // application state: preferences, device list, bandwidth, ingesting spectrum and receiver telemetry, channel list
+#include "mode_slot.h"
 #include "freq_remember.h"
 #include "rx_width.h"
+#include "dect2/engine/widespan.h"
 #include "../rooms/rooms.h"
 #include "../app.h"
 #include "dect2/common/verbose_log.h"
 #include "../clips/clips_ui.h"
 #include "../gfx/file_vfo.h"
+#include "../platform/power.h"
+#include <cmath>
 #include <cstring>
 #include "dect2/source/usb_diag.h"
+#include "dect2/source/iq_record.h"
 #include "dect2/engine/rate_choice.h"
 #include "dect2/hdr/hdr_rx.h"
 #include "dect2/sonde/sonde_rx.h"
@@ -50,7 +58,7 @@ static void scanRaster(App& a, int f) {
 
 // the per-family flags and a frequency that suits the mode (the settings and setFamily both use it)
 void setFamilyFlags(App& a, int f) {
-    a.family = f; a.atscMode = f == 1 || f == 3 || f == 4; a.atsc3Mode = f == 3; a.isdbtMode = f == 4; a.dabMode = f == 2; a.fmMode = f == 5;
+    a.family = f; a.atscMode = f == 1 || f == 3 || f == 4; a.atsc3Mode = f == 3; a.isdbtMode = f == 4 || f == 730; a.dabMode = f == 2; a.fmMode = f == 5;
     if (f >= 6) {   // a mode added after FM: its tuning table says what is a sensible frequency
         const ModeTuning* mt = modeTuning(f + 2);
         if (mt && !(a.freqMhz >= mt->minMhz && a.freqMhz <= mt->maxMhz)) a.freqMhz = mt->defMhz;
@@ -101,7 +109,9 @@ void setMode(App& a, int f, int sub) {
     if (a.family >= 6 && from < kNumSlots && to != from) a.famFreq[from] = a.freqMhz;   // each of the newer modes comes back on the frequency it was left on
     if (a.family >= 0 && from < kNumSlots && to != from) {   // the gains that suit FM are not the ones for a TV channel: remember them per mode
         a.famGain[from] = {a.tune.lnaDb, a.tune.vgaDb, a.tune.ampOn, true};
-        const App::FamGain& g = a.famGain[to];
+        // the Mode Builder (19999), Plugins (999), plugin and custom modes have no slot: their family number is far past the end of these arrays (#465)
+        const App::FamGain* gp = modeslot::at(a.famGain, to);
+        const App::FamGain g = gp ? *gp : App::FamGain{};
         if (g.known) { a.tune.lnaDb = g.lna; a.tune.vgaDb = g.vga; a.tune.ampOn = g.amp; }
         else if (f == 5) { a.tune.lnaDb = 24; a.tune.vgaDb = 20; a.tune.ampOn = false; }   // FM stations are strong
         else if (a.family == 5 || f >= 6) { a.tune.lnaDb = 32; a.tune.vgaDb = 34; a.tune.ampOn = false; }   // the amp is off unless the user turns it on (it can be damaged by strong signals): its 14 dB are in the VGA
@@ -123,8 +133,10 @@ void setMode(App& a, int f, int sub) {
     if (f >= 6) {
         const ModeTuning* mt = modeTuning(f + 2);
         const SubMode* sm = curSub(a);
-        const double def = sm ? sm->defMhz : mt ? mt->defMhz : a.freqMhz;
-        a.freqMhz = rememberedFreqOk(mt, def, a.famFreq[to]) ? a.famFreq[to] : def;
+        double def = sm ? sm->defMhz : mt ? mt->defMhz : a.freqMhz;
+        if (f == 24 && std::fabs(def - 144.8) < 1e-3) def = plat::prefs().getD("defaultAprsMhz", def);   // APRS on 2 m differs per ITU region (setup wizard)
+        const double* remembered = modeslot::at(a.famFreq, to);
+        a.freqMhz = remembered && rememberedFreqOk(mt, def, *remembered) ? *remembered : def;
         if (carryMhz > 0) a.freqMhz = carryMhz;
     }
     if (f == 0 && !(a.freqMhz >= 170 && a.freqMhz <= 870)) a.freqMhz = 522.0;       // a TV channel, not a leftover FM or DAB frequency
@@ -135,12 +147,33 @@ void setMode(App& a, int f, int sub) {
     if (f == 5) {   // FM band (with the plan's extended FM below 87.5 MHz), default to 100 MHz
         double lo = 87.5, hi = 108;
         fmBandRange(a, lo, hi);
-        if (!(a.freqMhz >= lo && a.freqMhz <= hi)) a.freqMhz = 100.0;
+        if (!(a.freqMhz >= lo && a.freqMhz <= hi)) {
+            const double home = plat::prefs().getD("defaultFmMhz", 100.0);   // the region's FM start (setup wizard)
+            a.freqMhz = home >= lo && home <= hi ? home : 100.0;
+        }
     }
     nameSynth(a);
 }
 
 // what to tell the engine: 0 auto, 1 DVB-T2, 2 DVB-T, 3 ATSC, 4 DAB, 5 ATSC 3.0, 6 ISDB-T, 7 FM, 8 DVB-S/S2, 9 DTMB, 10 analog TV, 11 DMR, 12 DRM, 13 ADS-B, 14 GNSS, 15 radiosonde, 16 AIS, 17 marine, 18 ACARS, 19 Inmarsat-C, 20 Inmarsat Aero, 21 Iridium, 22 mesh, 23 HD Radio, 24 CDR, 25 pagers, 26 APRS / packet, 27 HF digital, 28 airband, 29 VDL Mode 2, 30 ISM sensors, 32 VOR / ILS, 33 M17, 35 D-STAR, 36 CW, 37 HFDL, 38 PSK31, 39 JS8Call, 44 spectrum analyser, 40 NXDN, 42 DVB-C, 47 dPMR, 46 Orbcomm, 45 Mode S uplink, 48 TETRA, 51 HF ALE, 49 MAC, 50 radio astronomy, 52 P25, 53 Bluetooth LE, 54 ionospheric sounders, 55 QO-100, 56 Wi-Fi networks, 57 general receiver, 63 CubeSat telemetry, 69 HF beacons (Engine::start maps these to activeStandard())
+std::string restoreRecordingMode(App& a, const std::string& description, const std::string& path) {
+    if (a.engine.running()) return "";
+    std::string id = description;
+    if (recordingStdMode(id) < 0) {   // not a bare mode id: the name "onair_<id>_<MHz>_..." says it
+        id.clear();
+        const size_t sl = path.find_last_of("/\\");
+        const std::string n = sl == std::string::npos ? path : path.substr(sl + 1);
+        if (n.rfind("onair_", 0) == 0) { const size_t e = n.find('_', 6); if (e != std::string::npos) id = n.substr(6, e - 6); }
+    }
+    const int std_ = recordingStdMode(id);
+    if (std_ < 3) return "";
+    const int f = std_ - 2;
+    if (a.family == f) return id;
+    setFamily(a, f);
+    a.engine.log("recording was made in " + id + ": mode restored");
+    return id;
+}
+int recFileFormatOf(int r) { return (int)(r == 3 ? dect2::FileFormat::CI16 : r >= 1 ? dect2::FileFormat::CF32 : dect2::FileFormat::CS8); }
 int engineStd(const App& a) { return a.family >= 6 ? a.family + 2 : a.family == 1 ? 3 : a.family == 2 ? 4 : a.family == 3 ? 5 : a.family == 4 ? 6 : a.family == 5 ? 7 : a.stdMode; }
 
 void refreshDevices(App& a) {
@@ -178,6 +211,7 @@ void refreshDevices(App& a) {
         a.usbHints = usbRadioHints();   // sound cards do not mean a USB radio was found
     for (auto& h : sdrplayApiHints()) a.usbHints.push_back(h);
     for (auto& h : limeLibraryHints()) a.usbHints.push_back(h);
+    for (auto& h : spectranApiHints()) a.usbHints.push_back(h);
     if (hadRadio) {
         int idx = -1;
         for (int i = 2; i < (int)a.devices.size(); i++) if (a.devices[i].name == keep) { idx = i; break; }
@@ -297,7 +331,8 @@ void saveBiasTee(const App& a) {
 }
 double modeMinSampleRate(const App& a) {
     if (engineStd(a) == 23) return hdrMinSampleRate(a.freqMhz);   // HD Radio: AM needs far less than FM
-    return minSampleRateFor(engineStd(a), a.tune.bandwidthMhz > 0 ? a.tune.bandwidthMhz : kBw[a.bwIdx].mhz);
+    const double chan = a.tune.channelBwMhz > 0 ? a.tune.channelBwMhz : a.tune.bandwidthMhz;   // the signal's channel (a custom capture bandwidth is not it)
+    return minSampleRateFor(engineStd(a), chan > 0 ? chan : kBw[a.bwIdx].mhz);
 }
 
 void applyBandwidth(App& a) {
@@ -328,6 +363,7 @@ void applyBandwidth(App& a) {
         if (dv.isGeneric() && a.tune.gainDb < dv.gainMinDb && dv.gainMaxDb > dv.gainMinDb) a.tune.gainDb = dv.gainMinDb;   // a gain left by another radio
     }
     a.tune.basebandFilterHz = 0;
+    a.tune.channelBwMhz = 0;   // set again below when a custom capture bandwidth replaces the width
     a.tune.bandwidthMhz = kBw[a.bwIdx].mhz;
     a.tune.synth.atsc = a.family == 1;
     a.tune.synth.dab = a.dabMode;
@@ -335,8 +371,10 @@ void applyBandwidth(App& a) {
     if (const ModeTuning* mt = a.family >= 6 ? modeTuning(a.family + 2) : nullptr) {   // the mode says what the radio should do
         a.tune.bandwidthMhz = mt->bandwidthMhz; a.tune.sampleRate = mt->sampleRate; a.tune.basebandFilterHz = mt->basebandHz;
         if (mt->stdMode == 9) {   // DTMB: the channel width the user picked (6 MHz in Cuba); the test signal follows it
-            a.tune.bandwidthMhz = a.dtmbBwMhz; a.tune.basebandFilterHz = a.dtmbBwMhz * 1e6;
+            const int dtmbW = a.dtmbAuto ? 8 : a.dtmbBwMhz;    // Auto captures the whole 8 MHz and measures the width in the receiver
+            a.tune.bandwidthMhz = dtmbW; a.tune.basebandFilterHz = dtmbW * 1e6;
             a.tune.synth.modeOpt[7] = a.dtmbBwMhz == 6 ? 1 : 0;
+            a.engine.dtmb().setAutoWidth(a.dtmbAuto);
         } else if (mt->stdMode == 10 && a.atvFm && !a.atvNbtv) {   // analog FPV video: a link about 17 MHz wide, the radio's filter at 18 MHz
             a.tune.bandwidthMhz = 18; a.tune.sampleRate = 20e6; a.tune.basebandFilterHz = 18e6;
         } else if (mt->stdMode == 10 && a.atvWide && !a.atvNbtv) {   // system E: a 14 MHz channel
@@ -381,8 +419,7 @@ void applyBandwidth(App& a) {
     a.autoBwMhz = a.tune.bandwidthMhz;
     if (const double w = rxWidthMhz(a); w > 0) {
         const ModeTuning* mt = a.family >= 6 ? modeTuning(a.family + 2) : nullptr;
-        const RxWidthPlan rw = rxWidthPlan(w, a.tune.bandwidthMhz, a.tune.sampleRate, a.tune.basebandFilterHz, mt ? mt->minSampleRate : 0);
-        a.tune.bandwidthMhz = rw.bandwidthMhz; a.tune.sampleRate = rw.sampleRate; a.tune.basebandFilterHz = rw.basebandHz;
+        rxApplyWidth(a.tune, w, mt ? mt->minSampleRate : minSampleRateFor(engineStd(a), a.tune.bandwidthMhz));   // the shared receive path (rx_width.h): the same call the all-modes test makes
         const DeviceInfo& dv = a.devices[a.devIdx];
         if (dv.isGeneric()) a.tune.sampleRate = linkRateFor(dv, a.tune, a.tune.sampleRate, a.tune.sampleRate);   // a link that is too slow: some samples lost, the width kept
     }
@@ -392,8 +429,8 @@ void applyBandwidth(App& a) {
     a.chosenRateHz = 0;
     a.rateCtx = rateContext(a);
     if (const double want = savedSampleRate(a); want > 0 && (a.devices[a.devIdx].isRadio() || a.devices[a.devIdx].kind == DeviceInfo::Synthetic)) {   // (3.4: any saved rate is used; the driver decides)
-        const RateCheck c = checkManualRate(rateLimitsOf(a.devices[a.devIdx]), modeMinSampleRate(a), want);
-        if (c.ok) { a.tune.sampleRate = want; a.chosenRateHz = want; }
+        const RateCheck c = rxApplyRate(a.tune, want, rateLimitsOf(a.devices[a.devIdx]), modeMinSampleRate(a));
+        if (c.ok) a.chosenRateHz = want;
     }
     // the rate was lowered to the radio's top: a filter meant for the faster rate lets everything up to its edge fold into the band (the
     // 8-9 MHz filters of DTMB, analog TV, DVB-S and Iridium on a PlutoSDR's 4 Msps over USB); a rate the user raised: the mode's narrow filter
@@ -401,6 +438,7 @@ void applyBandwidth(App& a) {
     // width the user typed (Advanced > Custom bandwidth) is the user's filter and is kept as planned: the user decides, never the heuristic (3.4).
     if (rxWidthMhz(a) > 0) { if (a.tune.basebandFilterHz > a.tune.sampleRate) a.tune.basebandFilterHz = 0; }
     else a.tune.basebandFilterHz = basebandFilterFor(a.tune.basebandFilterHz, a.autoRateHz, a.tune.sampleRate);
+    dect2::setWideSpanCapHz(rxWidthMhz(a) > 0 ? 1e12 : 0);   // a custom bandwidth lifts the default cap on the span of whole-span decoding (CPU is the only cost)
     a.tune.rateChosen = a.chosenRateHz > 0 || rxWidthMhz(a) > 0;   // a rate or width the user chose is not held down by a driver's own cap (3.4)
 }
 
@@ -429,7 +467,13 @@ static void verboseFrameLog(App& a) {
 
 static void syncSpectrumEngine(App& a) {
     verboseFrameLog(a);
+    notchSync(a);
     if (a.engine.spectrumFft() != a.specFft) a.engine.setSpectrumFft(a.specFft);
+    if (a.engine.spectrumWindow() != a.specWindow) a.engine.setSpectrumWindow(a.specWindow);   // 4.0: the display window and overlap
+    {
+        static float ov = -2.f; static const Engine* ow = nullptr;
+        if (ov != a.specOverlap || ow != &a.engine) { ov = a.specOverlap; ow = &a.engine; a.engine.setSpectrumOverlap(a.specOverlap); }
+    }
     static bool on = false; static float thr = 0, wid = 0; static const Engine* who = nullptr;
     if (who != &a.engine || on != a.nbOn || thr != a.nbThr || wid != a.nbWidthUs) {
         who = &a.engine; on = a.nbOn; thr = a.nbThr; wid = a.nbWidthUs;
@@ -472,8 +516,28 @@ static void fastRowsIngest(App& a) {
     (void)dt;
 }
 
+// The zoom spectrum (4.0, docs/WATERFALL-4.0.md): the view the plots asked for goes to the engine (which runs a zoom transform only when the
+// full-band bins are coarser than the pixels), its newest frame into the zoom trace lines (gfx/zoom_detail.h), and its colour range.
+static void zoomIngest(App& a, double now, float dt) {
+    // not while the window is minimised or covered (no one sees it: the transform's CPU is saved)
+    const bool unseen = gWindow && (glfwGetWindowAttrib(gWindow, GLFW_ICONIFIED) || ::power::windowOccluded(gWindow));
+    const bool want = a.specZoomFft && a.zd.wanted(now) && a.engine.running() && !unseen;
+    if (want) a.engine.setSpectrumZoom(a.zd.reqOffHz, a.zd.reqSpanHz, a.zd.reqPx, (size_t)std::max(512, a.specZoomMaxBins));
+    else a.engine.setSpectrumZoom(0, 0, 0);
+    if (!want || !a.engine.spectrumZoomPlan().on) { a.zd.off(); return; }
+    static ZoomFrame f;
+    if (!a.engine.latestZoomSpectrum(f, a.zd.lastSeq)) return;
+    const float off = a.specPerHz ? spipe::perHzOffset(f.plan.rateHz, f.plan.bins) : 0.f;
+    const double bpp = a.zd.reqPx > 0 && f.plan.binHz > 0 ? a.zd.reqSpanHz / a.zd.reqPx / f.plan.binHz : 1.0;   // bins per pixel column
+    const double rc = radioCenterMhz(a);
+    a.zd.take(f, rc, off, now, spipe::alphaFor(dt, spipe::traceTau(a.specAvgSec, bpp)), spipe::alphaFor(dt, a.wf.rowTau), a.holdDecay * dt, Waterfall::H);
+    const double lo = rc + (a.zd.reqOffHz - a.zd.reqSpanHz * 0.5) / 1e6, hi = lo + a.zd.reqSpanHz / 1e6;
+    a.zd.fitRange(a.wf.autoTrack, a.wf.minDb, a.wf.maxDb, a.wf.autoBelow, a.wf.autoSpan, lo, hi, now);
+}
+
 void ingestSpectrum(App& a) {
     syncSpectrumEngine(a);
+    ghostTick(a);
     Waterfall::themeMode() = pal::wfMode();
     static const bool legacy = getenv("DECT2_SPEC_LEGACY") != nullptr;   // the pre-3.0 pipeline, for CPU comparisons (core spectrum.cpp too)
     if (legacy) { a.wf.detail = 0; a.wf.rowTau = 0; }
@@ -486,7 +550,11 @@ void ingestSpectrum(App& a) {
         slook::demoSpectrum(a.spec.dbfs, 8192, radioCenterMhz(a), fsMhz, t, (uint32_t)(a.lastSeq + 1));
         a.spec.seq = a.lastSeq + 1;
     } else
-    if (!a.engine.latestSpectrum(a.spec, a.lastSeq)) { fastRowsIngest(a); return; }   // straight into the kept frame: no copy that allocates, 30 times a second
+    if (!a.engine.latestSpectrum(a.spec, a.lastSeq)) {   // straight into the kept frame: no copy that allocates, 30 times a second
+        fastRowsIngest(a);
+        a.zd.sync(a.wf.rows, a.wf.writeRow, a.wf.histC, false, glfwGetTime());   // rows written here have no zoom row
+        return;
+    }
     const SpectrumFrame& f = a.spec;
     const uint64_t prevSeq = a.lastSeq;
     a.lastSeq = f.seq;
@@ -531,6 +599,8 @@ void ingestSpectrum(App& a) {
         for (int i = 1; i <= k; i++) a.wf.stamp(t0 + (now - t0) * i / k);
         wfExportRow(a, now);
     }
+    zoomIngest(a, now, dt);
+    a.zd.sync(a.wf.rows, a.wf.writeRow, a.wf.histC, !a.wf.fast(), now);   // the zoom rows beside the rows just written
     roomsFeedRow(a.specView, a.wf.minDb, a.wf.maxDb);   // Live rooms (a flag check when not live)
     clipsui::feed(f.dbfs);   // radio clips: the retroactive history
     if (a.wf.autoTrack && !a.wf.paused && now - a.wf.trackT > 0.25) {
@@ -721,6 +791,7 @@ void applyOutputs(App& a) {
     a.out.host = a.udpHost;
     a.out.path = a.filePath;
     a.out.serviceId = a.selService;
+    a.out.httpKey = a.httpKey;
     a.engine.setOutputs(a.out);
     savePrefs(a);
 }
@@ -802,7 +873,7 @@ void tuneToChannel(App& a, const SavedChannel& c) {
     } else {
         if (a.engine.running()) a.engine.stop();
         a.devIdx = hw;
-        a.engine.setComputeMode(a.computeMode); a.engine.setStandard(engineStd(a));
+        applyGpuPolicy(a); a.engine.setComputeMode(a.computeMode); a.engine.setStandard(engineStd(a));
         a.engine.start(a.devices[hw], a.tune, a.file);
     }
     a.smooth.clear(); a.peak.clear(); a.lastSeq = 0;
@@ -816,7 +887,7 @@ void followBandwidth(App& a) {
     if (!a.bwAuto || a.atscMode || !a.engine.running()) return;
     const bool hw = a.devices[a.devIdx].isRadio();
     const double want = a.engine.activeBandwidth();
-    if (want == a.tune.bandwidthMhz) return;
+    if (want == (a.tune.channelBwMhz > 0 ? a.tune.channelBwMhz : a.tune.bandwidthMhz)) return;   // (a custom capture bandwidth is the radio's, not the channel's)
     int idx = -1;
     for (int k = 0; k < (int)(sizeof kBw / sizeof *kBw); k++) if (kBw[k].mhz == want) idx = k;
     if (idx < 0) return;
@@ -827,7 +898,7 @@ void followBandwidth(App& a) {
     if (hw && a.tune.sampleRate != oldRate) {
         a.engine.log(a.tune.sampleRate > oldRate ? "restarting at 10 Msps" : "restarting at 8 Msps");
         a.engine.stop();
-        a.engine.setComputeMode(a.computeMode); a.engine.setStandard(engineStd(a));
+        applyGpuPolicy(a); a.engine.setComputeMode(a.computeMode); a.engine.setStandard(engineStd(a));
         a.engine.start(a.devices[a.devIdx], a.tune, a.file);
         a.smooth.clear(); a.peak.clear(); a.lastSeq = 0;
         a.mpd.reset(); a.quality.reset();

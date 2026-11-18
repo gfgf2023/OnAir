@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Shortwave receiver: the general receiver plus one-click decoders on the same channel (see shortwave_rx.h).
 #include "dect2/shortwave/shortwave_rx.h"
 #include "dect2/shortwave/shortwave_tel.h"
@@ -132,7 +135,7 @@ public:
     void clear() override { rx_.clearResults(); last_ = SwDecoderStatus(); have_ = false; }
     void apply(const swr::Opts& o) override {
         if (dec_ == Dec::Rtty) {
-            const bool autoRtty = o.rttyBaud < 0 && o.rttyShift < 0;
+            const bool autoRtty = o.rttyBaud < 0 || o.rttyShift < 0;   // one of the two left on auto: the bank finds both (a half-fixed pair used to fall back to 45.45 baud / 170 Hz silently)
             rx_.rtty().setBaudIndex(std::max(0, o.rttyBaud));
             rx_.rtty().setShiftIndex(std::max(0, o.rttyShift));
             rx_.rtty().setReverse(o.rttyReverse);

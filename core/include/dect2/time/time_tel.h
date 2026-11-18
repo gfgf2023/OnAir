@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Time signal telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -20,6 +23,8 @@ struct TimeFrameLog {
 };
 
 struct TimeTelemetry {
+    bool wwvbPhaseLocked = false; int64_t wwvbPhaseUtc = 0;   // WWVB phase code: last minute read
+    bool dcfPhaseLocked = false; float dcfPhaseCorr = 0; int dcfPhaseBit = -1;   // DCF77 phase code: chip sequence found, correlation, last bit
     uint64_t seq = 0;
     int state = 0;                    // 0 searching, 1 the seconds are found, 2 the time is decoded
     double cfoHz = 0;                 // carrier offset from the dial
@@ -28,6 +33,7 @@ struct TimeTelemetry {
     bool dataValid = false;
     uint64_t blocksOk = 0;            // minutes decoded
     uint64_t blocksBad = 0;           // minutes rejected (parity, fixed bits, range)
+    uint64_t minutesPredicted = 0;    // 4.0: minutes in blocksOk that matched the expected minute's time code (their parity failed)
     // details
     int station = 0;                  // timesig::Station being received
     bool hawaii = false;              // WWV / WWVH: the 1200 Hz ticks of WWVH are the stronger

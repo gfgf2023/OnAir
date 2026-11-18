@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Memory panel: the frequencies the user keeps with their mode and settings. A window (View > Memory, Ctrl+M), an optional tab of the main
 // screen, and the "M" menu of the quick list. The model and the files are in core (dect2/channels/memory_bank.h), what is captured from and
 // applied to a receiver in memory_options.cpp, the edit dialog in memory_edit.cpp.
@@ -9,6 +12,7 @@
 #include <cstring>
 #include <ctime>
 #include <set>
+#include "../ui/input_map.h"
 
 namespace {
 
@@ -318,7 +322,8 @@ void memoryWindow(App& a) {
         ImGui::End();
     }
     ImGuiIO& io = ImGui::GetIO();
-    if ((io.KeyCtrl || io.KeySuper) && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_M, false)) a.memoryOpen = !a.memoryOpen;
+    if (inputmap::pressed(inputmap::Action::MemoryWin)) a.memoryOpen = !a.memoryOpen;   // Ctrl+M by default
+    (void)io;
     if (!u.tabLoaded) { u.tabLoaded = true; a.memoryTab = a.memoryTab || plat::prefs().getB("memTab", false); }
     if (!a.memoryOpen) return;
     firstWindowSize(720 * gUi, 460 * gUi);
@@ -334,21 +339,21 @@ void memoryTabItem(App& a) {
 
 void memoryMenu(App& a) {
     if (ImGui::BeginMenu((std::string(tr("Memory")) + "###memmenu").c_str())) {
-        if (ImGui::MenuItem(tr("Memory panel..."), "Ctrl+M", a.memoryOpen)) a.memoryOpen = !a.memoryOpen;
+        if (ImGui::MenuItem(tr("Memory panel..."), inputmap::shortcut(inputmap::Action::MemoryWin).c_str(), a.memoryOpen)) a.memoryOpen = !a.memoryOpen;
         if (ImGui::MenuItem(tr("Store current..."))) { a.memoryOpen = true; storeCurrent(a); }
         if (ImGui::MenuItem(tr("Show Memory as a tab"), nullptr, a.memoryTab)) { a.memoryTab = !a.memoryTab; plat::prefs().setB("memTab", a.memoryTab); }
         ImGui::Separator();
         quickItems(a);
         ImGui::EndMenu();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Memories: the frequencies you keep, with mode and settings (Ctrl+M)"));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", inputmap::tip(tr("Memories: the frequencies you keep, with mode and settings (Ctrl+M)"), inputmap::Action::MemoryWin).c_str());
 }
 
 void memoryToolbarButton(App& a) {
     if (ImGui::SmallButton((std::string(tr("Memory")) + "##memtb").c_str())) ImGui::OpenPopup("##memquick");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Memories: the frequencies you keep, with mode and settings (Ctrl+M)"));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", inputmap::tip(tr("Memories: the frequencies you keep, with mode and settings (Ctrl+M)"), inputmap::Action::MemoryWin).c_str());
     if (ImGui::BeginPopup("##memquick")) {
-        if (ImGui::MenuItem(tr("Memory panel..."), "Ctrl+M", a.memoryOpen)) a.memoryOpen = !a.memoryOpen;
+        if (ImGui::MenuItem(tr("Memory panel..."), inputmap::shortcut(inputmap::Action::MemoryWin).c_str(), a.memoryOpen)) a.memoryOpen = !a.memoryOpen;
         if (ImGui::MenuItem(tr("Store current..."))) { a.memoryOpen = true; storeCurrent(a); }
         ImGui::Separator();
         quickItems(a);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The SDRplay nRSP-ST source (source_nrspst.cpp) against a fake SDRconnect on localhost that speaks the public WebSocket API 1.0.3: the
 // upgrade handshake, get_property / set_property / device_stream_enable / iq_stream_enable, property_changed pushes and binary type-2 IQ.
 // Checks the commands the source sends (rate, frequency, gain as an LNA state, antenna, device choice), the IQ it delivers, retuning, a
@@ -130,7 +133,7 @@ struct Fake {
         int tick = 0;
         while (run) {
             if (dropNow.exchange(0)) return;
-            if (hugeFrame.exchange(0)) { wsSend(c, 2, std::string(2u << 20, 'x')); }
+            if (hugeFrame.exchange(0)) { wsSend(c, 2, std::string(17u << 20, 'x')); }   // over the 16 MiB limit (4.0; was 1 MiB)
             if (badBurst.exchange(0)) sendBad(c);
             if (fragmented.exchange(0)) {   // a ping between the fragments of an IQ message
                 const std::string f = iqFrame(1000, -1000, 400);

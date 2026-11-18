@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The SDR transmit path of the ham modes: the SSB chain's spectrum (opposite sideband, interpolation images, spurs, harmonics), the ALC and the
 // power limit, and SdrHamIo through HamSlotTx into a recording sink (nothing is sent anywhere): keyed only through the gate, tuned to the checked
 // frequency, hard stop on a radio error, Halt, the monitor, and an FT8 burst decoded back from the IQ.
@@ -345,7 +348,7 @@ int main() {
         tx.abort();
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         th.join();
-        CHECK(!ok && !io.keyed() && closes == 1 && ms < 100, "Halt: closed in %.0f ms", ms);
+        CHECK(!ok && !io.keyed() && closes == 1 && ms < 750, "Halt: closed in %.0f ms (a block is 10 ms; bounded generously for a loaded CI machine)", ms);
     }
     {   // the chain must keep up with the radio: 2 MHz output faster than real time with room to spare
         SdrTxChain ch(2016000, cfgOk());

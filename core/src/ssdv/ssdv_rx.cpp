@@ -1,5 +1,6 @@
 // SSDV receiver, see ssdv_rx.h
 #include "dect2/ssdv/ssdv_rx.h"
+#include "dect2/ssdv/wenet_tel.h"
 #include "dect2/ssdv/ssdv_proto.h"
 #include "dect2/ssdv/ssdv_tel.h"
 #include "dect2/ssdv/wenet.h"
@@ -97,6 +98,7 @@ struct SsdvReceiver::Impl {
     wenet::Demod wn;
     uint64_t wenetOther = 0, wenetIdle = 0;
     bool lastWenet = false;
+    WenetGps lastGps; WenetOrient lastOrient; std::vector<WenetText> wenetTexts;
     std::string saveDir;
     // results
     std::deque<SsdvPacketLog> packets;
@@ -119,7 +121,7 @@ struct SsdvReceiver::Impl {
         isReady = false;
         fe.chanPass = 12000.0; fe.chanStop = 20000.0; fe.chanPass2 = 3500.0; fe.chanStop2 = 7500.0;
         fe.clipHz = 12000.f; fe.afcMaxHz = 12000.0;
-        if (!fe.configure(fs, ssdvTuning().minSampleRate)) return;
+        if (!fe.configure(fs, 190000)) return;   // the tuning asks 1 Msps of a radio; a recording of audio (ssdv_audio.h) comes at 192 kHz
         wn.configure(fs);
         wn.setCallback([this](const wenet::Hit& h) { onWenet(h); });
         applyMask();
@@ -180,6 +182,9 @@ struct SsdvReceiver::Impl {
         }
         lastGoodSec = now(); lastBaud = h.baud; lastAsync = false; lastWenet = true;
         if (type == 0x56) wenetIdle++; else wenetOther++;
+        if (type == 0x01) { WenetGps g; if (wenetParseGps(h.pkt.data(), wenet::kPayloadBytes, g)) lastGps = g; }
+        else if (type == 0x02) { WenetOrient o; if (wenetParseOrient(h.pkt.data(), wenet::kPayloadBytes, o)) lastOrient = o; }
+        else if (type == 0x00) { WenetText m; if (wenetParseText(h.pkt.data(), wenet::kPayloadBytes, m)) { wenetTexts.push_back(m); if (wenetTexts.size() > 50) wenetTexts.erase(wenetTexts.begin()); } }
     }
 
     void applyMask() {
@@ -318,13 +323,13 @@ struct SsdvReceiver::Impl {
         o.dataValid = t - lastGoodSec < 30.0;
         o.state = o.dataValid ? 2 : (fe.carrierRecent(5) ? 1 : 0);
         o.cfoHz = fe.cfoHz(); o.snrDb = (float)fe.snrEma; o.levelDb = fe.takeLevelDb();
-        o.blocksOk = ok + wenetOther + wenetIdle; o.blocksBad = bad; o.baud = lastBaud; o.async = lastAsync; o.wenet = lastWenet; o.wenetOther = wenetOther; o.wenetIdle = wenetIdle; o.fixedBaud = fixedBaud; o.corrected = corrected; o.imagesDone = done;
+        o.blocksOk = ok + wenetOther + wenetIdle; o.blocksBad = bad; o.baud = lastBaud; o.async = lastAsync; o.wenetGps = lastGps; o.wenetOrient = lastOrient; o.wenetTexts = wenetTexts; o.wenet = lastWenet; o.wenetOther = wenetOther; o.wenetIdle = wenetIdle; o.fixedBaud = fixedBaud; o.corrected = corrected; o.imagesDone = done;
         o.packets.assign(packets.begin(), packets.end());
         for (auto& im : images) {
             SsdvImage s;
             s.call = im.call; s.imageId = im.imageId; s.width = im.as.width(); s.height = im.as.height(); s.quality = im.as.quality();
             s.packets = (int)im.as.packets(); s.lastPacket = im.as.lastPacketId(); s.missing = im.as.missing(); s.complete = im.as.complete();
-            s.firstUtc = im.firstUtc; s.lastUtc = im.lastUtc; s.rev = im.rev; s.jpeg = im.jpeg; s.savedPath = im.savedPath;
+            s.firstUtc = im.firstUtc; s.lastUtc = im.lastUtc; s.rev = im.rev; s.jpeg = im.jpeg; s.savedPath = im.savedPath; s.gaps = im.as.gapMcus();
             o.images.push_back(std::move(s));
         }
         if (o.state != lastState) {

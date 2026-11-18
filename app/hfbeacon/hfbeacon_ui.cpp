@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF beacons screens: a propagation monitor. A table of the beacon list (NCDXF/IARU, Long Dashes, single letters, your own): lamp, name,
 // frequency, last heard (UTC), SNR now, best in the last hour and 24 hours, distance and bearing from the receiver, a trend; a "bands open"
 // summary (10 / 12 / 15 / 17 / 20 m and the others: the beacons of the band heard now and the farthest); a great-circle map from the receiver to
@@ -5,6 +8,7 @@
 // offset, stepping through bands when the capture is narrower than the list). Clicking a row tunes and listens (Listen).
 #include "dect2/common/timecompat.h"
 #include "app.h"
+#include "../d40/d40_ui.h"
 #include "hfprop_ui.h"
 #include "iono_obs_ui.h"
 #include "../adsb/adsb_map.h"
@@ -354,7 +358,6 @@ void mapView(App& a) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     double rl, ro; receiverLocation(rl, ro);
-    const ImVec2 h = adsbmap::project(rl, ro);
     int drawn = 0;
     for (size_t i = 0; i < S.list.size() && i < t.beacons.size(); i++) {
         const hfb::Beacon& b = S.list[i];
@@ -371,9 +374,6 @@ void mapView(App& a) {
             dl->AddCircle(q, 3 * gUi, IM_COL32(150, 155, 160, 140), 10, 1.f);
         }
     }
-    dl->AddCircleFilled(h, 4 * gUi, IM_COL32(110, 210, 230, 255));
-    dl->AddCircle(h, 8 * gUi, IM_COL32(110, 210, 230, 220), 24, 1.5f * gUi);
-    dl->AddText(ImVec2(h.x + 10 * gUi, h.y - 7 * gUi), IM_COL32(110, 210, 230, 255), receiverLocationSet() ? "me" : "me (placeholder: set it in View > Map)");
     dl->PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 8 * gUi, p0.y + 8 * gUi));
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.06f, 0.07f, 0.08f, 0.85f));
@@ -507,7 +507,11 @@ void tick(App& a) {
     r.setListen(S.listen); r.setVolume(a.volume); r.setMuted(a.muted);
     if (S.sel >= 0 && S.sel < (int)S.list.size()) r.setListenFreqHz(S.list[(size_t)S.sel].khz * 1e3);
     hop(a);
-    if (live(a)) { hfprop_ui::feedBeacons(S.list, a.rx.hfb); ionoobs_ui::feedBeacons(S.list, a.rx.hfb); }
+    if (live(a)) {
+        hfprop_ui::feedBeacons(S.list, a.rx.hfb); ionoobs_ui::feedBeacons(S.list, a.rx.hfb);
+        std::vector<double> khz; for (const auto& b : S.list) khz.push_back(b.khz);
+        d40HfbFeed(khz, a.rx.hfb);   // 4.0: hour-of-day best frequency (app/d40)
+    }
 }
 
 void tab(App& a) {
@@ -522,7 +526,7 @@ void tab(App& a) {
     else if (S.view == 1) bandsView(a);
     else if (S.view == 2) mapView(a);
     else if (S.view == 3) historyView(a);
-    else if (S.view == 5) hfprop_ui::view(a);
+    else if (S.view == 5) { d40HfbBestCard(); hfprop_ui::view(a); }
     else if (S.view == 6) ionoobs_ui::view(a);
     else settingsView(a);
 }

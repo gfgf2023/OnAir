@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Auto gain v2 against the simulated front end of autogain_sim.h: the old headroom servo (AgSettings::v2 = false) and the new hill climb on the measured
 // objective run the same scenes (ADC clipping, intermodulation from strong off-channel carriers, weak wanted signals, pulsed signals, a barely locked
 // decoder, a stale remembered gain, a unit whose real gain steps are not the table's) and the final in-channel SNR is compared. Also: the engine-thread
@@ -64,6 +67,7 @@ static Res runScene(const Scene& sc, bool v2, double sec = 120, const GainCal* c
     });
     o.avg = nAll ? sumAll / nAll : -99;
     o.probeFrac = nAll ? (double)nProbe / nAll : 0;
+    if (getenv("AGLOG") && strstr(sc.name, getenv("AGLOG"))) for (const auto& e : c.log()) printf("     %.1f %.1f -> %.1f %s\n", e.t, e.fromDb, e.toDb, e.why.c_str());
     o.gain = c.current().totalDb;
     SimRadio fin(rp, o.gain, false);
     setup(fin, sc);

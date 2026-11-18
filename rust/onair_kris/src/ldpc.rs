@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! The Kris LDPC family: systematic quasi-cyclic IRA codes with a dual-diagonal parity part.
 //!
 //! n = 1920, 2304 or 7680; rates 1/4, 1/3, 1/2, 2/3, 3/4, 5/6, 9/10 (index 0..6). The parity-check matrix is H = [A | P] on a base graph of
@@ -28,6 +31,7 @@ const BIG: f32 = 1.0e4;
 /// Information length of code (n, rate index), or None for an unsupported block length / rate or a non-integer k.
 pub fn info_len(n: usize, rate: usize) -> Option<usize> {
     if !BLOCK_LENGTHS.contains(&n) || rate >= RATES.len() {
+        onair_common::diag_debug!(539666, "A KRIS block of {} bits at rate index {} is not one of the supported sizes, so it cannot be coded.", n, rate);
         return None;
     }
     let (a, b) = RATES[rate];

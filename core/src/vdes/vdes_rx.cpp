@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // VDES receiver: see vdes_rx.h. ASM goes through the AIS receiver (ais_rx.cpp), VDE-TER through a power detector per 25 kHz sub-channel and a
 // symbol-statistics classifier.
 #include "dect2/vdes/vdes_rx.h"
@@ -119,7 +122,7 @@ struct VdesReceiver::Impl {
     }
 
     void plan() {
-        const double aisO = offsetHz + (162.0e6 - dial());
+        const double aisO = offsetHz + (0.5 * (kVdesAsm1Hz + kVdesAsm2Hz) - dial());   // the AIS demodulator takes the pair as -25 / +25 kHz of this
         asmInView = std::fabs(aisO) + 70000.0 <= 0.46 * fs && fs >= 250000.0;
         if (asmInView) ais.setSignalOffset(aisO);
         for (int b = 0; b < 2; b++) {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV test-signal generator, checked by an analysis that does not use the receiver: the composite video is read from the generator's
 // tap and measured against the numbers of BT.470-6 (pulse widths, line and field timing, levels, burst, colour bars), and the radio
 // signal is demodulated with an ideal frequency-domain detector and measured against what the standard asks of the transmitted spectrum.
@@ -515,9 +518,9 @@ int main() {
     {   // a live video source: asked once a field, replaces the test card; with no frame to send the test card is sent
         AtvGenConfig a0; a0.cnrDb = 100; a0.rate = 10e6;
         AtvGenConfig aNo = a0, aYes = a0;
-        aNo.pullVideo = [](int, int, float*, float*, float*) { return false; };
+        aNo.pullVideo = [](double, int, int, float*, float*, float*) { return false; };
         int asked = 0;
-        aYes.pullVideo = [&](int w, int h, float* y, float* u, float* v) {
+        aYes.pullVideo = [&](double, int w, int h, float* y, float* u, float* v) {
             asked++;
             for (int i = 0; i < w * h; i++) { y[i] = 0.5f; u[i] = 0; v[i] = 0; }
             return true;

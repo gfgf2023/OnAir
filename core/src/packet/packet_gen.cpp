@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // APRS / Packet test signal: see packet_gen.h.
 #include "dect2/packet/packet_gen.h"
 #include "dect2/dsp/gen_util.h"
@@ -261,6 +264,12 @@ std::unique_ptr<ModeSynth> makePacketSynthBurst(const SynthConfig& cfg, double s
     std::vector<PacketGenFrame> f(frames.begin(), frames.end());
     const double g = std::max(0.0, interFrameGapSec);
     return std::make_unique<PacketSynth>(cfg, sampleRate, renderCycle(std::move(f), g, g));
+}
+
+double packetSynthBurstSec(const std::vector<PacketGenFrame>& frames, double interFrameGapSec) {
+    if (frames.empty()) return 0;
+    const double g = std::max(0.0, interFrameGapSec);
+    return (double)renderCycle(std::vector<PacketGenFrame>(frames.begin(), frames.end()), g, g).bb.size() / kWork;
 }
 
 } // namespace dect2

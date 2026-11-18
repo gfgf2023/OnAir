@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Native driver for the Airspy R2 / Mini: the radio's own library is loaded at run time when it is installed. See native_common.h.
 #include "native_common.h"
+#include "dect2/common/diag.h"
 #include "dect2/source/usb_fd.h"   // Android: radios handed over as descriptors
 #include <algorithm>
+#include <atomic>
 #include <map>
 
 namespace dect2 {
@@ -41,6 +46,7 @@ struct AirspyApi {
     const char* (DECT2_CALL* error_name)(int) = nullptr;   // optional: libairspy's name of an error code
     int (DECT2_CALL* version_string_read)(airspy_device*, char*, uint8_t) = nullptr;   // optional: tells a Mini ("AirSpy MINI ...") from an R2
     int (DECT2_CALL* open_fd)(airspy_device**, int) = nullptr;   // optional (libairspy 1.0.10+ built for Android): a descriptor the system opened
+    int (DECT2_CALL* set_packing)(airspy_device*, uint8_t) = nullptr;   // optional: 12-bit packed transfers, a quarter less USB traffic
     bool ok = false;
     DynLib lib;
     AirspyApi() {
@@ -57,9 +63,11 @@ struct AirspyApi {
         lib.opt(set_sensitivity_gain, "airspy_set_sensitivity_gain");
         lib.opt(is_streaming, "airspy_is_streaming");
         lib.opt(version_string_read, "airspy_version_string_read");
+        lib.opt(set_packing, "airspy_set_packing");
         lib.opt(error_name, "airspy_error_name");
         lib.opt(open_fd, "airspy_open_fd");
         if (ok && usbFdPlatform() && !open_fd) {   // Android without the descriptor entry point: it could only scan the bus, which it may not
+            DIAG(447183, "The bundled libairspy has no airspy_open_fd entry point, so Airspy radios cannot be used on this phone.");
             fprintf(stderr, "Airspy: the bundled libairspy has no airspy_open_fd: Airspy radios are not available on this phone\n");
             ok = false;
         }
@@ -148,22 +156,24 @@ public:
 
 protected:
     bool openDevice(const TuneSettings& s, std::string& err) override {
-        if (!openHandle()) { err = "Airspy: cannot open the radio (in use by another program, or the driver is missing)"; return false; }
+        if (!openHandle()) { DIAG_ERROR(904133, "Opening the Airspy failed (in use by another program, or the driver is missing), so the radio stays closed."); err = "Airspy: cannot open the radio (in use by another program, or the driver is missing)"; return false; }
         if (airspy().set_sample_type(dev_, AirspyApi::SAMPLE_FLOAT32_IQ) != 0 && reused_) {
             // a handle that was kept open and the radio is gone (unplugged): it cannot be closed safely either, and it stays claimed until the program ends
             dev_ = nullptr;
+            DIAG_ERROR(602375, "A kept-open Airspy handle no longer answers a sample type request, so the radio was probably unplugged and is given up.");
             err = "Airspy: the radio does not answer (unplugged?). Plug it in again; if it stays away, restart OnAir";
             return false;
         }
         if (!configure(s, err, false)) return false;
+        libDropped_.store(0); libDropEvents_.store(0);
         // Streaming starts here, not on the stream thread: the first retune after start() must not meet a radio that is still being started,
         // and a radio that does not start is reported to the caller instead of sending nothing.
-        if (!startRx()) { err = "Airspy: the radio did not start streaming"; return false; }
+        if (!startRx()) { DIAG_ERROR(350986, "The Airspy library could not start streaming, so the radio is not used."); err = "Airspy: the radio did not start streaming"; return false; }
         return true;
     }
     bool configure(const TuneSettings& s, std::string& err, bool live) override {
         std::lock_guard<std::mutex> lk(api_);
-        if (!dev_) return false;
+        if (!dev_) { DIAG_DEBUG(889729, "The Airspy was asked to configure itself while no device is open, so nothing is changed."); return false; }
         if (!live) {
             // the radio offers a short list (10 / 2.5 Msps on an R2, 6 / 3 Msps on a Mini): the smallest one that is fast enough
             uint32_t count = 0;
@@ -182,13 +192,21 @@ protected:
             // An unofficial rate that is refused falls back to the fastest listed one, so the radio still runs, with the reason in the message.
             std::string refused;
             if (const int rc = airspy().set_samplerate(dev_, (uint32_t)pick); rc != 0) {
+                DIAG(580373, "The Airspy refused a sample rate of %.3f Msps with code %d, so the next listed rate is tried.", (double)pick / 1e6, rc);
                 refused = std::string("Airspy: the radio refused ") + mspsText(pick) + " Msps (" + airspyError(rc) + ")";
                 const bool listed = std::find(official.begin(), official.end(), (uint32_t)pick) != official.end();
-                if (listed || official.empty() || airspy().set_samplerate(dev_, official.back()) != 0) { err = refused; openFailure_ = OpenFailure::Final; return false; }
+                if (listed || official.empty() || airspy().set_samplerate(dev_, official.back()) != 0) { DIAG_ERROR(864129, "The Airspy refused the sample rate and also the fallback rate, so the radio is not started."); err = refused; openFailure_ = OpenFailure::Final; return false; }
                 pick = official.back();
             }
             rate_ = pick;
             requested_ = s.sampleRate;
+            // An R2 at 10 Msps sends about 40 MB/s over USB: the very limit of a USB 2 link, which a phone's port is. Packed 12-bit transfers need 30 MB/s.
+            // On by default on a phone (descriptor from the system), off on a computer, "packing" in the radio settings overrides; a library without the call goes without.
+            if (airspy().set_packing) {
+                const bool pack = radioOption(s, "packing", usbFdPlatform() ? "1" : "0") == "1";
+                const int rc = airspy().set_packing(dev_, pack ? 1 : 0);
+                if (rc != 0 && pack) { DIAG(580374, "The Airspy refused packed transfers with code %d, so the radio runs unpacked.", rc); fprintf(stderr, "Airspy: packed transfers refused (%d): running unpacked\n", rc); fflush(stderr); }
+            }
             checkRate(s.sampleRate, err);
             if (!refused.empty()) err = refused + "; running at " + mspsText(rate_) + " Msps instead. Turn off \"10 Msps (unofficial)\" in the radio settings";
             // this Mini can run at 10 Msps, but only with the unofficial rate switched on in the radio settings
@@ -199,7 +217,7 @@ protected:
         // asked as is (the library takes 32-bit Hz: only a value beyond 4.29 GHz is cut to what the call can hold)
         freq_ = (uint32_t)std::llround(std::min(std::max(ppmCorrectedHz(s.centerHz, radioPpm(s)), 0.0), 4.29e9));
         addNote(err, freqSpecNote("Airspy", s.centerHz, 24e6, 1.8e9));
-        if (airspy().set_freq(dev_, freq_) != 0) { err = "Airspy: the library refused " + std::to_string((long long)std::llround(s.centerHz / 1e3)) + " kHz"; openFailure_ = OpenFailure::Final; return false; }
+        if (airspy().set_freq(dev_, freq_) != 0) { DIAG_ERROR(140007, "The Airspy library refused a centre frequency of %.0f kHz, so the tune fails.", s.centerHz / 1e3); err = "Airspy: the library refused " + std::to_string((long long)std::llround(s.centerHz / 1e3)) + " kHz"; openFailure_ = OpenFailure::Final; return false; }
         // the 0..21 gain steps of the library's linearity table (the default), or of its sensitivity table (TuneSettings "gainmode")
         const uint8_t g = (uint8_t)std::min(21.0, std::max(0.0, std::round(s.gainDb)));
         if (radioOption(s, "gainmode", "linearity") == "sensitivity" && airspy().set_sensitivity_gain) airspy().set_sensitivity_gain(dev_, g);
@@ -223,6 +241,7 @@ protected:
         if (bias_ && airspy().set_rf_bias && !bad_) airspy().set_rf_bias(dev_, 0);   // antenna power never stays on, also for a handle that is kept open
         bias_ = false;
         if (bad_) {   // a start that failed half way leaves the library in a state only airspy_close() can clear, and that is the call that crashes
+            DIAG(640701, "The Airspy failed to start streaming earlier, so its handle is left open instead of closed to avoid a library crash.");
             fprintf(stderr, "Airspy: the radio is given up (not closed: closing a handle that streamed can crash the library)\n");
             fflush(stderr);
         } else if (streamed_ && keepHandles()) {
@@ -242,10 +261,25 @@ protected:
         stopRx();
     }
 
+public:
+    // the status line: what the library lost before the samples reached the ring (USB link or this thread too slow)
+    std::string statusNote() const override {
+        const unsigned long long n = libDropped_.load(), e = libDropEvents_.load();
+        if (!n) return {};
+        return "Airspy: " + std::to_string(n) + " samples dropped in the USB library (" + std::to_string(e) + " times; a slow USB 2 link or a busy phone)";
+    }
+
 private:
     static int DECT2_CALL callback(AirspyApi::transfer_t* t) {
         auto* self = static_cast<AirspySource*>(t->ctx);
         if (!self->run_ || !t->samples || t->sample_count <= 0) return 0;
+        // libairspy reports the samples it had to drop since the last transfer (its own buffers ran full: this callback, or the ring write, was slow)
+        if (t->dropped_samples) {
+            const uint64_t d = t->dropped_samples;
+            self->libDropped_.fetch_add(d);
+            if (self->libDropEvents_.fetch_add(1) < 5) { fprintf(stderr, "Airspy: libairspy reports %llu samples dropped (transfer of %d)\n", (unsigned long long)d, t->sample_count); fflush(stderr); }
+            if (self->ring_) self->ring_->noteLost(d);   // counts as lost at the radio side in the status panel's sample loss
+        }
         self->push(static_cast<const cf32*>(t->samples), (size_t)t->sample_count);   // float32 I/Q pairs = std::complex<float>
         return 0;
     }
@@ -266,14 +300,14 @@ private:
                 if (r == 0 && dev_) { gOpenHandles++; return true; }
                 dev_ = nullptr;
                 // only just closed (the receiver was stopped for the scanner): give the system a moment to release the radio
-                if (attempt >= 8 || SteadyClock::now() - gLastClose > std::chrono::seconds(4)) return false;
+                if (attempt >= 8 || SteadyClock::now() - gLastClose > std::chrono::seconds(4)) { DIAG_DEBUG(155942, "Opening the Airspy failed with library code %d after %d tries, so the open is given up.", r, attempt + 1); return false; }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
     }
     bool startRx() {
         std::lock_guard<std::mutex> lk(api_);
-        if (!dev_) return false;
+        if (!dev_) { DIAG_DEBUG(401509, "The Airspy stream was asked to start while no device is open, so nothing starts."); return false; }
         if (rx_) return true;
         // A handle that streamed before still has its cancelled USB transfers waiting to be collected, and the library cannot start again until
         // they are: the control transfers of a few harmless requests collect them.
@@ -282,6 +316,7 @@ private:
         run_ = true;   // the callback drops what arrives before this
         // One try: a start that fails leaves the library believing it streams, and its stop_rx() then joins threads that were never made
         if (airspy().start_rx(dev_, &AirspySource::callback, this) == 0) { rx_ = true; return true; }
+        DIAG_DEBUG(638809, "The Airspy library refused to start the sample stream, so this handle is marked bad and not closed again.");
         run_ = false;
         bad_ = true;
         return false;
@@ -308,6 +343,7 @@ private:
     bool rx_ = false;     // start_rx() done, stop_rx() not yet (under api_)
     bool streamed_ = false, reused_ = false, bad_ = false;   // start_rx() was tried on this handle (ever); it was kept from an earlier session; its start failed
     uint32_t freq_ = 0;
+    std::atomic<uint64_t> libDropped_{0}, libDropEvents_{0};   // from the library's transfers (written by its thread)
 };
 
 void listAirspy(std::vector<DeviceInfo>& out) {

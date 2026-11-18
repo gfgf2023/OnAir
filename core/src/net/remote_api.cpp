@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Remote-control API server: see dect2/net/remote_api.h. One thread accepts; every connection has a thread of its own (at most 16), so a slow or
 // silent client never holds up another one. Blocking sockets with select() for the waits, on top of the helpers of tcp_client.h.
 #include "dect2/common/thread_name.h"
 #include "dect2/net/remote_api.h"
+#include "dect2/fm/rds_live.h"
 #include "dect2/net/api_policy.h"
 #include "dect2/common/str.h"
 #include "dect2/net/net_proto.h"
@@ -79,7 +83,7 @@ std::string hostOnly(const std::string& h) { return netp::hostOnly(h); }
 bool loopbackName(const std::string& n) { return netp::loopbackName(n); }
 std::string urlDecode(const std::string& s) { return netp::urlDecode(s); }
 std::string queryParam(const std::string& q, const std::string& key) { return netp::queryParam(q, key); }
-std::string statusText(int c) { return netp::statusText(c); }
+std::string statusText(int c) { return c == 202 ? std::string("Accepted") : netp::statusText(c); }
 struct Request {
     std::string method, path, query, body;
     std::map<std::string, std::string> h;   // lower-case names
@@ -196,6 +200,19 @@ struct RemoteApiServer::Impl {
     void route(sock_t s, const Request& rq) {
         const std::string& p = rq.path;
         const bool isGet = rq.method == "GET", isPost = rq.method == "POST";
+        if (p == "/mcp" || p == "/mcp/") {   // the MCP endpoint (docs/MCP.md): the raw JSON-RPC body goes to the host
+            if (rq.method != "POST" && rq.method != "GET" && rq.method != "DELETE") { sendErr(s, 405, "method not allowed", "Allow: POST, GET, DELETE\r\n"); return; }
+            if (rq.method == "POST" && !needJson(rq)) { sendErr(s, 415, "Content-Type: application/json required"); return; }
+            std::string out;
+            int code;
+            { std::lock_guard<std::mutex> lk(hostMu); code = host.handleMcp(rq.method, rq.body, out); }
+            if (code == 0) { sendErr(s, 404, "no MCP server in this program"); return; }
+            if (code == 405) { sendErr(s, 405, out.empty() ? "use POST" : out, "Allow: POST\r\n"); return; }
+            if (code >= 400 && out.empty()) { sendErr(s, code, "failed"); return; }
+            send(s, code, out);
+            return;
+        }
+        if (host.mcpOnly()) { sendErr(s, 404, "this port carries only /mcp"); return; }
         if (!isGet && !isPost) { sendErr(s, 405, "method not allowed", "Allow: GET, POST\r\n"); return; }
         const apipol::Route pr = apipol::parseRoute(rq.method, p);   // malformed paths, the refusal list, unknown API versions, wrong verbs
         if (pr.status == 405) { sendErr(s, 405, pr.msg, "Allow: " + pr.allow + "\r\n"); return; }
@@ -283,13 +300,26 @@ struct RemoteApiServer::Impl {
             }
             std::string out;
             int code;
+            if (p == "/api/v1/x/rds") {   // live RDS (fm/rds_live.h): GET the state; POST {"ps":..,"rt":..,"pi":"4A21","pty":..,"tp":..,"ta":..,"ms":"M","ct":..}. Warnings only: nothing is refused.
+                if (isPost) {
+                    std::string err;
+                    for (const auto& kv : jb) {
+                        std::string v = kv.second.kind == JsonVal::Str ? kv.second.str : kv.second.kind == JsonVal::Bool ? (kv.second.b ? "1" : "0") : jsonNum(kv.second.num);
+                        if (kv.second.kind == JsonVal::Num && kv.second.num == (long long)kv.second.num) v = std::to_string((long long)kv.second.num);
+                        if (kv.first == "pi" && kv.second.kind == JsonVal::Num) { char hb[16]; snprintf(hb, sizeof hb, "%llX", (long long)kv.second.num); v = hb; }
+                        if (!RdsLive::global().apply(kv.first, v, err)) { sendErr(s, 400, kv.first + ": " + err); return; }
+                    }
+                }
+                send(s, 200, RdsLive::global().json());
+                return;
+            }
             { std::lock_guard<std::mutex> lk(hostMu); code = host.handleExtra(rq.method, p, jb, out); }
             if (code == 0) { sendErr(s, 404, "no such endpoint"); return; }
             if (code >= 400) sendErr(s, code, out); else send(s, code, out);
             return;
         }
         const bool known = p == "/api/v1/start" || p == "/api/v1/stop" || p == "/api/v1/mode" || p == "/api/v1/frequency" || p == "/api/v1/samplerate" || p == "/api/v1/gain"
-                         || p == "/api/v1/autogain" || p == "/api/v1/bandwidth" || p == "/api/v1/squelch" || p == "/api/v1/volume" || p == "/api/v1/mute"
+                         || p == "/api/v1/autogain" || p == "/api/v1/bandwidth" || p == "/api/v1/capture_bandwidth" || p == "/api/v1/squelch" || p == "/api/v1/volume" || p == "/api/v1/mute"
                          || p == "/api/v1/recording/start" || p == "/api/v1/recording/stop" || p == "/api/v1/tx/start" || p == "/api/v1/tx/stop"
                          || p == "/api/v1/rotator/goto" || p == "/api/v1/rotator/stop" || p == "/api/v1/rotator/park";
         if (!known) { sendErr(s, 404, "no such endpoint"); return; }
@@ -319,7 +349,7 @@ struct RemoteApiServer::Impl {
         } else if (p == "/api/v1/samplerate") {
             double hz = 0;
             if (num("hz", v)) hz = v; else if (num("msps", v)) hz = v * 1e6; else { fail("give hz or msps (0 = automatic)"); return; }
-            if (hz < 0 || hz > 1e9) { fail("sample rate out of range"); return; }
+            if (!(hz >= 0) || !std::isfinite(hz)) { fail("not a sample rate"); return; }   // any positive rate goes to the driver; it says if it cannot
             if (host.setSampleRateHz(hz, err)) okJson(); else fail(err);
         } else if (p == "/api/v1/rotator/stop") {
             Rotator::get().stop();
@@ -344,8 +374,13 @@ struct RemoteApiServer::Impl {
         } else if (p == "/api/v1/bandwidth") {
             double hz = 0;
             if (num("hz", v)) hz = v; else if (num("khz", v)) hz = v * 1e3; else { fail("give hz or khz"); return; }
-            if (!(hz > 0) || hz > 1e9) { fail("bandwidth out of range"); return; }
+            if (!(hz > 0) || !std::isfinite(hz)) { fail("not a bandwidth"); return; }
             if (host.setBandwidthHz(hz, err)) okJson(); else fail(err);
+        } else if (p == "/api/v1/capture_bandwidth") {   // the custom capture bandwidth of the mode (0 = the mode's own); any positive width
+            double hz = 0;
+            if (num("hz", v)) hz = v; else if (num("khz", v)) hz = v * 1e3; else if (num("mhz", v)) hz = v * 1e6; else { fail("give hz, khz or mhz (0 = the mode's own bandwidth)"); return; }
+            if (!(hz >= 0) || !std::isfinite(hz)) { fail("not a bandwidth"); return; }
+            if (host.setCaptureBandwidthHz(hz, err)) okJson(); else fail(err);
         } else if (p == "/api/v1/squelch") {
             auto on = j.find("on"), au = j.find("auto");
             double db = -100;
@@ -518,6 +553,17 @@ struct RemoteApiServer::Impl {
             else route(s, rq);
         }
         if (gTls) { tls::close(gTls); gTls = nullptr; }
+        else if (!quit) {
+            // An early refusal (413, 431, 400) leaves part of the request unread. Closing then resets the connection on Windows and the reset
+            // throws the answer away: end our side, read what the client still sends (briefly), then shut down.
+#ifdef _WIN32
+            ::shutdown(s, SD_SEND);
+#else
+            ::shutdown(s, SHUT_WR);
+#endif
+            sockRecvTimeout(s, 200);
+            char drain[2048]; for (int n = 0; n < 8 && sockRecv(s, drain, sizeof drain) > 0; n++) {}
+        }
         sockShutdown(s);
         cn->done = true;
     }

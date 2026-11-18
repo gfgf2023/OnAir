@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DMR under real-radio faults (REAL_WORLD_CHECKLIST.md): a radio 50 ppm off at 446 MHz (22 kHz), a mirrored spectrum (I and Q swapped), and the
 // combined case (offset, +80 ppm clock, an echo, 8-bit clipping) through the real receiver, base station and direct mode. A lone carrier on the
 // 12.5 kHz raster stays the neighbouring channel (test_dmr_radio).
@@ -54,6 +57,17 @@ int main() {
             check(name, s);
         }
     }
+    // Clear calls at low SNR: a bit-flipped embedded link control must never mark a clear call "encrypted" (its voice would go silent).
+    for (int direct = 0; direct < 2; direct++)
+        for (double snr : {4.0, 6.0, 8.0, 11.0}) {
+            DmrScenario s;
+            s.cfg.snrDb = snr; s.cfg.direct = direct; s.secs = 20; s.cfg.encrypted = false;
+            const DmrRunResult r = dmrRun(s);
+            int priv = 0, calls = 0;
+            for (const auto& c : r.tel.callLog) { if (c.kind <= 2) { calls++; if (c.privacy) priv++; } }
+            printf("clear calls %s SNR %4.1f dB: %d logged, %d flagged encrypted\n", direct ? "direct" : "base", snr, calls, priv);
+            if (priv) { printf("FAIL: clear call flagged encrypted at %.1f dB\n", snr); fails++; }
+        }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return fails ? 1 : 0;
 }

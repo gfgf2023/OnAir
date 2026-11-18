@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // SpyServer client (issue #68): an Airspy, Airspy HF+ or RTL-SDR served over the network by Airspy's spyserver (protocol 2.0.1700, as
 // SDR++'s spyserver_source speaks it). TCP, little endian. The client sends commands (a 32-bit type and body size, then the body): HELLO
 // (the protocol version and a client name), then SET_SETTING (a setting id and a value) for the streaming mode, the IQ format, frequency and
@@ -10,9 +13,11 @@
 // Future work: the narrow "VFO" use (a small decimated band anywhere in the server's band, the FFT stream) is not offered; OnAir always
 // takes the IQ band at the decimation its mode needs.
 #include "../net/tcp_client.h"
+#include "dect2/common/diag.h"
 #include "native_common.h"
 #include "dect2/net/netradio.h"
 #include "dect2/net/net_proto.h"
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -87,29 +92,31 @@ bool sendHello(sock_t s) {
 }
 
 // one message: the header's fields and its body; false when the connection failed or stalled, or the message makes no sense
-bool readMessage(sock_t s, uint32_t& type, uint32_t& flags, std::vector<unsigned char>& body) {
+bool readMessage(sock_t s, uint32_t& type, uint32_t& flags, std::vector<unsigned char>& body, uint32_t* seq = nullptr) {
     unsigned char h[20];
     if (!sockRecvAll(s, h, sizeof h)) return false;
     uint32_t size = 0;
     if (!netp::spyHeader(h, type, flags, size)) return false;
+    if (seq) *seq = (uint32_t)h[12] | (uint32_t)h[13] << 8 | (uint32_t)h[14] << 16 | (uint32_t)h[15] << 24;   // the header's sequence number
     body.resize(size);
     return size == 0 || sockRecvAll(s, body.data(), size);
 }
 
 // HELLO, then DEVICE_INFO and CLIENT_SYNC within the socket's receive timeout
 bool handshake(sock_t s, SpyInfo& info, const std::string& addr, std::string& err) {
-    if (!sendHello(s)) { err = "the connection to " + addr + " dropped"; return false; }
+    if (!sendHello(s)) { DIAG_ERROR(819131, "The connection to the SpyServer %s dropped while the greeting was sent, so the open fails.", addr.c_str()); err = "the connection to " + addr + " dropped"; return false; }
     std::vector<unsigned char> body;
     for (int k = 0; k < 64 && !(info.known && info.synced); k++) {
         uint32_t t = 0, fl = 0;
         if (!readMessage(s, t, fl, body)) {
-            err = info.known ? addr + " sent no client sync" : addr + " is not a SpyServer, or it refused this client (it may be full)";
+             DIAG_ERROR(591493, "The SpyServer at %s did not finish the client handshake (it is not a SpyServer, or it is full), so the open fails.", addr.c_str());
+             err = info.known ? addr + " sent no client sync" : addr + " is not a SpyServer, or it refused this client (it may be full)";
             return false;
         }
         if (t == kMsgDeviceInfo) parseDeviceInfo(body.data(), (uint32_t)body.size(), info);
         else if (t == kMsgClientSync) parseClientSync(body.data(), (uint32_t)body.size(), info);
     }
-    if (!info.known || info.devType == kDevInvalid || info.maxRate == 0) { err = addr + " has no radio connected"; return false; }
+    if (!info.known || info.devType == kDevInvalid || info.maxRate == 0) { DIAG_ERROR(729473, "The SpyServer at %s reports no radio connected, so the source is not opened.", addr.c_str()); err = addr + " has no radio connected"; return false; }
     return true;
 }
 
@@ -178,14 +185,14 @@ protected:
     bool openDevice(const TuneSettings& s, std::string& err) override {
         std::string host;
         int port = 0;
-        if (!splitHostPort(addr_, host, port)) { err = "SpyServer: bad address " + addr_ + " (host:port)"; openFailure_ = OpenFailure::Final; return false; }
+        if (!splitHostPort(addr_, host, port)) { DIAG_ERROR(958964, "The SpyServer address %s is not in host:port form, so no connection is tried.", addr_.c_str()); err = "SpyServer: bad address " + addr_ + " (host:port)"; openFailure_ = OpenFailure::Final; return false; }
         std::string e;
         const sock_t k = tcpConnect(host, port, kConnectMs, e);
-        if (k == kBadSock) { err = "SpyServer: " + e; openFailure_ = OpenFailure::Retry; return false; }
+        if (k == kBadSock) { DIAG_ERROR(702323, "Connecting to the SpyServer %s failed (%s), so the source stays closed.", addr_.c_str(), e.c_str()); err = "SpyServer: " + e; openFailure_ = OpenFailure::Retry; return false; }
         sock_ = k;
         sockRecvTimeout(sock_, kConnectMs);
         SpyInfo info;
-        if (!handshake(sock_, info, addr_, e)) { err = "SpyServer: " + e; return false; }
+        if (!handshake(sock_, info, addr_, e)) { DIAG_ERROR(271228, "The SpyServer handshake with %s failed (%s), so the source stays closed.", addr_.c_str(), e.c_str()); err = "SpyServer: " + e; return false; }
         widenRange(info);
         noteInfo(addr_, info);
         { std::lock_guard<std::mutex> lk(infoMu_); info_ = info; }
@@ -213,7 +220,7 @@ protected:
         SpyInfo i;
         { std::lock_guard<std::mutex> lk(infoMu_); i = info_; }
         const auto rates = ratesOf(i);
-        if (rates.empty()) { err = "SpyServer: " + addr_ + " offers no sample rate"; openFailure_ = OpenFailure::Final; return false; }
+        if (rates.empty()) { DIAG_ERROR(362029, "The SpyServer at %s offers no sample rate, so the source is not started.", addr_.c_str()); err = "SpyServer: " + addr_ + " offers no sample rate"; openFailure_ = OpenFailure::Final; return false; }
         // the slowest rate at or above what is asked for (the fastest when none is)
         const double want = s.sampleRate > 0 ? s.sampleRate : rates.front();
         uint32_t dec = i.minDec;
@@ -261,12 +268,33 @@ protected:
     bool restartForRate() const override { return false; }   // the server changes the decimation while streaming
     void streamLoop() override {
         std::vector<unsigned char> body;
+        bool haveSeq = false;
+        uint32_t lastIqSeq = 0, otherSince = 0;
+        size_t lastIqSamples = 0;
         while (run_) {
-            uint32_t t = 0, fl = 0;
-            if (!readMessage(sock_, t, fl, body)) break;   // closed, failed or stalled
+            uint32_t t = 0, fl = 0, seq = 0;
+            if (!readMessage(sock_, t, fl, body, &seq)) break;   // closed, failed or stalled
             const float scale = fl ? 1.f / std::pow(10.f, (float)fl / 20.f) : 1.f;   // the server's digital gain, taken back out
             const size_t n = body.size();
             const unsigned char* b = body.data();
+            const size_t bytesPer = t == kMsgIqUint8 ? 2 : t == kMsgIqInt16 ? 4 : t == kMsgIqFloat ? 8 : 0;
+            if (bytesPer) {
+                // #435: a server whose client cannot keep up (a phone on Wi-Fi at 10 Msps) drops whole IQ messages, and the sequence numbers show
+                // it. The lost messages are put back as silence of their length, so the receivers keep their time line (a fixed-phase DTMB header
+                // cannot count the frames a gap took; every frame counter, symbol clock and interleaver after the gap depends on it) and the
+                // engine reports them as samples the link lost. Messages of other types in between may share the counter; they are not IQ.
+                if (haveSeq && lastIqSamples) {
+                    const uint32_t gap = seq - lastIqSeq - 1;
+                    const uint64_t lostMsgs = gap > otherSince ? gap - otherSince : 0;
+                    const uint64_t fill = lostMsgs * lastIqSamples;
+                    if (lostMsgs && fill <= (uint64_t)std::max(1.0, rate_)) {      // at most a second: anything larger is a restart, not a drop
+                        zeros_.assign((size_t)fill, cf32(0, 0));
+                        push(zeros_.data(), zeros_.size());
+                        if (ring_) ring_->noteLost(fill);
+                    }
+                }
+                haveSeq = true; lastIqSeq = seq; otherSince = 0; lastIqSamples = n / bytesPer;
+            } else otherSince++;
             if (t == kMsgIqUint8) {
                 conv_.resize(n / 2);
                 for (size_t k = 0; k < n / 2; k++) conv_[k] = cf32((b[2 * k] - 128.f) / 128.f * scale, (b[2 * k + 1] - 128.f) / 128.f * scale);
@@ -286,6 +314,7 @@ protected:
                     memcpy(&im, b + 8 * k + 4, 4);
                     conv_[k] = cf32(re * scale, im * scale);
                 }
+                scrubNonFinite(conv_.data(), n / 8);
                 push(conv_.data(), n / 8);
             } else if (t == kMsgClientSync) {   // the controlling client moved the radio, or control changed hands
                 std::lock_guard<std::mutex> lk(infoMu_);
@@ -295,7 +324,7 @@ protected:
             }
         }
         if (run_) {
-            fprintf(stderr, "SpyServer: lost the connection to %s\n", addr_.c_str());
+            DIAG(921122, "The connection to the SpyServer %s was lost, so the source tries to reconnect.", addr_.c_str()); fprintf(stderr, "SpyServer: lost the connection to %s\n", addr_.c_str());
             fflush(stderr);
             lostAt_ = std::chrono::steady_clock::now();
         }
@@ -315,6 +344,7 @@ private:
     SpyInfo info_;
     uint32_t sentDec_ = UINT32_MAX, sentFreq_ = UINT32_MAX, sentGain_ = UINT32_MAX, sentFmt_ = UINT32_MAX;
     std::chrono::steady_clock::time_point lostAt_{};
+    std::vector<cf32> zeros_;     // the silence that stands in for IQ messages the server dropped
 };
 
 DeviceInfo spyServerDevice(const std::string& host, int port) {

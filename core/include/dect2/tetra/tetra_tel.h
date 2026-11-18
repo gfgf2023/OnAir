@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // TETRA receiver telemetry, shared by the receiver and the UI.
 // Only what a TETRA base station broadcasts in the clear to every terminal is here: the network identity (MCC, MNC), colour code, location
 // area, the cell's carriers and services, its neighbour cells and whether the network uses air interface encryption. No subscriber
@@ -37,6 +40,10 @@ struct TetraCell {
     int numScch = 0, msTxPwrMax = 0, rxLevAccessMin = 0, accessParam = 0, dlTimeout = 0;
     bool cckFlag = false; int hyperframeOrCck = 0;
     int optFlag = 0; uint32_t optValue = 0;
+    // TEDS (3.9), from the extended services broadcast of SYSINFO (sections 1 and 2 come in turn): -1 not heard yet
+    int tedsD8psk = -1;                // pi/8-D8PSK operation supported on this cell
+    int tedsQamMask = -1;              // QAM supported: bit 0 25 kHz, bit 1 50 kHz, bit 2 100 kHz, bit 3 150 kHz
+    uint64_t p8Slots = 0, p8BlocksOk = 0;   // pi/8-D8PSK slots seen on this carrier and their signalling blocks decoded
     int la = -1, subscriberClass = 0, bsService = 0;
     bool secValid = false, authRequired = false, secClass1 = false, secClass2 = false, secClass3 = false;
     bool aie = false;                  // the cell's "air interface encryption service" bit (D-MLE-SYSINFO): the cell supports class 2 / 3 MS
@@ -63,7 +70,37 @@ struct TetraCell {
 };
 
 struct TetraEvent { int64_t wallTime = 0; double sec = 0; std::string text; };
-struct TetraCarrierSeen { double freqHz = 0; float levelDb = 0; bool synced = false; };   // a 25 kHz hump in the spectrum
+// One clear SDS message, status or LIP position (tetra_sds.h)
+struct TetraSdsRec { int64_t wallTime = 0; double freqHz = 0; int fromIssi = -1, toAddr = -1; std::string kind, text; bool hasPos = false; double lat = 0, lon = 0; int count = 1; };
+// One position report of a terminal (LIP short or long report in a clear SDS, tetra_sds.h), for the Map view: every report is kept, the track of an ISSI is its
+// reports in order.
+struct TetraPos {
+    int64_t wallTime = 0;              // when it was received (unix seconds)
+    double freqHz = 0;
+    int issi = -1;                     // the terminal: the calling ISSI, else the LIP terminal identification, -1 unknown
+    int toAddr = -1;                   // the address the SDS was sent to
+    double lat = 0, lon = 0;
+    bool hasAlt = false; double altM = 0;
+    double uncM = -1;                  // horizontal uncertainty in metres, -1 not known
+    double speedKmh = -1;              // -1 not known
+    int headingDeg = -1;               // -1 not known
+    int timeElapsed = -1;              // 0 < 5 s, 1 < 5 min, 2 < 30 min, 3 not known; -1 none given
+    int pduType = 0;                   // 0 short report, 1 long report
+    int reason = -1;
+    std::string source;                // what it came from, one line, for the click card
+};
+struct TetraCarrierSeen {   // a hump in the spectrum
+    double freqHz = 0;                 // the centre of the hump
+    float levelDb = 0;                 // over the local floor
+    bool synced = false;               // a TETRA synchronisation burst decoded
+    // 3.9, what the carrier is (tetra_teds.h): 0 unknown, 1 pi/4-DQPSK, 2 pi/8-D8PSK, 3 QAM (TEDS: identified, not decoded)
+    int kind = 0;
+    double bwHz = 0;                   // 25 / 50 / 100 / 150 kHz
+    int subcarriers = 0;               // QAM: 8 per 25 kHz
+    int qamOrder = 0;                  // QAM: 4, 16 or 64 (an estimate; 16 also stands for "16 or 64" unless orderSure)
+    bool orderSure = false;
+    int p8Slots = 0;                   // a TETRA carrier: its pi/8-D8PSK slots in this capture
+};
 
 struct TetraTelemetry {
     uint64_t seq = 0;
@@ -81,10 +118,13 @@ struct TetraTelemetry {
     std::vector<TetraCarrierSeen> carriers;   // in the last block
     std::vector<TetraCell> cells;             // most recently seen first
     std::vector<TetraEvent> events;           // newest first, at most kTetraLogMax
+    std::vector<TetraSdsRec> sds;             // clear SDS messages and positions, newest first, at most 300
+    std::vector<TetraPos> positions;          // LIP position reports, oldest first, at most kTetraPosMax
 };
 
 constexpr size_t kTetraLogMax = 300;
 constexpr size_t kTetraMax = 200;
+constexpr size_t kTetraPosMax = 2000;
 
 inline std::string tetraSummary(const TetraTelemetry& t) {
     if (t.state == 0) return "waiting for samples";

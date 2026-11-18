@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "videoin_impl.h"
 
 namespace dect2 {
@@ -8,5 +11,6 @@ bool videoInCameraStart(VideoIn::Impl*, const std::string&, std::string& err) {
 }
 void videoInCameraStop(VideoIn::Impl*) {}
 std::vector<VideoInputDevice> videoInListCameras() { return {}; }
+bool videoInCameraSupported() { return false; }
 
 } // namespace dect2

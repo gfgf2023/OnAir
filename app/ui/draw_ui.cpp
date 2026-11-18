@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The classic interface's root: drawUI() runs one receiver's per-frame work and draws either the new interface (drawShell2)
 // or the classic layout (top rows, status bar, main tabs, list, constellations), then the floating windows.
 // Split from main.cpp.
@@ -5,6 +8,7 @@
 #include <unistd.h>
 #endif
 #include "app.h"
+#include "ui/ui2_internal.h"
 #include "adsb/adsb_map.h"
 #include "ui/contrast.h"
 #include "ui/touch.h"
@@ -22,7 +26,9 @@
 #include <dlfcn.h>
 #endif
 #include "../main_internal.h"
+#include "top_row.h"
 #include "dect2/codec/codec_guard.h"
+#include "input_map.h"
 
 bool gIdentifyDev = false;   // --identify
 
@@ -36,10 +42,12 @@ static void tickReceiver(App& a) {
     if (const ModeUi* mu = modeUi(a.family)) if (mu->tick) mu->tick(a);
     syncAdsbReference(a);
     wideSync(a);
+    a.engine.monitor().setMuted(a.muted);   // every frame: the Source panel that configures the monitor is not always drawn
     secondModeTick(a);
     dabScanStep(a);
     fmScanStep(a);
     harvestScan(a);
+    firstStartTick(a);
     scanDbTick(a);
     if (a.engine.running() && glfwGetTime() - a.epgT > 1.0) {
         a.epg = a.engine.epg();
@@ -70,9 +78,9 @@ static void tickReceiver(App& a) {
 }
 
 // analog TV (standard 9) and FPV (102): their pictures in the video-only view (#326)
-bool atvFullPicture(ImVec2 disp); bool atvHasPicture();
-bool fpvFullPicture(ImVec2 disp); bool fpvHasPicture();
-bool analogFullPicture(App& a, ImVec2 disp) { return a.rx.standard == 9 ? atvFullPicture(disp) : a.rx.standard == 102 ? fpvFullPicture(disp) : false; }
+bool atvFullPicture(App& a, ImVec2 disp); bool atvHasPicture();
+bool fpvFullPicture(App& a, ImVec2 disp); bool fpvHasPicture();
+bool analogFullPicture(App& a, ImVec2 disp) { return a.rx.standard == 9 ? atvFullPicture(a, disp) : a.rx.standard == 102 ? fpvFullPicture(a, disp) : false; }
 bool analogHasPicture(const App& a) { return a.rx.standard == 9 ? atvHasPicture() : a.rx.standard == 102 ? fpvHasPicture() : false; }
 
 // F toggles the video-only view; Escape leaves it
@@ -80,9 +88,9 @@ static void videoOnlyKeys(App& a) {
     clipsui::tick(a);   // radio clips: settings, the audio ring, the C key and the dialog
     ImGuiIO& io = ImGui::GetIO();
     // I toggles the Identify tool (a click or a drag on the spectrum identifies the signal), Escape leaves it
-    if (!io.WantTextInput && !io.KeyCtrl && !io.KeySuper && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_I, false)) a.identifyTool = !a.identifyTool;
+    if (inputmap::pressed(inputmap::Action::IdentifyTool)) a.identifyTool = !a.identifyTool;
     if (a.identifyTool && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) a.identifyTool = false;
-    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+    if (inputmap::pressed(inputmap::Action::VideoOnly)) {
         if (a.videoOnly) { a.videoOnly = false; if (glfwGetWindowMonitor(gWindow)) toggleFullscreen(); }
         else if (a.video.has() || analogHasPicture(a)) { a.videoOnly = true; if (!glfwGetWindowMonitor(gWindow)) toggleFullscreen(); }
     }
@@ -110,43 +118,72 @@ static void classicTx(App& a, ImVec2 disp) {
     ImGui::End();
 }
 
+void clearAllButtonAt(App& a, bool sameLine);   // update_ui.cpp: Clear all, without its own SameLine
+
 // the classic top rows: the toolbar, source options, the mode selector and the right-aligned buttons
 static void classicTopBar(App& a, ImVec2 disp) {
+    (void)disp;
     const ImVec2 tb0 = ImGui::GetCursorScreenPos();
     toolbar(a);
         if (sourceOptionsOpen(a)) sourceOptions(a);
     a.tgMin[TgToolbar] = ImVec2(tb0.x - 4, tb0.y - 3); a.tgMax[TgToolbar] = ImVec2(tb0.x + ImGui::GetContentRegionAvail().x + 4, ImGui::GetCursorScreenPos().y);
     const ImVec2 sw0 = ImGui::GetCursorScreenPos();
+    // the right-hand buttons: laid out by toprow::layout (ui/top_row.h) from the widths they had last frame, never on top of the mode
+    // selector or of each other (a button drawn over another gets no clicks: #139, #424)
+    enum { BRadio, BSupport, BUpdate, BClear, BLang, BServer, BNewUi, BTouch, BTour, BCount };
+    static float sW[BCount] = {};   // each button's width as drawn last frame
+    static float sRowW = 0;         // all of them with their spacing: the mode selector keeps that much room
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    ImGui::BeginGroup();
     modePickerButton(a);   // the Mode Browser (mode_picker.cpp)
     ImGui::SameLine(0, 6 * gUi);
-    standardSwitch(a);
-    if (a.devices[a.devIdx].isRadio()) { ImGui::SameLine(disp.x - 64 - 410 * gUi); radioSettingsUi(a, false); }   // the top bar is full
-    ImGui::SameLine(disp.x - 64 - 370 * gUi);
-    supportButton();
-    ImGui::SameLine(disp.x - 64 - 290 * gUi);
-    updateButton(a);
-    clearAllButton(a);
-    {   // the language, the new interface and the tour, right-aligned (their width changes with the language)
-        int nl = 0;
-        const i18n::Language* L = i18n::languages(nl);
-        const char* langName = L[0].name;
-        for (int i = 0; i < nl; i++) if (!strcmp(i18n::current(), L[i].code)) langName = L[i].name;
-        const float pad = ImGui::GetStyle().FramePadding.x * 2, sp = ImGui::GetStyle().ItemSpacing.x;
-        const float w = ImGui::CalcTextSize(langName).x + ImGui::CalcTextSize(tr("Server")).x + ImGui::CalcTextSize(tr("New interface")).x + ImGui::CalcTextSize(tr("Tour")).x + 4 * pad + 3 * sp;
-        ImGui::SameLine(std::max(ImGui::GetCursorPosX(), disp.x - 12 * gUi - w));
+    standardSwitch(a, sRowW + 12 * gUi);
+    ImGui::EndGroup();
+    const float winX = ImGui::GetWindowPos().x - ImGui::GetScrollX();
+    const float leftEnd = ImGui::GetItemRectMax().x - winX;
+    const float lineStart = ImGui::GetCursorPosX();                       // the cursor is at the start of the next line
+    const float right = lineStart + ImGui::GetContentRegionAvail().x;
+    const bool radio = a.devIdx >= 0 && a.devIdx < (int)a.devices.size() && a.devices[a.devIdx].isRadio();
+    int nl = 0;
+    const i18n::Language* L = i18n::languages(nl);
+    const char* langName = L[0].name;
+    for (int i = 0; i < nl; i++) if (!strcmp(i18n::current(), L[i].code)) langName = L[i].name;
+    auto est = [&](const char* t) { return ImGui::CalcTextSize(t, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2; };
+    const float guess[BCount] = {est(tr("Radio settings*")), est(tr("Support")), est("v" ONAIR_VERSION), est(tr("Clear all##clearall")), est(langName),
+                                 est(tr("Server")), est(tr("New interface")), est(tr("Touch")), est(tr("Tour"))};
+    std::vector<int> ids;
+    std::vector<float> w;
+    for (int k = 0; k < BCount; k++) { if (k == BRadio && !radio) continue; ids.push_back(k); w.push_back(sW[k] > 0 ? sW[k] : guess[k]); }
+    const std::vector<toprow::Place> pl = toprow::layout(w, leftEnd, lineStart, right, sp, 12 * gUi);
+    float rowW = 0;
+    for (size_t i = 0; i < ids.size(); i++) {
+        if (pl[i].newLine) ImGui::SetCursorPosX(pl[i].x); else ImGui::SameLine(pl[i].x);
+        ImGui::BeginGroup();
+        switch (ids[i]) {
+        case BRadio: radioSettingsUi(a, false); break;
+        case BSupport: supportButton(); break;
+        case BUpdate: updateButton(a); break;
+        case BClear: clearAllButtonAt(a, false); break;
+        case BLang: languageButton(a); break;
+        case BServer: mapSendButton(a); break;
+        case BNewUi:
+            if (ImGui::SmallButton(tr("New interface"))) { a.newUi = true; savePrefs(a); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Try the new interface. You can switch back at any time."));
+            break;
+        case BTouch:
+            if (ImGui::SmallButton(tr("Touch"))) { a.touchUi = true; savePrefs(a); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Switch to the touch interface (big buttons, on-screen keypad). You can switch back at any time."));
+            break;
+        case BTour:
+            if (ImGui::SmallButton(tr("Tour"))) tourStart(a);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Take the guided tour"));
+            break;
+        }
+        ImGui::EndGroup();
+        sW[ids[i]] = ImGui::GetItemRectSize().x;
+        rowW += sW[ids[i]] + (i ? sp : 0);
     }
-    languageButton(a);
-    ImGui::SameLine();
-    mapSendButton(a);
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("New interface"))) { a.newUi = true; savePrefs(a); }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Try the new interface. You can switch back at any time."));
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("Touch"))) { a.touchUi = true; savePrefs(a); }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Switch to the touch interface (big buttons, on-screen keypad). You can switch back at any time."));
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("Tour"))) tourStart(a);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Take the guided tour"));
+    sRowW = rowW;
     a.tgMin[TgSwitch] = ImVec2(sw0.x - 2, sw0.y - 2); a.tgMax[TgSwitch] = ImVec2(sw0.x + gSwitchWidth + 20, ImGui::GetCursorScreenPos().y);
 }
 
@@ -182,8 +219,9 @@ static void classicRx(App& a, ImVec2 disp) {
 
 // the classic interface's root window
 static void classicShell(App& a, ImVec2 disp) {
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(disp);
+    const float menuH = ui2::menuBar(a);   // File / Mode / View ... stay on screen in the classic interface too: the menu cannot be lost
+    ImGui::SetNextWindowPos(ImVec2(0, menuH));
+    ImGui::SetNextWindowSize(ImVec2(disp.x, disp.y - menuH));
     ImGui::Begin("##root", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     txViewSwitch(a);   // RX / TX, top left
     if (hamViewFlag()) { ImGui::BeginChild("##hambody", ImVec2(0, 0)); hamPanel(a); ImGui::EndChild(); }
@@ -205,8 +243,13 @@ static void floatingWindows(App& a, ImVec2 disp) {
     scanViewWindow(a);
     sweepWindow(a);
     stationHealthWindow(a);
+    stationWindow(a);
+    heardWindow(a);
+    insightWindow(a);
     receptionDoctorWindow(a);
     rfFingerprintWindow(a);
+    wideAllWindow(a);
+    trunkPoolWindow(a);
     calibrateFrequencyDraw(a);
     memoryWindow(a);
     freqdbWindow(a);
@@ -231,10 +274,13 @@ static void floatingWindows(App& a, ImVec2 disp) {
     a.engine.setWideDecode(a.wideDecode && modeSupportsWideHf(a.family));
     a.engine.setMultiChannel(a.mtvOn && wholeSpanTvOffered(a), a.mtvMax, a.mtvGrid);
     feedsWindow(a);
+    if (a.rxId == 1) echolinkWindow(a);   // one EchoLink client for the program
+    wiresharkWindow(a);
     swarmWindow(a);
     automationWindow(a);
     protolabWindow(a);
     signallabWindow(a);
+    esp32Window(a);
     modeBuilderFrame(a);
     modeBuilderWindow(a);
     txStudioWindow(a);
@@ -309,6 +355,8 @@ static void hiddenPopOut(App& a) {
 }
 
 void drawUI(App& a, ImVec2 disp, bool draw) {
+    modeBuilderRegister(a);   // before the toolbar: it reads the tuning of the mode on screen, and a saved or --pick mode is on screen from the first frame (#465)
+    pluginRegister(a);
     {   // the user's power choices (View > Power) to the policy the engine and the background threads read
         dect2::power::Settings ps;
         ps.lowPower = (dect2::power::LowPowerMode)std::clamp(a.powerLowMode, 0, 2);
@@ -323,6 +371,11 @@ void drawUI(App& a, ImVec2 disp, bool draw) {
     applyUiTheme(a);
     if (modeacFullMap(a, disp) || adsbFullMap(a, disp)) return;   // the ADS-B map popped out over the whole window (in Mode A/C too, #235)
     if (adsbmap::fullDraw(&a, a.family, disp)) return;   // any other map screen: the tab it is on over the whole window (the "full screen" button on the map)
+    {   // Ctrl+Shift+M (Cmd+Shift+M): the default view back, from any interface (also Settings > Appearance > Restore the default view)
+        ImGuiIO& io = ImGui::GetIO();
+        if (inputmap::pressed(inputmap::Action::RestoreView)) ui2::restoreDefaultView(a);
+        (void)io;
+    }
     if (a.touchUi) touch::shell(a, disp);   // the touch interface (ui/touch_shell.cpp) over either interface's panels
     else if (a.newUi) drawShell2(a, disp);
     else classicShell(a, disp);
@@ -330,7 +383,7 @@ void drawUI(App& a, ImVec2 disp, bool draw) {
         ImGui::SetNextWindowPos(ImVec2(disp.x - 12 * gUi, disp.y - 48 * gUi), ImGuiCond_Always, ImVec2(1, 1));
         ImGui::SetNextWindowBgAlpha(0.95f);
         if (ImGui::Begin("##looknotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
-            ImGui::TextUnformatted(tr("OnAir now uses the new Dev A look. You can switch back in View > Look."));
+            ImGui::TextUnformatted(tr("OnAir now uses the new Dev A look. You can switch back in View > Theme."));
             if (ImGui::Button(tr("Switch back to Classic"))) { a.uiTheme = 1; a.lookNotice = false; plat::prefs().setB("lookNoticeDone", true); savePrefs(a); }
             ImGui::SameLine();
             if (ImGui::Button(tr("Dismiss"))) { a.lookNotice = false; plat::prefs().setB("lookNoticeDone", true); }

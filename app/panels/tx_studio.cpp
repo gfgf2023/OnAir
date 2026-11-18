@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Tools > TX studio: a bench for making and checking a transmit signal WITHOUT a radio. Pick a mode, edit its parameters and payload, see the signal
 // (spectrum, waterfall, constellation, time view), read the measurements (occupied bandwidth, PAPR, ACPR / mask), run the app's own decoder on it with
 // an optional noise / offset / fading impairment, and save it as an IQ file with a metadata file (or sweep a parameter into many files).
@@ -555,7 +558,7 @@ void saveTab(App& a, Studio& s) {
     if (ImGui::Button(tr("Save"))) startSave(s, (StudioFormat)s.fmt, s.folder, imp && s.saveImpaired, false);
     ImGui::SameLine();
     if (ImGui::Button(tr("Open in decoder"))) {
-        const std::string rec = plat::dataDir() + "/recordings";
+        const std::string rec = recordingsDir();
         startSave(s, StudioFormat::SigMF, rec, imp && s.saveImpaired, true);
     }
     ImGui::EndDisabled();
@@ -582,7 +585,7 @@ void saveTab(App& a, Studio& s) {
     if (ImGui::BeginCombo("##swkeys", tr("pick"), ImGuiComboFlags_NoPreview)) {
         for (const char* k : {"wpm", "toneHz", "baudIdx", "shiftIdx", "kind", "variant", "dbm", "bandwidthMhz", "deviationHz", "impair.snr", "impair.cfo"})
             if (ImGui::Selectable(k)) snprintf(s.sweepKey, sizeof s.sweepKey, "%s", k);
-        if (s.mode) for (const auto& d : s.ui.params) if (d.bind == Bind::Opt && ImGui::Selectable(d.key)) snprintf(s.sweepKey, sizeof s.sweepKey, "%s", d.key);
+        if (s.mode) for (const auto& d : s.ui.params) if (d.field == dect2::TxPField::None && !d.set && !d.custom && !d.hidden && d.type != dect2::TxPType::Text && d.type != dect2::TxPType::File && ImGui::Selectable(d.key)) snprintf(s.sweepKey, sizeof s.sweepKey, "%s", d.key);
         ImGui::EndCombo();
     }
     ImGui::SetNextItemWidth(260 * gUi);

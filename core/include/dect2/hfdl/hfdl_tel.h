@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HFDL (HF Data Link, ARINC 635 / ICAO Doc 9741) receiver telemetry, shared by the receiver and the UI.
 // The first members of HfdlTelemetry are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -31,6 +34,7 @@ struct HfdlMessage {
     // squitter
     int frameIndex = -1;
     bool utcSync = false;
+    int systable = -1;           // the system table version the squitter names (-1 not read)
     std::vector<int> activeKhz;  // the frequencies the squitter says are in use (from the built-in station table)
     // ACARS
     bool acars = false;
@@ -66,6 +70,9 @@ struct HfdlAircraft {
     double posTime = 0;
     std::vector<HfdlTrackPoint> track;   // oldest first, at most 24
 };
+
+// how many of the aircraft have a position (the "212 with a position" of the HFDL header)
+inline int hfdlCountWithPos(const std::vector<HfdlAircraft>& v) { int n = 0; for (const auto& a : v) n += a.hasPos ? 1 : 0; return n; }
 
 struct HfdlGroundStation {
     int id = 0;
@@ -112,13 +119,20 @@ struct HfdlTelemetry {
     double inputRate = 0;
     uint64_t squitters = 0, lpdus = 0, acarsMsgs = 0, positionsTotal = 0;
     uint64_t byRate[4] = {};     // good bursts at 300, 600, 1200, 1800 bit/s
+    // why a burst did not give a PDU ("why isn't it decoding"), totals over the channels
+    uint64_t whyPreambleRejected = 0;   // the coarse search fired, the fine check (frequency, A1+A2 coherence, M1) said no preamble
+    uint64_t whyShort = 0;              // preamble ok, the decoder gave fewer than 4 octets
+    uint64_t whySpduFcs = 0;            // a squitter (SPDU) whose check sequence failed: the FEC did not repair the burst
+    uint64_t whyMpduFcs = 0;            // a data PDU whose header check sequence failed
+    uint64_t whyLpduFcs = 0;            // an LPDU inside a good MPDU with a bad check sequence
+    uint64_t whyUnknownLpdu = 0;        // an LPDU with a good check but a type OnAir does not decode
     std::vector<HfdlMessage> messages;          // newest first, at most kHfdlMsgMax
     std::vector<HfdlAircraft> aircraft;         // most recently heard first, at most 200
     std::vector<HfdlGroundStation> stations;    // by id
     std::vector<HfdlChannelInfo> channels;      // by frequency
 };
 
-constexpr size_t kHfdlMsgMax = 400;
+constexpr size_t kHfdlMsgMax = 2000;
 
 inline std::string hfdlSummary(const HfdlTelemetry& t) {
     int inBand = 0, act = 0;

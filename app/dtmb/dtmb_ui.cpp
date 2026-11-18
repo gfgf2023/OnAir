@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DTMB screens: status bar, the analysis row (constellation, channel impulse response from the PN header, C/N and MER history, codeword loss),
 // the Receiver tab, the decoder option and the options of the test signal. The TV tab, services and the player are the shared ones.
 #include "app.h"
@@ -267,10 +270,13 @@ void tuner(App& a, bool& retune) {
     ImGui::TextDisabled("Channel");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("DTMB channel width: 8 MHz in China, Hong Kong and Macau, 6 MHz in Cuba.\nA receiver set to the wrong width finds nothing.");
     sameLineIf(90 * gUi, 5 * gUi);
-    static const char* const kW[] = {"8 MHz", "6 MHz (Cuba)"};
-    int cur = a.dtmbBwMhz == 6 ? 1 : 0;
+    static const char* const kW[] = {N_("Automatic"), N_("8 MHz"), N_("6 MHz (Cuba)")};
+    int cur = a.dtmbAuto ? 0 : a.dtmbBwMhz == 6 ? 2 : 1;
     ImGui::SetNextItemWidth(std::min(std::max(90 * gUi, ImGui::CalcTextSize(kW[1]).x + ImGui::GetFrameHeight() + 8 * gUi), ImGui::GetContentRegionAvail().x));
-    if (ImGui::Combo("##dtmbbw", &cur, kW, 2)) setDtmbBandwidth(a, cur == 1 ? 6 : 8);
+    if (ImGui::BeginCombo("##dtmbbw", tr(kW[cur]))) {
+        for (int i = 0; i < 3; i++) if (ImGui::Selectable(tr(kW[i]), i == cur)) setDtmbBandwidth(a, i == 0 ? 0 : i == 2 ? 6 : 8);
+        ImGui::EndCombo();
+    }
     sameLineIf(100 * gUi, 6 * gUi);
     if (tvChannelCombo(a)) retune = true;   // the channels of the band plan (Scan tab)
 }
@@ -316,6 +322,7 @@ void decoder(App& a, bool&) {
                               "not available for DTMB on this platform yet (Metal on macOS only); the CPU decodes",
 #endif
                               gpuOk ? GpuLdpc::instance().deviceName() : "none usable for DTMB");
+        ImGui::SameLine(0, 8 * gUi); gpuModeTick(a, "DTMB");
         if (gpuOk && live(a) && t.gpuWords) { ImGui::TextDisabled("%llu codewords decoded on the GPU", (unsigned long long)t.gpuWords); }
     }
 }
@@ -384,7 +391,9 @@ void scanTabCommon(App& a);   // scan_outputs.cpp: the scan tab of the TV modes 
 namespace { void scan(App& a) { scanTabCommon(a); } }
 
 void setDtmbBandwidth(App& a, int mhz) {
-    a.dtmbBwMhz = mhz == 6 ? 6 : 8;
+    a.dtmbAuto = mhz == 0;
+    if (mhz != 0) a.dtmbBwMhz = mhz == 6 ? 6 : 8;
+    plat::prefs().setB("dtmbAuto", a.dtmbAuto);
     applyBandwidth(a);
     savePrefs(a);
     if (a.engine.running()) startReceiver(a);   // the receiver takes the width when it starts

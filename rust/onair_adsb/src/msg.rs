@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! Field extraction of a whole Mode S message (DF0 / 4 / 5 / 11 / 16 / 17 / 18 / 19 / 20 / 21) and of the ADS-B extended squitter: identification,
 //! surface and airborne position, velocity, aircraft status, target state and operational status (DO-260B 2.2.3.2.*; the Riddle chapters).
 use crate::altitude::{char_from_6bit, decode_ac13, decode_alt12, decode_id13};
@@ -90,6 +93,23 @@ pub struct Msg {
     pub sil: i32,
     pub gva: i32,
     pub nic_baro: i32,
+    /// TC 19 velocity quality and intent change, TC 31 capability and operational mode: -1 unknown
+    pub nacv: i32,
+    pub cap_acas: i32,
+    pub cap_1090in: i32,
+    pub cap_uatin: i32,
+    pub ra_active: i32,
+    pub ident_on: i32,
+    pub atc_svc: i32,
+    pub length_code: i32,
+    /// TC 28 subtype 2, the ACAS RA broadcast, in BDS 3,0 layout
+    pub has_ra_bcast: bool,
+    pub ra_ara: u32,
+    pub ra_rac: u32,
+    pub ra_term: bool,
+    pub ra_mte: bool,
+    pub ra_tti: i32,
+    pub ra_threat: u32,
     /// DF20 / 21 Comm-B.
     pub commb: CommB,
 }
@@ -160,6 +180,21 @@ impl Msg {
             sil: -1,
             gva: -1,
             nic_baro: -1,
+            nacv: -1,
+            cap_acas: -1,
+            cap_1090in: -1,
+            cap_uatin: -1,
+            ra_active: -1,
+            ident_on: -1,
+            atc_svc: -1,
+            length_code: -1,
+            has_ra_bcast: false,
+            ra_ara: 0,
+            ra_rac: 0,
+            ra_term: false,
+            ra_mte: false,
+            ra_tti: 0,
+            ra_threat: 0,
             commb: CommB::new(),
         }
     }
@@ -311,9 +346,22 @@ fn decode_extended(b: &[u8], m: &mut Msg) {
         }
     } else if tc == 19 {
         m.st = get(b, 38, 3) as i32;
+        m.nacv = get(b, 43, 3) as i32;   // ME 11-13
         decode_velocity(b, m);
     } else if tc == 28 {
         m.st = get(b, 38, 3) as i32;
+        if m.st == 2 {
+            // ACAS RA broadcast, DO-260B: ME 9-56 carry the BDS 3,0 fields
+            m.has_ra_bcast = true;
+            m.ra_ara = get(b, 41, 14);
+            m.ra_rac = get(b, 55, 4);
+            m.ra_term = get(b, 59, 1) != 0;
+            m.ra_mte = get(b, 60, 1) != 0;
+            m.ra_tti = get(b, 61, 2) as i32;
+            if m.ra_tti == 1 {
+                m.ra_threat = get(b, 63, 24);
+            }
+        }
         if m.st == 1 {
             m.emergency = get(b, 41, 3) as i32;
             let id = get(b, 44, 13);
@@ -321,6 +369,8 @@ fn decode_extended(b: &[u8], m: &mut Msg) {
                 m.has_squawk = true;
                 m.squawk = decode_id13(id);
             }
+        } else if m.st == 2 && b.len() >= 11 {
+            m.commb = commb::acas_ra(&b[4..11]);   // the extended squitter form of the advisory
         }
     } else if tc == 29 {
         m.st = get(b, 38, 2) as i32;
@@ -364,6 +414,32 @@ fn decode_extended(b: &[u8], m: &mut Msg) {
         if m.st == 0 || m.st == 1 {
             let ver = get(b, 73, 3) as i32;
             m.adsb_version = ver;
+            // capability class needs ME 9-10 = 0 and the operational mode ME 25-26 = 0 (readsb, DO-260B)
+            if get(b, 41, 2) == 0 {
+                if m.st == 0 {
+                    match ver {
+                        0 => m.cap_acas = 1 - get(b, 44, 1) as i32,   // inverted
+                        1 => m.cap_acas = 1 - get(b, 43, 1) as i32,   // inverted
+                        _ => {
+                            m.cap_acas = get(b, 43, 1) as i32;
+                            m.cap_1090in = get(b, 44, 1) as i32;
+                            m.cap_uatin = get(b, 51, 1) as i32;
+                        }
+                    }
+                } else {
+                    if ver >= 2 {
+                        m.cap_1090in = get(b, 44, 1) as i32;
+                        m.cap_uatin = get(b, 48, 1) as i32;
+                        m.nacv = get(b, 49, 3) as i32;
+                    }
+                    m.length_code = get(b, 53, 4) as i32;
+                }
+            }
+            if get(b, 57, 2) == 0 {
+                m.ra_active = get(b, 59, 1) as i32;
+                m.ident_on = get(b, 60, 1) as i32;
+                m.atc_svc = get(b, 61, 1) as i32;
+            }
             if ver >= 1 {
                 // NIC supplement-A, NACp, SIL: bits 76, 77-80, 83-84 (version 1 and 2)
                 m.nic_supp_a = get(b, 76, 1) as i32;
@@ -398,6 +474,10 @@ pub fn decode(b: &[u8], nbits: i32) -> (bool, Msg) {
                 m.has_alt = true;
                 m.alt_ft = a;
             }
+            // DF16 carries the ACAS coordination in MV: VDS 0x30 is the resolution advisory
+            if m.df == 16 && b.len() >= 11 && b[4] == 0x30 {
+                m.commb = commb::acas_ra(&b[4..11]);
+            }
         }
         4 | 5 | 20 | 21 => {
             m.fs = get(b, 6, 3) as i32;
@@ -426,8 +506,9 @@ pub fn decode(b: &[u8], nbits: i32) -> (bool, Msg) {
         17..=19 => {
             m.ca = get(b, 6, 3) as i32;
             m.icao = get(b, 9, 24);
-            if m.df == 18 && (m.ca == 4 || m.ca == 7) {
-                return (true, m); // TIS-B management and reserved control field: no ME decoding
+            // DO-260B 2.2.3.2.6.1 / readsb: CF 3 is coarse TIS-B (its own ME layout, not the ADS-B one), CF 4 TIS-B management, CF 7 reserved: no ME decoding
+            if m.df == 18 && (m.ca == 3 || m.ca == 4 || m.ca == 7) {
+                return (true, m);
             }
             if m.df == 19 && m.ca != 0 {
                 return (true, m); // military: only application field 0 has the extended squitter layout

@@ -1,10 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "../audio/ham_listen.h"
 #include "dect2/automation/engine.h"
 #include "dect2/marine/marine_rx.h"
 #include "dect2/marine/marine_dsc.h"
 #include "dect2/marine/marine_dsp.h"
+#include "dect2/dsp/exact_resampler.h"
 #include "dect2/marine/marine_bands.h"
 #include "dect2/marine/marine_navtex.h"
+#include "dect2/marine/marine_incident.h"
+#include "dect2/common/diag.h"
 #include "dect2/results/results_io.h"
 #include <algorithm>
 #include <atomic>
@@ -58,6 +64,10 @@ struct MarineReceiver::Impl {
     std::mutex mu;                 // the processing chain (feed, configure, reset)
     mutable std::mutex telMu;      // the report
     double rate = 0, offsetHz = 0;
+    bool audioIn = false;          // setAudioInput(): real, already demodulated audio (sound card / WAV), VHF DSC only
+    bool okRate = false, audioOk = false, iqOk = false;   // the input rate suits a chain (audioOk: the audio-as-FM chain, iqOk: the IQ chain)
+    ExactResampler ars;            // audio -> kBaseRate
+    std::vector<cf32> arsIn;
     std::atomic<int> service{0};
     std::atomic<double> freqHz{0};
     std::atomic<int> faxLpm{0}, faxIoc{0};     // 0 = detect from the start tone and the phasing
@@ -129,6 +139,7 @@ struct MarineReceiver::Impl {
             std::string st(1, m.station);
             automation::emitMessage("navtex", "NAVTEX", freqHz.load(), st, m.text, std::nan(""), std::move(ex));
         }
+        if (m.errors > 0) DIAG_DEBUG_EVERY(159185, 10.0, "NAVTEX message %s has %u unreadable characters out of %u, so they show as asterisks in the text.", m.header.c_str(), (unsigned)m.errors, (unsigned)m.chars);
         tel.navtex.push_back(m);
         if (tel.navtex.size() > 100) tel.navtex.erase(tel.navtex.begin());
         trimText();
@@ -139,12 +150,15 @@ struct MarineReceiver::Impl {
         char b[160];
         snprintf(b, sizeof b, "NAVTEX %s%s: %s%s, %u characters, %u unreadable", m.header.c_str(), m.complete ? "" : " (cut short)", m.subjectName.c_str(), "", m.chars, m.errors);
         say(b);
+        if (m.complete) IncidentBoard::global().onNavtex(m, (double)m.rxTime);   // sea distress incidents (marine_incident.h)
+        incidentFlush([this](const std::string& t) { say(t); });
     }
 
     void onDsc(const DscCall& c0, bool vhfPath, double carrierHz = -1) {
         // a call that failed its check and names no sender says nothing: noise that happened to pass for a call (a fading fax signal
         // gave one on the VHF path, "Unknown format from ? to ?", and switched the active service away from the fax)
-        if (!c0.eccOk && c0.fromMmsi.empty()) return;
+        if (!c0.eccOk && c0.fromMmsi.empty()) { DIAG_DEBUG_EVERY(441282, 10.0, "A DSC call failed its check and names no sender, so it is dropped as noise."); return; }
+        if (!c0.eccOk) DIAG_EVERY(625192, 10.0, "A DSC call from MMSI %s failed its error check, so it is listed marked as check failed.", c0.fromMmsi.c_str());
         DscCall c = c0;
         c.vhf = vhfPath;
         c.freqHz = carrierHz >= 0 ? carrierHz : (vhfPath ? 156.525e6 : freqHz.load());
@@ -167,6 +181,8 @@ struct MarineReceiver::Impl {
         tel.dataValid = true;
         if (c.eccOk) { lastDscSec = c.rxSec; dscVhfSeen = vhfPath; }   // only a checked call says which service is on the air
         say("DSC " + c.text);
+        IncidentBoard::global().onDsc(c, (double)c.rxTime);   // opens or joins a sea distress incident (marine_incident.h)
+        incidentFlush([this](const std::string& t) { say(t); });
     }
 
     // telMu held: the sample count starts again, the kept messages stay in the past of the new clock
@@ -175,9 +191,20 @@ struct MarineReceiver::Impl {
         for (auto& c : tel.dsc) c.rxSec += dt;
     }
 
+    void configureChain() {
+        // the audio-as-FM chain (VHF DSC only, picked per feed) and the IQ chain every other decoder uses (an IF from a sound card too) are both kept ready
+        audioOk = audioIn && rate >= 7999 && ars.configure(rate, kBaseRate, 8);
+        iqOk = rate >= marineTuning().minSampleRate - 1;
+        if (iqOk) { front.configure(rate); front.setOffsetHz(offsetHz); }
+        okRate = iqOk || audioOk;
+        fax.configure(12000.0);
+        parDirty = true;
+        resetAll();
+    }
+
     void resetAll() {
         { std::lock_guard<std::mutex> lk(telMu); shiftTimes(-lastNow); lastNow = 0; }
-        front.reset(); spec.reset(); fsk.reset(); vhf.reset(); faxAudio.reset(); fax.reset(); listen.reset();
+        ars.reset(); front.reset(); spec.reset(); fsk.reset(); vhf.reset(); faxAudio.reset(); fax.reset(); listen.reset();
         for (auto& n : nav) n.reset();
         for (auto& d : dsc) d.reset();
         for (auto& d : dscv) d.reset();
@@ -239,7 +266,11 @@ void MarineReceiver::Impl::publish() {
     }
     if (fs.state == 2 && fs.lines > faxLinesSeen) { lastFaxSec = now; }
     if (fs.state >= 1 && fs.state <= 2) lastFaxSec = now;
-    if (fs.state == 3 && prevFaxState != 3 && fs.lines > 0) { faxDone++; tel.blocksOk++; }
+    if (fs.state == 3 && prevFaxState != 3 && fs.lines > 0) {
+        faxDone++; tel.blocksOk++;
+        // a chart received: rules, integrations and the learned broadcast schedules (insight/schedule_watch.h) see it
+        automation::emitMessage("wefax", "WEFAX", freqHz.load(), "", std::to_string(fs.lines) + " lines", std::nan(""));
+    }
     prevFaxState = fs.state;
     faxLinesSeen = (uint64_t)std::max(0, fs.lines);
     if (fs.lines > 0) tel.dataValid = true;
@@ -282,13 +313,14 @@ MarineReceiver::~MarineReceiver() = default;
 void MarineReceiver::configure(double inputRateHz) {
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->rate = inputRateHz;
-    if (inputRateHz >= marineTuning().minSampleRate - 1) {
-        p_->front.configure(inputRateHz);
-        p_->front.setOffsetHz(p_->offsetHz);
-    }
-    p_->fax.configure(12000.0);
-    p_->parDirty = true;
-    p_->resetAll();
+    p_->configureChain();
+}
+
+void MarineReceiver::setAudioInput(bool on) {
+    std::lock_guard<std::mutex> lk(p_->mu);
+    if (p_->audioIn == on) return;
+    p_->audioIn = on;
+    if (p_->rate > 0) p_->configureChain();
 }
 
 void MarineReceiver::setSignalOffset(double hz) {
@@ -300,7 +332,7 @@ void MarineReceiver::setSignalOffset(double hz) {
 
 bool MarineReceiver::ready() const {
     std::lock_guard<std::mutex> lk(p_->mu);
-    return p_->rate >= marineTuning().minSampleRate - 1;
+    return p_->okRate;
 }
 
 void MarineReceiver::reset() {
@@ -317,7 +349,25 @@ void MarineReceiver::reset() {
 void MarineReceiver::feed(const cf32* x, size_t n) {
     Impl& s = *p_;
     std::lock_guard<std::mutex> lk(s.mu);
-    if (s.rate < marineTuning().minSampleRate - 1) return;
+    if (!s.okRate) return;
+    const Enabled en0 = chooseServices(s.service.load(), s.freqHz.load());
+    // a sound card whose audio is already FM-demodulated: only when VHF DSC is the one decoder; NAVTEX, fax and the rest keep treating the samples as IQ (an IF)
+    if (s.audioOk && en0.dscVhf && !en0.navtex && !en0.dscHf && !en0.fax) {
+        s.arsIn.resize(n);
+        for (size_t i = 0; i < n; i++) s.arsIn[i] = cf32(x[i].real(), 0.f);
+        s.base.clear();
+        s.ars.process(s.arsIn.data(), n, s.base);
+        s.inSamples += n;
+        if (!s.base.empty()) {
+            s.spec.push(s.base.data(), s.base.size());
+            s.vhf.processAudio(s.base.data(), s.base.size(), [&](float v) { s.dscv[0].pushBit(v); s.dscv[1].pushBit(v); });   // 1300 Hz = Y = 1
+        }
+        s.sinceReport += (double)n;
+        const double per = 0.25 * s.rate;
+        while (s.sinceReport >= per) { s.sinceReport -= per; s.publish(); }
+        return;
+    }
+    if (!s.iqOk) return;
     s.applyFaxSettings();
     if (s.parDirty) s.rebuildPar();
     const Enabled en = chooseServices(s.service.load(), s.freqHz.load());
@@ -373,6 +423,7 @@ bool MarineReceiver::telemetry(MarineTelemetry& out, uint64_t lastSeq) {
 }
 
 void MarineReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->log = std::move(cb); }
+void MarineReceiver::setVhfNarrowChannel(bool on) { p_->vhf.setNarrowChannel(on); }
 void MarineReceiver::setService(int s) { p_->service = s < 0 || s > 3 ? 0 : s; }
 void MarineReceiver::setFrequencyHz(double hz) {
     std::lock_guard<std::mutex> lk(p_->mu);
@@ -408,7 +459,10 @@ bool MarineReceiver::loadResults(const std::string& blob) {
     std::vector<NavtexMessage> nav;
     std::vector<DscCall> dsc;
     uint64_t nn = 0, nd = 0;
-    if (!results::unpack(blob, t0, nav, dsc, nn, nd)) return false;
+    if (!results::unpack(blob, t0, nav, dsc, nn, nd)) {
+        DIAG(738674, "The saved marine results of %zu bytes could not be read, so the earlier NAVTEX messages and DSC calls are not restored.", blob.size());
+        return false;
+    }
     std::lock_guard<std::mutex> lk(p_->telMu);
     p_->tel.navtex = std::move(nav); p_->tel.dsc = std::move(dsc);
     p_->tel.navtexCount = nn; p_->tel.dscCount = nd;

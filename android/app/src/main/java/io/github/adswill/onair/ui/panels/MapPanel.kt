@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui.panels
 
 import androidx.compose.runtime.Composable
@@ -32,5 +35,5 @@ object MapPanel : ModePanel {
 
 /** Registers the built-in dedicated panels (found by ServiceLoader, see META-INF/services). */
 class BuiltinPanelProvider : ModePanelProvider {
-    override fun panels(): List<ModePanel> = listOf(RdsPanel, AircraftPanel, VesselPanel, MapPanel, MessagesPanel, TablesPanel, io.github.adswill.onair.ui.panels.walkdf.WalkDfPanel)
+    override fun panels(): List<ModePanel> = listOf(TvPanel, CdrPanel, RdsPanel, AircraftPanel, VesselPanel, MapPanel, MessagesPanel, TablesPanel, io.github.adswill.onair.ui.panels.walkdf.WalkDfPanel)
 }

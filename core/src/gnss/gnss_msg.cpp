@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Coded navigation messages: SBAS L1 and Galileo I/NAV (see gnss_msg.h).
 #include "dect2/gnss/gnss_msg.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -183,15 +187,63 @@ void inavBuildPage(const uint8_t* word, const uint8_t* oss, int ssp, uint8_t* ev
 }
 
 bool inavCheckPage(const uint8_t* even, const uint8_t* odd, uint8_t* word) {
-    if (even[0] != 0 || odd[0] != 1 || even[1] != 0 || odd[1] != 0) return false;     // a nominal page, even part first
+    if (even[0] != 0 || odd[0] != 1 || even[1] != 0 || odd[1] != 0) {     // a nominal page, even part first
+        DIAG_DEBUG_EVERY(302884, 5.0, "A Galileo I/NAV page has even/odd bits %d/%d and page type bits %d/%d where a nominal page needs 0/1 and 0/0, so it is dropped.", even[0], odd[0], even[1], odd[1]);
+        return false;
+    }
     uint8_t m[196];
     inavCrcInput(even, odd, m);
     uint32_t c = 0;
     for (int i = 0; i < 24; i++) c = c << 1 | odd[82 + i];
-    if (crc24q(m, 196) != c) return false;
+    const uint32_t calc = crc24q(m, 196);
+    if (calc != c) {
+        DIAG_DEBUG_EVERY(127903, 5.0, "A Galileo I/NAV page failed its CRC-24Q check (computed %06X, received %06X), so the page is dropped.", (unsigned)calc, (unsigned)c);
+        return false;
+    }
     std::memcpy(word, even + 2, 112);
     std::memcpy(word + 112, odd + 2, 16);
     return true;
+}
+
+const char* osnmaStatusName(int s) { static const char* const n[4] = {"reserved", "test", "operational", "don't use"}; return n[s & 3]; }
+const char* osnmaChainStatusName(int s) { static const char* const n[8] = {"reserved", "nominal", "end of chain", "chain revoked", "new public key", "public key revoked", "new Merkle tree", "alert message"}; return n[s & 7]; }
+
+bool GalRlmAssembler::complete(GalRlm& o) {
+    int ones = 0;
+    const int total = longR_ ? 160 : 80;
+    for (int i = 0; i < total; i++) ones += bits_[i];
+    o = GalRlm();
+    o.longRlm = longR_;
+    o.parityOk = (ones & 1) == 0;
+    for (int i = 0; i < 15; i++) { int v = 0; for (int b = 0; b < 4; b++) v = v * 2 + bits_[i * 4 + b]; o.hex[i] = "0123456789ABCDEF"[v]; }
+    o.messageCode = 0; for (int i = 0; i < 4; i++) o.messageCode = o.messageCode * 2 + bits_[60 + i];
+    if (!longR_) { uint32_t p = 0; for (int i = 0; i < 16; i++) p = p * 2 + bits_[64 + i]; o.params16 = p; }
+    o.ack = !longR_ && o.messageCode == 1 && bits_[64] == 1 && bits_[65] == 0;
+    o.test = !longR_ && o.messageCode == 15;
+    return true;
+}
+
+bool GalRlmAssembler::push(const uint8_t* sar, GalRlm& out) {
+    const bool start = sar[0] != 0, lng = sar[1] != 0;
+    bool finished = false;
+    if (start) { n_ = 0; have_ = true; opened_ = true; longR_ = lng; parts_ = 0; }
+    else if (!have_) return false;
+    else if (lng != longR_) {
+        DIAG_DEBUG_EVERY(513011, 5.0, "A Galileo SAR return link part changed between short and long format in the middle of a message, so the message is discarded.");
+        have_ = false;
+        return false;
+    }
+    // an all-'1' spare (Table 64): the first part only counts when the next start bit is 0, which the check below does by waiting
+    if (have_) {
+        for (int i = 0; i < 20 && n_ < 160; i++) bits_[n_++] = sar[2 + i];
+        parts_++;
+        const int need = longR_ ? 8 : 4;
+        if (parts_ == need) {
+            have_ = false;
+            finished = complete(out);
+        }
+    }
+    return finished;
 }
 
 int inavParseWord(const uint8_t* w, GalNav& g, int* tow) {

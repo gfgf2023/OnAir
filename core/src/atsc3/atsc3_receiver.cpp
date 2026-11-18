@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
+#include "dect2/common/stage_prof.h"
 #include "dect2/common/thread_name.h"
 #include <chrono>
 #include "dect2/atsc3/atsc3_receiver.h"
@@ -21,28 +26,44 @@ Atsc3Receiver::~Atsc3Receiver() { remux_.stop(); }
 struct Atsc3Receiver::CtiPlp {
     int rows = 0, fec = -1, mod = -1, cod = -1;
     std::unique_ptr<CtiDeinterleaver> deint;
+    std::unique_ptr<CtiDeinterleaver> deintW;   // the same de-interleaver for the cells' channel state weights (as real parts); null: none
     std::unique_ptr<Bicm> bicm;
     long pushed = 0;           // cells fed to the de-interleaver since it started; the transmit index of the next frame's first cell, counted from there
     long outPos = 0;           // position in the de-interleaved stream (one cell out per cell in) of buf[0]
     long nextBlock = -1;       // position in that stream where the next FEC block starts; -1 until known
     std::vector<cf32> buf;     // de-interleaved cells from outPos on, not yet cut into blocks
+    std::vector<float> bufW;   // their weights (with deintW)
 };
 
 PlpResult Atsc3Receiver::runCti(const PlpResult& in) {
+    DECT2_STAGE("a3.ti");
     PlpResult out;
     out.id = in.id;
     std::unique_ptr<CtiPlp>& up = cti_[in.id];
     if (!up) up.reset(new CtiPlp());
     CtiPlp* c = up.get();
     // the commutator carries on from the previous frame: another position means frames were missed
-    if (!c->deint || c->rows != in.ctiRows || c->fec != in.cfg.fecType || c->mod != in.cfg.mod || c->cod != in.cfg.cod || c->deint->row() != in.ctiStartRow % c->rows) {
+    // Channel state (4.1): each cell's weight goes through a second de-interleaver of the same shape, so that a cell from a deep fade enters the
+    // LDPC decoder with the little confidence it deserves (the other time-interleaving modes had this in 4.0, docs/SENSITIVITY-4.0-X3.md). The
+    // cells of the start-up (the de-interleaver's initial zeros) get weight 0. Without weights (DECT2_ATSC3_NOCSI) one noise figure per block.
+    const bool haveW = in.cellW.size() == in.cells.size() && !in.cells.empty();
+    if (!c->deint || c->rows != in.ctiRows || c->fec != in.cfg.fecType || c->mod != in.cfg.mod || c->cod != in.cfg.cod || c->deint->row() != in.ctiStartRow % c->rows ||
+        (c->deintW != nullptr) != haveW) {
         up.reset(new CtiPlp());
         c = up.get();
         c->rows = in.ctiRows; c->fec = in.cfg.fecType; c->mod = in.cfg.mod; c->cod = in.cfg.cod;
-        if (c->rows <= 1) return out;
+        if (c->rows <= 1) {
+            DIAG_DEBUG_EVERY(266505, 10.0, "ATSC 3.0 PLP %d announces a convolutional time interleaver with %d rows (at least 2 needed), so its data is skipped.", in.id, c->rows);
+            return out;
+        }
         c->bicm.reset(new Bicm(plpBicm(in.cfg)));
-        if (!c->bicm->ok()) { c->bicm.reset(); return out; }
+        if (!c->bicm->ok()) {
+            DIAG_DEBUG_EVERY(759567, 10.0, "ATSC 3.0 PLP %d announces a modulation and code rate the receiver cannot set up, so its data is skipped.", in.id);
+            c->bicm.reset();
+            return out;
+        }
         c->deint.reset(new CtiDeinterleaver(c->rows, in.ctiStartRow));
+        if (haveW) c->deintW.reset(new CtiDeinterleaver(c->rows, in.ctiStartRow));
     }
     const int cb = c->bicm->cells();
     const long lat = c->deint->latency();
@@ -60,22 +81,31 @@ PlpResult Atsc3Receiver::runCti(const PlpResult& in) {
         float pmax = 0;
         for (const cf32& p : c->bicm->constellation()) pmax = std::max(pmax, std::norm(p));
         const float lim = 2.0f * pmax;
-        for (cf32& v : cellsIn) if (!(std::norm(v) <= lim)) v = cf32(0, 0);
+        for (size_t i = 0; i < cellsIn.size(); i++) if (!(std::norm(cellsIn[i]) <= lim)) cellsIn[i] = cf32(0, 0);
     }
     std::vector<cf32> d = c->deint->process(cellsIn);
+    if (c->deintW) {
+        std::vector<cf32> wIn(cellsIn.size());
+        for (size_t i = 0; i < wIn.size(); i++) wIn[i] = cf32(cellsIn[i] == cf32(0, 0) ? 0.f : in.cellW[i], 0);
+        const std::vector<cf32> dw = c->deintW->process(wIn);
+        for (const cf32& v : dw) c->bufW.push_back(v.real());
+    }
     c->pushed += (long)in.cells.size();
     c->buf.insert(c->buf.end(), d.begin(), d.end());
     std::vector<std::vector<cf32>> blocks;
+    std::vector<std::vector<float>> wblocks;
     while (c->nextBlock >= 0 && c->nextBlock + cb <= c->outPos + (long)c->buf.size()) {
         if (c->nextBlock >= c->outPos) {
             const size_t o = (size_t)(c->nextBlock - c->outPos);
             blocks.emplace_back(c->buf.begin() + o, c->buf.begin() + o + cb);
+            if (c->deintW) wblocks.emplace_back(c->bufW.begin() + o, c->bufW.begin() + o + cb);
         }
         c->nextBlock += cb;
     }
     if (c->nextBlock > c->outPos) {
         const size_t drop = std::min<size_t>((size_t)(c->nextBlock - c->outPos), c->buf.size());
         c->buf.erase(c->buf.begin(), c->buf.begin() + drop);
+        if (c->deintW) c->bufW.erase(c->bufW.begin(), c->bufW.begin() + (long)std::min(drop, c->bufW.size()));
         c->outPos += (long)drop;
     }
     // the blocks are independent: they go to the decoder in batches (one block per vector lane), the batches on a few threads
@@ -89,10 +119,11 @@ PlpResult Atsc3Receiver::runCti(const PlpResult& in) {
         for (size_t k; (k = next++) < nBatches;) {
             const size_t from = k * bs, to = std::min(n, from + bs);
             std::vector<const cf32*> in;
-            for (size_t i = from; i < to; i++) in.push_back(blocks[i].data());
+            std::vector<const float*> win;
+            for (size_t i = from; i < to; i++) { in.push_back(blocks[i].data()); if (!wblocks.empty()) win.push_back(wblocks[i].data()); }
             std::vector<std::vector<uint8_t>> pl;
             std::vector<char> good;
-            bicm.decodeBatch(in, in_noise, pl, good);
+            bicm.decodeBatch(in, in_noise, pl, good, wblocks.empty() ? nullptr : &win);
             for (size_t i = from; i < to; i++) { ok[i] = good[i - from]; bits[i].swap(pl[i - from]); }
         }
     };
@@ -126,7 +157,11 @@ PlpResult Atsc3Receiver::joinStraddle(const PlpResult& in) {
             std::vector<const cf32*> ptr{cells.data()};
             std::vector<std::vector<uint8_t>> pl;
             std::vector<char> good;
-            bicm.decodeBatch(ptr, in.noise, pl, good);
+            // the channel state of both parts when both have it (docs/SENSITIVITY-4.0-X3.md)
+            std::vector<float> w;
+            if (st.tailW.size() == st.tail.size() && in.headW.size() == in.head.size() && !in.headW.empty()) { w = st.tailW; w.insert(w.end(), in.headW.begin(), in.headW.end()); }
+            std::vector<const float*> wp{w.data()};
+            bicm.decodeBatch(ptr, in.noise, pl, good, w.empty() ? nullptr : &wp);
             first.blocks = 1;
             first.ok.push_back(good[0] != 0);
             if (good[0]) { bbScramble(pl[0]); first.packets.push_back(bitsToBytes(pl[0])); first.blocksOk = 1; }
@@ -139,6 +174,7 @@ PlpResult Atsc3Receiver::joinStraddle(const PlpResult& in) {
         out.blocks += first.blocks; out.blocksOk += first.blocksOk;
     }
     st.tail = in.tail;
+    st.tailW = in.tailW;
     return out;
 }
 
@@ -150,7 +186,13 @@ bool Atsc3Receiver::commitFrame(const FrameResult& fr, const Bootstrap& bs) {
     {
         std::lock_guard<std::mutex> lk(mu_);
         st_.frames++;
-        if (!fr.ok) { st_.framesFailed++; cti_.clear(); straddle_.clear(); return false; }
+        if (!fr.ok) {
+            st_.framesFailed++;
+            cti_.clear();
+            straddle_.clear();
+            DIAG_DEBUG_EVERY(209186, 5.0, "An ATSC 3.0 frame could not be decoded (%llu failed of %llu so far), so its data is dropped and the time interleavers restart.", (unsigned long long)st_.framesFailed, (unsigned long long)st_.frames);
+            return false;
+        }
         FrameInfo fi;
         fi.valid = true;
         fi.fftSize = fr.subframe.fftSize; fi.guard = fr.subframe.guard;
@@ -199,7 +241,12 @@ void Atsc3Receiver::pushBbPackets(int plpId, const std::vector<std::vector<uint8
         for (auto& pk : packets) {
             st_.bbPackets++;
             BbHeader h;
-            if (!parseBbHeader(pk.data(), (int)pk.size(), h)) { st_.bbBad++; r.reset(); continue; }
+            if (!parseBbHeader(pk.data(), (int)pk.size(), h)) {
+                DIAG_DEBUG_EVERY(442689, 5.0, "An ATSC 3.0 baseband packet of %zu bytes on PLP %d has an invalid header, so it is dropped and ALP reassembly restarts.", pk.size(), plpId);
+                st_.bbBad++;
+                r.reset();
+                continue;
+            }
             r.push(pk.data() + h.headerBytes, (int)pk.size() - h.headerBytes, h.pointer, out);
         }
     }
@@ -221,6 +268,7 @@ void Atsc3Receiver::onAlp(const AlpPacket& a) {
         std::lock_guard<std::mutex> lk(tsMu_);
         sawTs_ = true;
         if (tsDirect_.size() < (size_t)64 << 20) tsDirect_.insert(tsDirect_.end(), a.data.begin(), a.data.end());
+        else DIAG_DEBUG_EVERY(546455, 10.0, "The ATSC 3.0 transport stream buffer holds 64 MB that nobody has read, so incoming transport stream data is dropped.");
         tsCv_.notify_all();
     }
 }
@@ -253,20 +301,24 @@ void Atsc3Receiver::pushIp(const uint8_t* p, size_t n) {
 
 void Atsc3Receiver::onUdp(const UdpDatagram& d) {
     if (d.dstIp == kLlsAddress && d.dstPort == kLlsPort) {
-        auto t = parseLls(d.payload.data(), d.payload.size());
-        if (!t.ok) return;
+        // a station that signs its signalling (A/360) sends its tables inside a SignedMultiTable: every table in it counts
+        const auto tables = parseLlsAll(d.payload.data(), d.payload.size());
         bool start = false;
         {
             std::lock_guard<std::mutex> lk(mu_);
-            st_.llsTables++;
-            if (t.tableId != 1) return;
-            lls_[t.groupId] = t;
-            services_.clear();
-            for (auto& g : lls_) services_.insert(services_.end(), g.second.slt.services.begin(), g.second.slt.services.end());
-            start = selected_ >= 0 && !routeStarted_;
-            if (selected_ < 0 && autoSelect_) {
-                for (auto& sv : services_)
-                    if (sv.category == 1 && !sv.hidden && sv.slsProtocol == 1) { selected_ = sv.serviceId; start = true; break; }
+            if (d.payload.size() >= 4 && d.payload[0] == 0xFE) st_.llsSigned++;
+            for (const auto& t : tables) {
+                st_.llsTables++;
+                if (t.tableId == 4) { alerts_ = parseAeat(t.xml); continue; }
+                if (t.tableId != 1) continue;
+                lls_[t.groupId] = t;
+                services_.clear();
+                for (auto& g : lls_) services_.insert(services_.end(), g.second.slt.services.begin(), g.second.slt.services.end());
+                start = start || (selected_ >= 0 && !routeStarted_);
+                if (selected_ < 0 && autoSelect_) {
+                    for (auto& sv : services_)
+                        if (sv.category == 1 && !sv.hidden && sv.slsProtocol == 1) { selected_ = sv.serviceId; start = true; break; }
+                }
             }
         }
         if (start) startRoute();
@@ -294,12 +346,30 @@ bool Atsc3Receiver::selectService(int id) {
     return routeStarted_;
 }
 
+bool Atsc3Receiver::selectServiceIfNone(int id) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (selected_ >= 0) return routeStarted_;   // the receiver chose one itself from the signaling while the caller looked: do not restart its route
+        selected_ = id;
+        routeStarted_ = false;
+        route_.reset();
+        remuxIds_.clear();
+        lastInit_.clear();
+    }
+    startRoute();
+    std::lock_guard<std::mutex> lk(mu_);
+    return routeStarted_;
+}
+
 void Atsc3Receiver::startRoute() {
     std::lock_guard<std::mutex> lk(mu_);
     if (routeStarted_) return;
     for (auto& s : services_) {
         if (s.serviceId != selected_) continue;
-        if (s.slsProtocol != 1) return;   // ROUTE only; MMTP services are not supported
+        if (s.slsProtocol != 1) {   // ROUTE only; MMTP services are not supported
+            DIAG_EVERY(923174, 30.0, "ATSC 3.0 service %d uses MMTP signalling (protocol %d), which this receiver does not support, so it cannot be played.", s.serviceId, (int)s.slsProtocol);
+            return;
+        }
         route_.reset(new RouteService(s.slsSrcIp, s.slsDstIp, s.slsDstPort));
         route_->onObject = [this](const RouteComponent& c, const RouteObject& o) { onObject(c, o); };
         routeStarted_ = true;
@@ -327,6 +397,7 @@ void Atsc3Receiver::onObject(const RouteComponent& c, const RouteObject& o) {
             if (lastInit_.count(id) && lastInit_[id] == o.data) return;
             lastInit_[id] = o.data;
         } else if (!lastInit_.count(id)) {
+            DIAG_DEBUG_EVERY(772844, 10.0, "An ATSC 3.0 media segment arrived on component %d before its initialization segment, so it is dropped until the initialization segment is received.", id);
             return;   // media before the init segment cannot be played
         }
         st_.objectsDelivered++;
@@ -340,7 +411,12 @@ bool Atsc3Receiver::serviceReady() const { std::lock_guard<std::mutex> lk(mu_); 
 std::string Atsc3Receiver::mpd() const { std::lock_guard<std::mutex> lk(mu_); return route_ ? route_->mpd() : std::string(); }
 std::vector<RouteComponent> Atsc3Receiver::components() const { std::lock_guard<std::mutex> lk(mu_); return route_ ? route_->components() : std::vector<RouteComponent>(); }
 FrameInfo Atsc3Receiver::frameInfo() const { std::lock_guard<std::mutex> lk(mu_); return info_; }
-ReceiverStats Atsc3Receiver::stats() const { std::lock_guard<std::mutex> lk(mu_); return st_; }
+ReceiverStats Atsc3Receiver::stats() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    ReceiverStats s = st_;
+    if (route_) { s.slsObjects = route_->slsObjects(); s.slsTables = route_->slsTables(); }
+    return s;
+}
 
 } // namespace atsc3
 } // namespace dect2

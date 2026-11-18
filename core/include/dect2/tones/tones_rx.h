@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Tone decoders on FM audio or sound-card audio: CTCSS (50 tones), DCS (23 bit Golay word, both polarities), DTMF, five-tone sequential
 // calling (ZVEI1 / ZVEI2, CCIR, EEA, EIA, DZVEI), SELCAL, and a generic two-tone sequential paging detector (measured tone pair).
 //
@@ -35,6 +38,7 @@ public:
     void configure(double inputRateHz);
     void setSignalOffset(double hz);
     void setAudioInput(bool on);                          // real audio, not FM IQ (call before or after configure())
+    void setSelcalOnly(bool on);                          // only the SELCAL detector runs (the SELCAL mode)
     void setDemod(int d);                                 // TonesDemod for a radio's IQ (default FM); a change restarts the chain
     bool ready() const;
     void reset();                                         // the signal only: the detections stay

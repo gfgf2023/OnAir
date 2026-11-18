@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // CDR receiver (see cdr_rx.h). GY/T 268.1-2013 physical layer and GY/T 268.2-2013 multiplex. DRA+ audio units of the
 // service the user picked are decoded and played.
 //
@@ -203,7 +206,7 @@ struct CdrReceiver::Impl {
     std::atomic<bool> resyncReq{false};
     EsSink saveSink;
     std::atomic<int> saveId{-1};
-    std::atomic<int> listenId{0};          // service to play; 0: none
+    std::atomic<int> listenId{0};          // service to play; 0: none; -1: the first audio service
     std::atomic<float> volume{1.f};
     std::atomic<bool> muted{false};
     bool draSaid = false;                  // the "DRA+ add-on missing" line has been logged for this signal
@@ -845,7 +848,7 @@ struct CdrReceiver::Impl {
                 s.streams.push_back(a);
             }
             if (saveId.load() == (int)s.id && saveSink.isOpen()) for (const auto& u : ps.sf.audio) saveSink.write(u.data.data(), u.data.size());
-            if (ps.sf.hasAudio) audio.play(listenId.load(), s.id, ps.sf.audio, volume.load(), muted.load(), tel);
+            if (ps.sf.hasAudio) audio.play(listenWant(), s.id, ps.sf.audio, volume.load(), muted.load(), tel);
             s.audioUnits = (int)ps.sf.audio.size();
             s.audioBytes = 0;
             for (const auto& u : ps.sf.audio) s.audioBytes += (int)u.data.size();
@@ -862,6 +865,14 @@ struct CdrReceiver::Impl {
         tel.dataValid = true;
     }
 
+    // The service to play: listenId, or with -1 (the phone app's default, #463) the first audio service in table order, as the desktop's panel picks it
+    int listenWant() const {
+        const int w = listenId.load();
+        if (w != -1) return w;
+        for (uint16_t id : svcOrder) { const auto it = svc.find(id); if (it != svc.end() && it->second.audio) return id; }
+        return 0;
+    }
+
     void publishServices() {
         tel.services.clear();
         for (uint16_t id : svcOrder) tel.services.push_back(svc[id]);
@@ -874,7 +885,7 @@ struct CdrReceiver::Impl {
         tel.cfoHz = cfo + (mirror ? -1 : 1) * cc.offsetHz();
         if (!locked) tel.state = 0;
         tel.draFound = draAvailable(&tel.draPath, &tel.draProblem);
-        if (!draSaid && !tel.draFound && listenId.load() != 0 && tel.state >= 3) {      // once per signal: why there is no sound
+        if (!draSaid && !tel.draFound && listenWant() != 0 && tel.state >= 3) {      // once per signal: why there is no sound
             draSaid = true;
             say(tel.draProblem.empty() ? "CDR: DRA+ audio needs a decoder add-on that is not included (see the ? next to the sound)"
                                        : "CDR: the DRA+ add-on cannot be used: " + tel.draProblem);

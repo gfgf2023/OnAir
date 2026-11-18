@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui
 
 import io.github.adswill.onair.model.FmInfo
@@ -117,6 +120,10 @@ class PanelDataTest {
         val v = RdsView.of(FmInfo("  ", " Now playing ", true, true, 0x5410, "Pop"))!!
         assertEquals("--------", v.ps); assertEquals("Now playing", v.radioText); assertEquals("5410", v.pi)
         assertEquals("", RdsView.of(FmInfo("BBC", "", false, false, 0, ""))!!.pi)
+        // #436: the other RDS items travel as label / value rows
+        val rich = RdsView.of(FmInfo("BBC", "", true, true, 0x5410, "Pop", listOf("Country code (ECC)" to "E2  PI 5410", "Also on (AF, MHz)" to "90.5, 92.0")))!!
+        assertEquals(2, rich.rows.size)
+        assertEquals("Also on (AF, MHz)", rich.rows[1].first)
     }
 
     @Test fun routing() {

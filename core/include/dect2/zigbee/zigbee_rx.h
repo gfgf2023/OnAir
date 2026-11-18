@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Zigbee / IEEE 802.15.4 monitor: the frames devices send openly on the 2.4 GHz channels 11 - 26 (2405 + 5 (k - 11) MHz), the same information
 // a sniffer shows. Receive only: it never transmits, joins or answers a network; payloads that are encrypted (the network key is not
 // obtainable here) are shown as encrypted, not decoded; only what is sent in the clear is decoded.
@@ -33,7 +36,10 @@ public:
 
     void configure(double inputRateHz);
     void setSignalOffset(double hz);
+    void setThreadMode(bool on);          // Thread: the same 802.15.4 receiver, the frames read as 6LoWPAN / Thread (thread_proto.h) instead of Zigbee
     void setCenterHz(double hz);          // the radio's centre: which channel the tuned frequency is (0: unknown)
+    // 4.1: a frame whose FCS fails is tried with the second choice of its 4 least sure symbols (default on; off: hard symbols as in 4.0)
+    void setSoftDecisions(bool on);
     bool ready() const;
     void reset();                         // the demodulator only: the tables stay
     void clearResults();
@@ -50,5 +56,6 @@ private:
 };
 
 ModeTuning zigbeeTuning();
+ModeTuning threadTuning();   // 2.4 GHz channels 11 - 26 only (the sub-GHz BPSK PHY is Zigbee's)
 
 } // namespace dect2

@@ -20,9 +20,12 @@ Every setting in the window has a (?) with a short version of what is written he
 ## Quick start
 
 1. Open Tools > Digital video generator.
-2. On **Sources and encoding**, choose the input (Camera, Still picture, Video file or Test generator) and the output (MPEG-TS file, UDP or RTP stream).
+2. On **Sources and encoding**, choose the input (Camera, Still picture, Video file, Test generator or RTMP server), the resolution and the frame rate.
+   That is all the tab shows at first. Tick **Advanced** for the output (MPEG-TS file, UDP or RTP stream), the sound and every encoding
+   setting; settings you do not see keep their values (the first time: a UDP stream to this PC, `udp://127.0.0.1:5000`, to watch in VLC).
 3. Leave the encoding settings at their defaults, or change them: the **Estimated bitrate** panel on the right follows every change.
-4. Optionally place an overlay on the **Overlay** tab, and check on **Digital Television Mode Selector** which DVB modes carry the stream.
+4. Press **Start preview** to see the moving picture on the **Preview** tab (nothing is encoded or sent; **Stop preview** brings back
+   the grey card), and optionally place an overlay there, and check on **Digital Television Mode Selector** which DVB modes carry the stream.
 5. Press **Start encoding** (file) or **Start streaming** (UDP / RTP). Stop ends a stream; a file stops by itself at its length.
 
 ## Sources
@@ -32,7 +35,8 @@ Every setting in the window has a (?) with a short version of what is written he
 | Camera | A webcam, or an HDMI / SDI capture card. The list is made when the window opens (Refresh after plugging one in); the camera itself is opened only when you press Start. A camera is always encoded in real time. |
 | Still picture | One picture (PNG, JPEG, BMP, ...) sent as a continuous stream at the chosen frame rate: a test card, a slide, a station logo. Length one minute unless you change it. |
 | Video file | Any file FFmpeg can read. The length follows the file when you choose it. When the length is longer than the file, the file starts again. Picture and sound are decoded in step, so writing a `.ts` file goes faster than real time. |
-| Test generator | A copy of the transmitter's own moving test picture: the one in the test transport stream that the TX studio's generators carry (for DVB-T2, the T2Generator's real PLP), drawn at the output resolution. **Pattern**: Test card (colour bars, a moving sweep, a chequerboard with a bouncing ball), Colour bars or Grey ramp; a white bar grows along the bottom once a second. Put a callsign, a CQ call or other text on it with the **Overlay** tab. Length one minute unless you change it; a `.ts` file is written faster than real time. Picture fit does not apply. |
+| Test generator | A copy of the transmitter's own moving test picture: the one in the test transport stream that the TX studio's generators carry (for DVB-T2, the T2Generator's real PLP), drawn at the output resolution. **Pattern**: Test card (colour bars, a moving sweep, a chequerboard with a bouncing ball), Colour bars or Grey ramp; a white bar grows along the bottom once a second. Put a callsign, a CQ call or other text on it with the **Preview** tab. Length one minute unless you change it; a `.ts` file is written faster than real time. Picture fit does not apply. |
+| RTMP server (OBS Studio) | OnAir listens for an RTMP stream, picture and sound, from OBS Studio or any other program that streams RTMP, on this PC or another PC on the network (see *RTMP server: streaming from OBS Studio* below). Nothing else needs to be installed. Always encoded in real time; black while no sender is connected. |
 
 ### Your own picture, video and sound
 
@@ -50,13 +54,40 @@ own material here changes what a synthetic signal carries.
 - **Picture fit** (below) keeps the aspect: Letterbox shows the whole picture with bars, Crop fills, Stretch distorts.
 - Reading files is done by the FFmpeg already linked for the generator (no extra decoder, nothing bundled); a format FFmpeg lacks is reported as an error.
 
+### RTMP server: streaming from OBS Studio
+
+OBS Studio mixes scenes, cameras, screen captures and sound (with its own filters) and streams them; OnAir is the RTMP server it streams to.
+Picture and sound arrive together and in step, so no virtual camera or virtual audio cable is needed, and OBS can run on another PC
+(Windows, macOS or Linux): several PCs, each with its own OBS, can each stream to their own generator (the tabs at the top) on its own port.
+
+1. In the generator choose the input **RTMP server (OBS Studio)**. The **RTMP address** is `rtmp://0.0.0.0:1935/live/stream`: OnAir
+   listens on every network card of this PC, port 1935 (the usual RTMP port), application `live`, stream key `stream`. Change the port
+   for a second generator (`rtmp://0.0.0.0:1936/live/stream`), or put one address of this PC in place of `0.0.0.0` to listen on that card only.
+2. Below the address the window shows what to type in OBS, with this PC's network address: in OBS, **Settings > Stream**, Service
+   **Custom...**, **Server** `rtmp://192.168.1.20/live` and **Stream Key** `stream` (OBS on this same PC: `rtmp://127.0.0.1/live`).
+3. Press **Start preview**, **Start streaming** or **Start encoding** in OnAir first, then **Start Streaming** in OBS. The status line under
+   the address says *Waiting for a sender on port 1935*, then what arrives (*Receiving 1280x720 h264 + aac*).
+4. The sound is set to *Sound of the video file / stream*; choose the test tone, a microphone or a sound file instead to replace it.
+
+- OBS's own encoder settings only decide what travels to OnAir: OnAir decodes the stream and encodes it again with the settings of this window
+  (codec, bitrate, resolution, frame rate, transport stream). For a link on the same network, OBS's defaults (H.264, AAC, 2500 kbit/s or
+  more, keyframe interval 1 or 2 s) are fine; *x264* with the *zerolatency* tune keeps the delay small.
+- One sender at a time per generator. When OBS stops streaming (or the network goes away for 10 s) the picture goes black and the sound
+  silent, the stream or file goes on, and OnAir waits for the next sender: pressing Start Streaming in OBS again just continues.
+- Windows asks the first time whether OnAir may accept connections from the network: allow it for private networks. On Linux, a firewall
+  (ufw, firewalld) must let TCP port 1935 in; OBS on the same PC needs nothing.
+- RTMP carries H.264 or HEVC picture and AAC or MP3 sound (what OBS sends with its *FLV* container); RTMPS (encrypted) is not served. The
+  stream is not password protected: use it on your own network, not on a port open to the internet.
+- The RTMP server is FFmpeg's own (its RTMP protocol in listen mode), part of the FFmpeg OnAir is built with: no extra library.
+
 Analog TV transmit (TX studio) already takes a picture/video file or camera on its own; use the same files there.
 
 **Picture fit** decides what happens when the source has another shape than the output, such as a 4:3 camera in a 16:9 picture:
 **Stretch** fills the picture (shapes look wider), **Letterbox** keeps the whole source with black bars, **Crop** fills the picture and
 cuts the edges.
 
-**Sound**: silence, a 1 kHz test tone at -20 dBFS, the sound of the video file (only with a video file as input), or a microphone.
+**Sound**: silence, a 1 kHz test tone at -20 dBFS, the sound of the video file or of the RTMP stream (only with a video file or the RTMP
+server as input), or a microphone.
 
 ## Output
 
@@ -82,6 +113,25 @@ On the receiving PC, choose Media > Open Network Stream and enter:
 | UDP | `udp://@:5000` | `udp://@239.1.1.1:5000` |
 
 The `@` means "listen here". If nothing arrives, check the firewall of the receiving PC (UDP port 5000 inbound).
+
+### Several generators in one multiplex (transmitter)
+
+Output **Transmitter** hands the stream to the transmitter (Transmit panel) instead of a file or the network; the generator number
+(1 to 8) names it there. One generator can be the whole transport stream (the **Video generator: 1 2 3 4** buttons next to the
+MPEG-TS file). To send several at once in one DVB-T/T2, DVB-S/S2/S2X, DTMB, DVB-C, ATSC or ISDB-T channel, for example the same
+picture in H.264 and in H.265 to compare them on a receiver:
+
+1. Open as many generators as you need (Tools > Digital video generator, one window each), give each its own number, Output
+   **Transmitter**, and its codec and bitrates. Start them.
+2. In the Transmit panel, under **Multiplex**, set **Services** to the number of generators. For each service choose Programme source
+   **Video generator** and its generator number (`*` = it is sending now). Leave the MPEG-TS file empty.
+3. Start the transmitter. Each generator is its own programme: service ID **First service ID** + 0, 1, 2 ..., PMT PID `0x1000` + n,
+   its streams on `0x100` x (n + 1) and up. The service name is the one typed in the Multiplex, or else the generator's own.
+
+The transmitter rewrites the PIDs, the PMTs, the PAT and the SDT; the pictures and sound pass untouched. Each generator gets a fixed share
+of the channel, its mux rate, so its timing (PCR) stays right: **the mux rates together must stay below the channel's bitrate** (the
+transmitter's note shows both). A generator started later joins the multiplex; one that stops leaves it. Services with another source
+(test card, file, camera) are left out while a generator is in the multiplex.
 
 ## Encoding settings
 
@@ -161,16 +211,28 @@ A 7 MHz channel carries 7/8 of these, a 6 MHz channel 6/8. The **Digital Televis
 The window lists only the encoders that really work on this computer: each one is tried when the window first opens. MPEG-2 video is
 always there and is used when the chosen encoder is missing.
 
-- The FFmpeg that comes with the OnAir packages is built under the LGPL and has MPEG-2 video, MPEG-1 Layer II and AAC. H.264 and H.265 are
-  shown greyed out with "not in this FFmpeg".
-- OnAir built against the system's FFmpeg (most Linux distributions) usually has libx264 and libx265 as well, and AC-3.
+- The FFmpeg in the Linux and macOS packages is built under the LGPL and has MPEG-2 video, MPEG-1 Layer II, AAC and AC-3 only. The Windows
+  package has MPEG-2 video, MPEG-1 Layer II, AAC and AC-3, and H.264 and H.265 through Windows Media Foundation: the graphics card's
+  encoder when it has one, else Windows' own (H.265 needs the HEVC Video Extensions from the Microsoft Store).
+- OnAir built against the system's FFmpeg (most Linux distributions, MSYS2 on Windows) usually has libx264 and libx265 as well, and AC-3.
 - Hardware encoders (NVIDIA NVENC, Intel Quick Sync, AMD AMF, Apple VideoToolbox, Windows Media Foundation) are listed when the build
-  has them and the hardware is there. Preset, latency tuning and CRF are x264 / x265 options; they are greyed out for other encoders.
-  VAAPI encoders are not offered: they need the pictures on the GPU.
+  has them and the hardware is there: each one encodes a few pictures as a trial. Preset, latency tuning and CRF are x264 / x265
+  options; they are greyed out for other encoders. VAAPI encoders are not offered: they need the pictures on the GPU.
+- When an encoder or a whole codec is missing, an orange **(!)** appears next to the Video codec list. Hover it to see which hardware
+  encoders are not available and why (the graphics card or driver they need, and FFmpeg's own message).
+- If an encoder refuses the profile or B-frames at Start, it starts once more without them and the status line shows an orange
+  "(simplified)"; hover it for the reason.
 
-## Overlay
+## Preview and overlay
 
-The **Overlay** tab places things on the picture before it is encoded.
+The **Preview** tab shows the picture and places things on it before it is encoded. Stopped, it is a grey card with the overlay.
+**Start preview** (at the top, beside Start streaming) runs the input with the overlay in real time, without encoding, writing or
+sending anything; the settings stay open and the preview restarts when the input, resolution or frame rate changes. **Stop preview**
+brings back the grey card. Start streaming or Start encoding stops the preview and starts the real run.
+
+Whenever nothing is streamed or encoded, also during a preview, the picture has a red cross and the line under it says "Not streaming"
+(or "Not encoding" for a file). The cross goes away only while the stream or the file is being made, so it is always clear whether
+anything goes out.
 
 - **Blocks**: **Logo** (a PNG file, transparency kept, scaled into its box keeping its shape; other picture formats work when the FFmpeg in the build decodes them), **Free text** (more lines allowed), **Rolling text** (a band with
   text running through it), and every **parameter** of the first tab, grouped as there (Video, Audio, Transport stream). A parameter
@@ -239,5 +301,9 @@ How the modes are worked out (the formulas and standard tables of the workbook `
 | H.264 / H.265 greyed out | This FFmpeg has no such encoder (see *Codecs and FFmpeg*). Use MPEG-2, or build OnAir against a system FFmpeg with libx264. |
 | "frames late" while streaming | The encoder is too slow for real time: a faster preset, a lower resolution or frame rate, or a hardware encoder. |
 | VLC shows nothing | Check the address on the receiving PC (`rtp://@:5000`), the firewall, and that both sides use the same protocol (RTP or UDP). |
+| OBS: "Failed to connect to server" | Start the generator first (it listens only while it runs), check the Server in OBS against the one the window shows, and the firewall on the OnAir PC (TCP port 1935). |
+| RTMP: "Cannot listen on port 1935" | Another program (a second generator, a media server) uses the port: give this generator another port, and OBS the same one. |
+| Transmitter: "Too much for this channel" | The generators' mux rates add up to more than the channel carries: lower their bitrates, or choose a channel mode with a higher bitrate. |
+| Transmitter: a generator service is missing | Its generator is not running with Output **Transmitter** and the same number (the transmitter's note lists those not running). |
 | The mux bar has a red outline | The mux rate is lower than the streams need: raise it, or lower the video bitrate. |
 | The picture breaks up on the receiver | The stream is larger than the link: compare the mux rate with the table of DVB-T bitrates, or check the mode on the Digital Television Mode Selector tab. |

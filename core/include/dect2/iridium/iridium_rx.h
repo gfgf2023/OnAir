@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Iridium receiver: bursts over the whole capture (FFT detector), each burst demodulated on a worker thread (DQPSK, unique word),
 // its bits handed to the frame layer (iridium_frame.h), the results kept as telemetry.
 #pragma once
@@ -33,6 +36,8 @@ public:
     void setThresholdDb(double db);      // burst detection threshold over the noise floor per FFT bin (default 13)
     // Files and tests: feed() waits for the worker instead of dropping bursts when it falls behind (never in the app).
     void setOffline(bool on);
+    // 4.1: bit reliabilities go to the frame decoder, which repairs frames with one failing BCH block (default on; off: hard decisions as in 4.0)
+    void setSoftDecisions(bool on);
     void flush();                        // waits until every burst found so far is demodulated and decoded
     // Every burst with a unique word, with its frame (tool output, tests). Called on the worker thread.
     // iridium-toolkit: writes every burst with a unique word (downlink, uplink, simplex) as a gr-iridium iridium-extractor "RAW:" line

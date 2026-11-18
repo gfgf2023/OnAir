@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Waterfall export: the waterfall written as a sequence of PNG files (one per frame) into a folder the user picks.
 // Two ways to take the rows: Frames (a snapshot of the newest rows every few seconds) or Timelapse (one row every few
 // seconds, 512 rows to a frame). There is no video encoder here: the user turns the PNG files into a video with their own tool.
@@ -12,6 +15,7 @@
 #include <string>
 #include <system_error>
 #include <vector>
+#include "dect2/common/diag.h"
 
 namespace {
 constexpr int kOutW = Waterfall::W / 4;   // 2048 pixels across: each pixel is the highest level of the history columns it covers
@@ -52,6 +56,7 @@ bool writeFrame(const std::vector<uint8_t>& px, int h) {
     snprintf(num, sizeof num, "_%06ld.png", e.frames + 1);
     const std::string path = e.dir + "/" + e.prefix + num;
     if (!gfx::writePng(path.c_str(), px.data(), kOutW, h)) {
+        DIAG(881449, "Writing the waterfall image %s failed (the disk may be full), so the waterfall recording stops.", path.c_str());
         e.status = "Could not write " + path;
         e.on = false;
         return false;
@@ -124,7 +129,7 @@ void wfExportPopup(App& a) {
         if (ImGui::Button("Start")) {
             std::error_code ec;   // the folder is created when it is missing
             std::filesystem::create_directories(std::filesystem::path(reinterpret_cast<const char8_t*>(dirBuf)), ec);
-            if (ec) e.status = "Could not create the folder";
+            if (ec) { DIAG(822725, "Creating the waterfall export folder failed (%s), so the recording was not started.", ec.message().c_str()); e.status = "Could not create the folder"; }
             else {
                 char stamp[32] = "";
                 const time_t t = time(nullptr);

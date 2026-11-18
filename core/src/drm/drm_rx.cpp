@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRM receiver (ETSI ES 201 980): acquisition, OFDM tracking, channel estimation, and the hand-over to the back end (FAC, SDC, MSC) in drm_dec.cpp.
 //
 //   input -> channel filter, 48 kHz (drm_front) -> guard interval correlation (mode, symbol timing, carrier offset modulo the carrier spacing)
@@ -21,9 +24,11 @@
 #include "drm_front.h"
 #include "dect2/channels/channel_find.h"
 #include "drm_internal.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -71,6 +76,8 @@ struct DrmReceiver::Impl {
     // Journaline data service (TS 102 979 clause 8.2): packet mode stream, DAB domain, user application 0x44a
     JournalineDecoder jl;
     DrmPacketDemux jlDemux;
+    std::atomic<int> chanPassHz{0};          // requested channel filter (0 = off); applied on the receiver thread in feed()
+    int chanPassApplied = 0;
     std::atomic<int> jlStream{-1};
     int jlKey = -1;
     void journaline(const LogicalFrame& f, const SdcInfo& sd) {
@@ -158,6 +165,9 @@ struct DrmReceiver::Impl {
         int64_t idx = -1;
         std::vector<cf32> Y;
         std::vector<cf32> Hr;
+        std::vector<cf32> Hc;        // Hr turned back by the symbol's common phase (cpe): what the time interpolation works on
+        float cpe = 0;               // common phase of the symbol against the tracker's reference (rad)
+        const std::vector<cf32>& sel(bool c) const { return c ? Hc : Hr; }
         bool haveHr = false;
         float cp = 0;
     };
@@ -178,10 +188,13 @@ struct DrmReceiver::Impl {
     double tauSlope = 0;             // samples per symbol
     std::vector<double> tauHist;
     double sigma2 = 0;               // noise power of a raw channel estimate (pilot amplitude 1)
+    double sigma2R = 0;              // the same from the raw estimates (sigma2 is this or sigma2C)
     double snrSm = 0, hPow = 0;
     double dopplerSm = 0, delaySpreadMs = 0;
     double accR = 0, accP = 0;       // Doppler statistics, smoothed
     double accRr = 0, accRi = 0, acc2r = 0, acc2i = 0;
+    double sigma2C = 0, dopplerR = 0;   // noise of the common-phase corrected estimates (4.1); Doppler spread of the raw ones
+    bool useHc = false;
     double cpRho = 0;
     int kEqLo = 0, kEqHi = 0;        // carriers that are equalised
     int jLo = 0, jHi = 0;
@@ -274,7 +287,10 @@ struct DrmReceiver::Impl {
         if (eLane) swapLanes();
         inRate = rate;
         ready = front.configure(rate);
+        if (!ready) DIAG(851351, "The DRM front end could not be set up for the input sample rate %.0f Hz, so DRM decoding stays off.", rate);
+        front.setChannelPass((double)chanPassApplied);
         eOk = other.front.configure(rate, kFsE, kMinRateE);
+        if (!eOk) DIAG_DEBUG(858275, "The DRM+ (mode E) front end could not be set up for the input sample rate %.0f Hz, so only the modes A to D are searched.", rate);
         other.fs = kFsE; fs = kFs;
         cc.configure(rate, 10000, 12000, 4.0);
         corr.reset(); corrPpm = 0; corr.setPpm(0);
@@ -607,7 +623,8 @@ struct DrmReceiver::Impl {
         lag = 2 * gy;                                    // the Wiener filter uses the pilots up to 2 gy symbols ahead
         framesSync = 0; facOkSince = 0; facBadRun = 0; cpBadRun = 0;
         tauRef = 0; tauMidRel = 0; tauSlope = 0; tauHist.clear();
-        sigma2 = 0; snrSm = 0; hPow = 0; dopplerSm = 0; delaySpreadMs = 0; accR = accP = accRr = accRi = acc2r = acc2i = 0;
+        sigma2 = 0; sigma2R = 0; snrSm = 0; hPow = 0; dopplerSm = 0; delaySpreadMs = 0; accR = accP = accRr = accRi = acc2r = acc2i = 0;
+        sigma2C = dopplerR = 0;
         wien.clear(); wienOk = false; wienMse = 0; statN = 0; pilotP = 0;
         hold = false; holdSnrDb = 30; holdStart = 0; holdEnd = -1; holdSymsAtFrame = holdSyms; fadedRun = 0;
         lastReacq = 0; offCal = false; off0 = 0; lastCal = 0; reacqVotes = 0;
@@ -672,6 +689,7 @@ struct DrmReceiver::Impl {
 
     SymRec& rec(int64_t idx) { return ring[(size_t)(idx % kRing)]; }
     const SymRec* recIf(int64_t idx) const {
+        if (idx < 0) return nullptr;   // before the first symbol (the Wiener taps reach 2 gy back; a negative index wrapped out of the ring)
         const SymRec& r = ring[(size_t)(idx % kRing)];
         return (r.idx == idx && r.haveHr) ? &r : nullptr;
     }
@@ -683,7 +701,7 @@ struct DrmReceiver::Impl {
         const int64_t c0 = nS + Dacc;                 // start of the cyclic prefix as the window sees it
         const int64_t ws = c0 + G - back;
         if ((uint64_t)(ws + N + 4) > total || (uint64_t)(c0 + G + N) > total) return false;
-        if ((uint64_t)ws < base || (uint64_t)c0 < base) { restartSearch("the samples of a symbol were already discarded"); return false; }
+        if ((uint64_t)ws < base || (uint64_t)c0 < base) { DIAG_DEBUG(118335, "The DRM tracker needed the samples of a symbol that were already discarded, so it drops the lock and searches for the signal again."); restartSearch("the samples of a symbol were already discarded"); return false; }
         const cf32* x = buf.data() + (ws - (int64_t)base);
         // guard interval correlation of this symbol (how much of an OFDM signal it still is)
         {
@@ -719,7 +737,7 @@ struct DrmReceiver::Impl {
         nS += Ts;
         // Without the OFDM structure for a while: a false lock is given up at once; a lock whose FAC decoded holds through the fade (the FAC decides,
         // see frameDone(), and the acquisition looks for the signal in the background)
-        if (cpBadRun >= 6 && facOkSince == 0) { restartSearch("the signal lost its OFDM structure"); return true; }
+        if (cpBadRun >= 6 && facOkSince == 0) { DIAG_DEBUG(563856, "The DRM signal lost its OFDM guard interval structure for 6 symbols before any FAC had decoded, so the lock is judged false and the search restarts."); restartSearch("the signal lost its OFDM structure"); return true; }
         if (!frameSync) {
             frameSyncStep(t);
         } else {
@@ -773,6 +791,7 @@ struct DrmReceiver::Impl {
             log(b2);
             drainEqualize(t);
         } else if (t > 10 * ns) {
+            DIAG_DEBUG(714752, "No DRM frame start was found in the search window (%lld symbols), so the search for the signal restarts.", (long long)t);
             restartSearch("no frame start");
         }
     }
@@ -790,7 +809,52 @@ struct DrmReceiver::Impl {
             const int k = kG0 + j * gx;
             R.Hr[(size_t)j] = R.Y[(size_t)(k - kLoW)] / r;
         }
+        commonPhase(t);
         R.haveHr = true;
+    }
+
+    // Common phase error (4.1). The oscillators' phase noise turns every carrier of a symbol by the same angle; with a 26.7 ms symbol (mode B) a
+    // 1 Hz linewidth moves it by 0.4 rad (rms) from one symbol to the next, so the pilots of the neighbouring symbols that the time interpolation
+    // combines disagree. The common phase of symbol t is measured from its own gain references against those of t - gy (the same carriers, already
+    // turned back) and from the frequency reference tones against t - 1; the raw estimates are turned back by it (Hc) before the interpolation, and
+    // the interpolated channel of the symbol is turned forward again. It holds through a fade.
+    // OFF by default (opt-in DECT2_DRM_CPE=1): it gains 2 to 6 dB under oscillator phase noise (docs/SENSITIVITY-4.1-TV.md) but test_drm_smooth
+    // fails with it: mode E in AWGN, ITU channels 5 and 6, 2 Hz Rayleigh (run 43398851923; the same run with it off passes).
+    const bool cpeOff = getenv("DECT2_DRM_CPE") == nullptr || getenv("DECT2_DRM_NOCPE") != nullptr;
+    uint64_t cpeSyms = 0;
+    void commonPhase(int64_t t) {
+        SymRec& R = rec(t);
+        R.Hc = R.Hr;
+        R.cpe = 0;
+        if (cpeOff) return;
+        const SymRec* P = (t >= 1 && rec(t - 1).idx == t - 1 && rec(t - 1).haveHr) ? &rec(t - 1) : nullptr;
+        const SymRec* A = (t >= gy && rec(t - gy).idx == t - gy && rec(t - gy).haveHr) ? &rec(t - gy) : nullptr;
+        cf32 acc(0, 0);
+        if (A && A->Hc.size() == R.Hr.size())
+            for (size_t j = 0; j < R.Hr.size(); j++) {
+                const cf32 a = A->Hc[j], b = R.Hr[j];
+                if (a != cf32(0, 0) && b != cf32(0, 0)) acc += b * std::conj(a);
+            }
+        if (P && mode != kModeE) {
+            const RefTable& ft = kFreqRefs[mode];
+            const int sa = sOf(t - 1), sb = sOf(t);
+            const cf32 back1 = std::polar(1.0f, -P->cpe);
+            for (int i = 0; i < ft.n; i++) {
+                const int k = ft.data[i][0];
+                cf32 ra, rb;
+                if (k < kLoW || k > kHiW || !pilotRef(mode, -1, sa, k, ra) || !pilotRef(mode, -1, sb, k, rb)) continue;
+                const cf32 ya = P->Y[(size_t)(k - kLoW)] / ra * back1, yb = R.Y[(size_t)(k - kLoW)] / rb;
+                acc += yb * std::conj(ya);
+            }
+        }
+        float th = P ? P->cpe : 0.f;
+        if (!hold && std::abs(acc) > 0) th = std::arg(acc);
+        R.cpe = th;
+        if (th != 0) {
+            const cf32 rot = std::polar(1.0f, -th);
+            for (auto& v : R.Hc) v *= rot;
+        }
+        cpeSyms++;
     }
 
     // Weights of the Wiener filter in time for every offset d (0 .. gy - 1) of a symbol from the last pilot of a carrier: taps at the pilots
@@ -921,7 +985,9 @@ struct DrmReceiver::Impl {
         Gvalid.assign((size_t)nJ, 0);
         double accN = 0; int cntN = 0;
         double sumRe = 0, sumIm = 0, sumP = 0, sum2Re = 0, sum2Im = 0; int cntD = 0;
+        double accNc = 0;
         if (s == 0 || wien.empty()) wienerWeights();
+        useHc = !cpeOff;   // the time interpolation works on the common-phase corrected estimates
         for (int j = jLo; j <= jHi; j++) {
             const int qj = posMod(j + qOff, gy);
             const int d = posMod(s % gy - qj, gy);
@@ -938,14 +1004,19 @@ struct DrmReceiver::Impl {
                 for (int m = 0; m < kWT && all; m++) { tap[m] = recIf(t - d + (m - kWT / 2) * gy); all = tap[m] != nullptr; }
                 if (all) {
                     const float* wv = &wien[(size_t)d * kWT];
-                    for (int m = 0; m < kWT; m++) v += tap[m]->Hr[(size_t)j] * wv[m];
+                    for (int m = 0; m < kWT; m++) v += tap[m]->sel(useHc)[(size_t)j] * wv[m];
                     ok = true;
                 }
             }
             if (d == 0) {
-                if (a && !ok) { v = a->Hr[(size_t)j]; ok = true; }
+                if (a && !ok) { v = a->sel(useHc)[(size_t)j]; ok = true; }
                 const SymRec* p = recIf(t - gy);
                 if (a && p && b) {
+                    // the noise of the corrected estimates, the noise and Doppler statistics of the raw ones (see below)
+                    {
+                        const cf32 pc = 0.5f * (p->Hc[(size_t)j] + b->Hc[(size_t)j]);
+                        accNc += std::norm(a->Hc[(size_t)j] - pc);
+                    }
                     const cf32 pred = 0.5f * (p->Hr[(size_t)j] + b->Hr[(size_t)j]);
                     accN += std::norm(a->Hr[(size_t)j] - pred); cntN++;
                     const cf32 c = a->Hr[(size_t)j] * std::conj(p->Hr[(size_t)j]); sumRe += c.real(); sumIm += c.imag(); sumP += std::norm(a->Hr[(size_t)j]); cntD++;
@@ -954,9 +1025,9 @@ struct DrmReceiver::Impl {
             } else if (ok) {
             } else if (a && b) {
                 const float f = (float)d / gy;
-                v = a->Hr[(size_t)j] * (1 - f) + b->Hr[(size_t)j] * f; ok = true;
-            } else if (a) { v = a->Hr[(size_t)j]; ok = true; }
-            else if (b) { v = b->Hr[(size_t)j]; ok = true; }
+                v = a->sel(useHc)[(size_t)j] * (1 - f) + b->sel(useHc)[(size_t)j] * f; ok = true;
+            } else if (a) { v = a->sel(useHc)[(size_t)j]; ok = true; }
+            else if (b) { v = b->sel(useHc)[(size_t)j]; ok = true; }
             G1[(size_t)(j - jLo)] = v;
             Gvalid[(size_t)(j - jLo)] = ok ? 1 : 0;
         }
@@ -972,8 +1043,10 @@ struct DrmReceiver::Impl {
         nearFade = hold ? t + gy >= holdStart - 3 : (holdEnd >= 0 && t - gy <= holdEnd + 1);
         if (!nearFade || (hold && si - holdStart > kHoldFreezeSyms)) {
             if (cntN >= 3) {
-                const double s2 = accN / (1.5 * cntN);
-                sigma2 = sigma2 > 0 ? sigma2 + (s2 - sigma2) * 0.12 : s2;
+                const double s2 = accN / (1.5 * cntN), s2c = accNc / (1.5 * cntN);
+                sigma2R = sigma2R > 0 ? sigma2R + (s2 - sigma2R) * 0.12 : s2;
+                sigma2C = sigma2C > 0 ? sigma2C + (s2c - sigma2C) * 0.12 : s2c;
+                sigma2 = cpeOff ? sigma2R : sigma2C;
                 statN++;
             }
             if (cntD >= 3) {
@@ -985,7 +1058,12 @@ struct DrmReceiver::Impl {
                 const double x = r1 > 1e-30 ? std::max(0.02, std::min(1.0, std::cbrt(r2 / r1))) : 1.0;
                 pilotP = std::max(std::min(r1 / x, accP), 1e-12);
                 const double tauY = (double)gy * Ts / fs;
-                dopplerSm = x < 0.9999 ? std::min(20.0, std::sqrt(-std::log(x)) / (kPi * tauY)) : 0.0;
+                dopplerR = x < 0.9999 ? std::min(20.0, std::sqrt(-std::log(x)) / (kPi * tauY)) : 0.0;
+                // The Doppler spread (and with it the Wiener filter) from the raw estimates: the common phase of a flat fade is the channel's
+                // own, and read from the corrected estimates a fading channel looked slow (the Wiener filter smoothed it away: DRM 64-QAM in
+                // TU6 lost 4 dB, runs 43376642495 / 43378744111). The noise figure from the corrected estimates (with oscillator phase noise
+                // the raw second difference holds the phase walk, not noise).
+                dopplerSm = dopplerR;
             }
         }
         // Delay of the channel from the phase slope over the lattice. The estimates are referred to the nominal grid, so the slope is taken relative to the
@@ -1020,7 +1098,7 @@ struct DrmReceiver::Impl {
                 jj = std::max(jLo, std::min(jHi, jj));
                 acc += G1[(size_t)(jj - jLo)] * kk[(size_t)(m + J - 1)];
             }
-            acc *= std::polar(1.0f, (float)(-ramp * k));
+            acc *= std::polar(1.0f, (float)(-ramp * k) + (useHc ? R.cpe : 0.f));   // the symbol's own common phase back on
             Hhat[(size_t)(k - kEqLo)] = acc;
             hp += std::norm(acc);
         }
@@ -1088,9 +1166,16 @@ struct DrmReceiver::Impl {
         // The FAC fails: 12 frames (4.8 s) of it with the signal there (the frames in a fade do not count) and the lock is wrong; through a fade the
         // tracker holds on for up to 60 frames (24 s), so that the signal is decoded again the moment it comes back (the time interleaver still holds
         // what came before the fade).
-        if (facOkSince == 0 && framesSync >= 14 * k) restartSearch("the FAC cannot be decoded");
-        else if (facBadRun - fadedRun >= 12 * k) restartSearch("the FAC is lost");
-        else if (facBadRun >= 60 * k) restartSearch("no signal for 24 s");
+        if (facOkSince == 0 && framesSync >= 14 * k) {
+            DIAG_DEBUG(580657, "The DRM FAC never decoded in %d frames after the lock, so the lock is judged false and the search restarts on the mirrored spectrum.", framesSync);
+            restartSearch("the FAC cannot be decoded");
+        } else if (facBadRun - fadedRun >= 12 * k) {
+            DIAG_DEBUG(513441, "The DRM FAC failed in %d frames in a row outside fades, so the lock is dropped and the search restarts.", facBadRun - fadedRun);
+            restartSearch("the FAC is lost");
+        } else if (facBadRun >= 60 * k) {
+            DIAG_DEBUG(940012, "The DRM FAC has failed for %d frames (24 s) without recovering, so OnAir gives up the lock and searches again.", facBadRun);
+            restartSearch("no signal for 24 s");
+        }
     }
 
     // No frequency pilots, or a lock whose FAC never decodes: the next search looks at the mirrored spectrum (I and Q swapped by the radio or
@@ -1264,6 +1349,12 @@ struct DrmReceiver::Impl {
 
     void feed(const cf32* x, size_t n) {
         if (!ready || n == 0) return;
+        if (const int want = chanPassHz.load(); want != chanPassApplied) {
+            chanPassApplied = want;
+            if (eLane) swapLanes();
+            front.setChannelPass((double)want);
+            resetAll(false);
+        }
         if (!eLane) {
             // a channel away from the middle of the sample band (beyond the +-24 kHz the front end keeps) is moved there first
             cin.assign(x, x + n);
@@ -1391,6 +1482,7 @@ struct DrmReceiver::Impl {
             t.hierarchicalUnsupported = be.hierarchical();
         }
         const SdcInfo& sd = be.sdc();
+        t.sdcExtra = sd.extra;
         if (be.sdcValid()) {
             t.protA = sd.mux.protA; t.protB = sd.mux.protB;
             t.numStreams = sd.mux.nStreams;
@@ -1444,6 +1536,7 @@ struct DrmReceiver::Impl {
             t.year = y; t.month = m; t.day = d; t.hour = sd.time.hour; t.minute = sd.time.minute;
             t.hasLocalOffset = sd.time.hasOffset; t.localOffsetHalfHours = sd.time.offsetHalfHours;
         }
+        { DrmAfs af = be.afs(); af.applySchedule(t.timeValid ? t.year : 0, t.month, t.day, t.hour, t.minute); t.altFreqs = af.altFreqs(); }
         t.facOk = be.facOk; t.facBad = be.facBad; t.sdcOk = be.sdcOk; t.sdcBad = be.sdcBad; t.mscFramesOk = be.mscOk; t.mscFramesBad = be.mscBad;
         t.blocksOk = audioOk; t.blocksBad = audioBad;
         t.textMessage = textMsg;
@@ -1521,6 +1614,8 @@ void DrmReceiver::setVolume(float v) { p_->volume = std::max(0.f, std::min(1.f, 
 void DrmReceiver::setMuted(bool m) { p_->muted = m; }
 void DrmReceiver::setSilent(bool s) { p_->silent = s; }
 void DrmReceiver::setAudioTap(std::function<void(const float*, const float*, size_t)> cb) { p_->tap = std::move(cb); }
+void DrmReceiver::setChannelFilterHz(int passHz) { p_->chanPassHz = std::max(0, std::min(24000, passHz)); }
+int DrmReceiver::channelFilterHz() const { return p_->chanPassHz; }
 void DrmReceiver::selectService(int shortId) { p_->selected = shortId; }
 JournalineDecoder& DrmReceiver::journaline() { return p_->jl; }
 bool DrmReceiver::dataView(int shortId, DrmDataView& out) const {

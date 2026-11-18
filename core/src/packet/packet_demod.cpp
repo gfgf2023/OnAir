@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The FM front end of the packet receivers: see packet_demod.h.
 #include "dect2/packet/packet_demod.h"
 #include "dect2/dsp/baseband_filter.h"
@@ -66,6 +69,7 @@ bool FmFront::configure(double rate, double minRate) {
     if (!rsPass && !rs.configure(r, kMidRate)) return false;
     chan.design(bbf::overrideTaps("packet", dmr::lowpassTaps(chanPass, chanStop, kMidRate, 60, 9), kMidRate, chanPass + chanStop), 1);
     if (chanPass2 > 0) chan2.design(dmr::lowpassTaps(chanPass2, chanStop2, kMidRate, 60, 9), 1);
+    if (chanPass3 > 0) chan3.design(dmr::lowpassTaps(chanPass3, chanStop3, kMidRate, 60, 9), 1);
     ready = true;
     reset();
     return true;
@@ -74,7 +78,7 @@ bool FmFront::configure(double rate, double minRate) {
 void FmFront::reset() {
     for (auto& s : stages) s.reset();
     if (!rsPass) rs.reset();
-    chan.reset(); chan2.reset(); prevY2 = cf32(1.f, 0.f);
+    chan.reset(); chan2.reset(); prevY2 = cf32(1.f, 0.f); chan3.reset(); prevY3 = cf32(1.f, 0.f);
     offPhase = 0; prevY = cf32(1.f, 0.f);
     blkSum = blkDisc = 0; blkN = 0; blocks.clear(); nf = 0; nfKnown = false; carrier = false;
     lastCarrier = -(int64_t)1e12; carrierSince = 0; snrEma = cfoEma = 0; haveSnr = false; afcHz = afcEst = afcPhase = lastBlkCfo = 0;
@@ -193,6 +197,18 @@ const std::vector<float>& FmFront::process(const cf32* x, size_t n) {
             float d = afInput ? y.real() * 4000.f : (z.real() == 0.f && z.imag() == 0.f) ? 0.f : std::atan2(z.imag(), z.real()) * k;
             disc2[i] = std::max(-clipHz, std::min(clipHz, d));
             prevY2 = y;
+        }
+    }
+    if (chanPass3 > 0) {
+        ch3.clear();
+        chan3.process(cur, cn, ch3);
+        disc3.resize(ch3.size());
+        for (size_t i = 0; i < ch3.size(); i++) {
+            const cf32 y = ch3[i];
+            const cf32 z = y * std::conj(prevY3);
+            float d = afInput ? y.real() * 4000.f : (z.real() == 0.f && z.imag() == 0.f) ? 0.f : std::atan2(z.imag(), z.real()) * k;
+            disc3[i] = std::max(-clipHz, std::min(clipHz, d));
+            prevY3 = y;
         }
     }
     pending = ch.size();

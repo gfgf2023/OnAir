@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The top bar: toolbarParts() draws its groups (source, frequency, tuner, gain, start / stop, decoder options) for the
 // classic bar and the side panels, and the tuning helpers (tuneFreq, spectrumTune, the second-mode control) live here.
 // The source, rig windows, status bar and mode selection are in toolbar_source.cpp, toolbar_rig.cpp, statusbar.cpp and mode_select.cpp.
 #include "../app.h"
+#include "dect2/dsp/gpu_policy.h"
 #include "touch.h"
 #include "panel_layout.h"
 #include "../state/presets_app.h"
@@ -30,7 +34,8 @@ static void toolbarSource(App& a, bool vertical, bool running) {
     const float srcW = vertical ? std::max(90.f * gUi, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2 * ImGui::GetStyle().ItemSpacing.x) : 190 * gUi;
     const std::string srcName = ellipsize(a.devices[a.devIdx].name, srcW - ImGui::GetFrameHeight() - 2 * ImGui::GetStyle().FramePadding.x);
     ImGui::SetNextItemWidth(srcW);
-    ImGui::BeginDisabled(running);
+    ImGui::BeginDisabled(a.scanner.progress().running);   // a running receiver can be switched to another radio: stopped, then the new one opened (below)
+    bool switchRadio = false;
     if (ImGui::BeginCombo("##src", srcName.c_str())) {
         for (int i = 0; i < (int)a.devices.size(); i++)
         {
@@ -41,12 +46,13 @@ static void toolbarSource(App& a, bool vertical, bool running) {
             if (ImGui::Selectable(nm.c_str(), i == a.devIdx) && i != a.devIdx) {
                 a.devIdx = i;
                 a.tune.biasTee = false;   // antenna power set for another radio (and its antenna) is never carried over
+                switchRadio = true;
             }
             ImGui::EndDisabled();
             if (a.devices[i].isRadio() && ImGui::BeginPopupContextItem(("##hide" + std::to_string(i)).c_str())) {
                 if (ImGui::MenuItem(tr("Hide this radio"))) {
                     auto h = hiddenRadios(); h.push_back(a.devices[i].name); setHiddenRadios(h);
-                    a.hiddenRadios = h; a.devIdx = 0; a.devicesDirty = true;
+                    a.hiddenRadios = h; a.devIdx = 0; a.devicesDirty = true; switchRadio = running;
                 }
                 ImGui::EndPopup();
             }
@@ -70,6 +76,7 @@ static void toolbarSource(App& a, bool vertical, bool running) {
         if (hamlibSupported() && ImGui::Selectable(tr("Add Hamlib rig…"))) a.hamlibAddOpen = true;
         ImGui::EndCombo();
     }
+    if (switchRadio && running) { a.engine.stop(); startReceiver(a); }   // the settings (frequency, mode, gain) stay in a.tune / a.freqMhz
     if (a.devicesDirty) { a.devicesDirty = false; refreshDevices(a); a.devIdx = std::min(a.devIdx, (int)a.devices.size() - 1); }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         if (a.devices[a.devIdx].isAudio())
@@ -100,7 +107,7 @@ static void toolbarSource(App& a, bool vertical, bool running) {
     }
     ImGui::SameLine();
     // not while a scan has the radio open: a radio in use may not be listed (or its limits not be readable), and the choice would move to another one
-    ImGui::BeginDisabled(a.scanner.progress().running);
+    ImGui::BeginDisabled(a.scanner.progress().running || running);
     if (iconFlat(Ic::Refresh, tr("Rescan for devices"))) refreshDevices(a), a.devIdx = std::min(a.devIdx, (int)a.devices.size() - 1);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
@@ -236,6 +243,16 @@ static void toolbarGain(App& a, bool vertical, bool running, bool& retune) {
         ImGui::SameLine(0);
         ImGui::SetNextItemWidth(touch::on() ? -FLT_MIN : narrowW * gUi);
     };
+    // automatic first: one click sets it, and the sliders are the Advanced part while Auto is on (they stay in view when the gain is by hand)
+    if (!vertical) flowNext();
+    autogainControl(a, vertical, running);
+    static bool showManual = false;
+    if (a.agcOn) {
+        if (!vertical) ImGui::SameLine(0, 6 * gUi);
+        if (ImGui::SmallButton(showManual ? tr("Advanced: hide") : tr("Advanced"))) showManual = !showManual;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Set the gain by hand. Touching a gain turns Auto off."));
+    }
+    if (!a.agcOn || showManual) {
     if (generic) {
         // in the side panel the slider gets its own row (on the header's row it pushed AGC and Auto-tune past the panel edge)
         if (vertical) { const float w = panel::rowLabel(tr("Gain"), tr("The radio's overall gain")); ImGui::SetNextItemWidth(touch::on() ? -FLT_MIN : w); }
@@ -245,6 +262,8 @@ static void toolbarGain(App& a, bool vertical, bool running, bool& retune) {
         a.tune.gainDb = std::round(gdb);
         if (!curDev.gainNote.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", curDev.gainNote.c_str());
         if (ImGui::IsItemDeactivatedAfterEdit()) retune = true, a.agcOn = false;
+        if (!vertical) flowNext();
+        if (manualStageControls(a, vertical)) retune = true, a.agcOn = false;   // the stages of the chain (Airspy, USRP, E4000), where the driver has them
     } else {
     gainLabel(tr("LNA"), tr("The RF amplifier's gain (the radio sets it in 8 dB steps)"), 78);
     int lna = a.tune.lnaDb;
@@ -261,9 +280,7 @@ static void toolbarGain(App& a, bool vertical, bool running, bool& retune) {
     if (ImGui::Checkbox(tr("Amp"), &a.tune.ampOn)) retune = true, a.agcOn = false;
     if (a.tune.ampOn) { if (!vertical) flowNext(6 * gUi); agcAmpWarning(a); }   // the side panel: on its own row, wrapped   // beside a manual Amp switch that is on: the amp can be damaged by strong signals
     }
-    if (!vertical) flowNext();   // the side panel: Auto gain has its own row under the sliders
-    // Auto gain (docs/AUTOGAIN.md): Off / Auto / Optimise once / Safe start, its settings, and the live ADC meter strip under it
-    autogainControl(a, vertical, running);
+    }   // the manual sliders (Advanced)
     ImGui::EndDisabled();
     if (isHw && running) {
         if (!vertical) flowNext(10 * gUi);
@@ -336,13 +353,15 @@ static void toolbarStartStop(App& a, bool running) {
     memoryQuickBar(a);        // the starred memories in one row
 }
 
-// the decoding backend: CPU, GPU or Auto (the DVB-T2 / ATSC 3.0 LDPC and the DVB-T Viterbi)
+// the decoding backend: CPU, GPU or Auto (the DVB-T2 and ATSC 3.0 LDPC, the DVB-T and ISDB-T Viterbi)
 static void toolbarCompute(App& a, bool vertical, bool running) {
     if (!vertical) vSeparator();
     {
         static const char* modes[] = {"CPU", "GPU", "Auto"};
         char lbl[48];
-        const bool gpuNow = a.rx.plpOnGpu;
+        const bool gpuNow = a.family == 3 ? gpupol::live().onGpu[gpupol::Atsc3].load() == 1 : a.family == 4 ? gpupol::live().onGpu[gpupol::IsdbT].load() == 1 : a.rx.plpOnGpu;
+        const char* tickMode = a.family == 3 ? "ATSC 3.0" : a.family == 4 ? "ISDB-T" : "DVB";
+        const char* stageName = a.family == 3 ? "the LDPC (ATSC 3.0, Type B codes)" : a.family == 4 ? "the Viterbi (ISDB-T)" : a.rx.standard == 1 ? "the Viterbi (DVB-T)" : "the LDPC (DVB-T2)";
         snprintf(lbl, sizeof lbl, "%s", a.computeMode == 2 ? (gpuNow ? "Auto (GPU)" : "Auto (CPU)") : modes[a.computeMode]);
         ImGui::TextDisabled("%s", tr("COMPUTE")); ImGui::SameLine(0, 5 * gUi);
         ImGui::SetNextItemWidth(104 * gUi);
@@ -353,11 +372,12 @@ static void toolbarCompute(App& a, bool vertical, bool running) {
                 if (ImGui::Selectable(modes[i], a.computeMode == i)) { a.computeMode = i; a.engine.setComputeMode(i); savePrefs(a); }
                 if (dis) ImGui::EndDisabled();
             }
+            ImGui::Separator(); gpuModeTick(a, tickMode);
             ImGui::EndCombo();
         }
         if (ImGui::IsItemHovered()) {
             const char* gpuName = GpuLdpc::instance().deviceName();
-            ImGui::SetTooltip("Use the GPU for decoding (Auto, recommended): the DVB-T2 / ATSC 3.0 LDPC; the DVB-T Viterbi only with GPU (experimental).\n"
+            ImGui::SetTooltip("Use the GPU for decoding (Auto, recommended): the DVB-T2 and ATSC 3.0 LDPC and the ISDB-T Viterbi; the DVB-T Viterbi only with GPU (experimental).\n"
                 "Now: %s on the %s.\n"
 #ifdef __APPLE__
                 "CPU: NEON on all cores. GPU: Metal compute.\n"
@@ -367,7 +387,7 @@ static void toolbarCompute(App& a, bool vertical, bool running) {
                 "Auto: the GPU when a discrete graphics card is found, otherwise the CPU\n"
                 "first and the GPU if it falls behind real time.\n"
 #endif
-                "Graphics: %s", a.rx.standard == 1 ? "the Viterbi (DVB-T)" : "the LDPC (DVB-T2)", gpuNow ? "GPU" : "CPU", a.rx.gpuAvailable ? gpuName : "none usable");
+                "Graphics: %s", stageName, gpuNow ? "GPU" : "CPU", a.rx.gpuAvailable ? gpuName : "none usable");
         }
     }
 }
@@ -394,8 +414,9 @@ static void toolbarStandard(App& a, bool vertical) {
 namespace {
 struct BbfDef { const char* key; double bw, trans, fs; };   // the mode's own bandwidth and transition (for the plot and the slider hints), a rate to draw at
 const BbfDef kBbfDefs[] = {{"hfdl", 3400, 2000, 28800}, {"acars", 7200, 1500, 25000}, {"vdl2", 15000, 4000, 80000}, {"airband", 16000, 4000, 48000}, {"ais", 22500, 7500, 48000},
-                           {"pager", 20000, 4000, 96000}, {"packet", 8000, 4000, 96000}, {"cw", 100, 80, 1000}, {"general", 3000, 600, 48000}, {"hfdig", 3000, 600, 48000}};
-const char* const kBbfAll[] = {"hfdl", "acars", "vdl2", "airband", "ais", "pager", "packet", "cw", "general", "hfdig"};
+                           {"pager", 20000, 4000, 96000}, {"packet", 8000, 4000, 96000}, {"cw", 100, 80, 1000}, {"general", 3000, 600, 48000}, {"hfdig", 3000, 600, 48000},
+                           {"tetrapol", 13000, 6000, 64000}};
+const char* const kBbfAll[] = {"hfdl", "acars", "vdl2", "airband", "ais", "pager", "packet", "cw", "general", "hfdig", "tetrapol"};
 void bbfSyncImpl() {   // once: the saved filters into the registry the modes read when they design theirs
     static bool done = false;
     if (done) return;
@@ -465,6 +486,7 @@ void toolbarParts(App& a, int mask, bool vertical) {
 
     const DeviceInfo& curDev = a.devices[a.devIdx];
     setAdcBits(adcBitsFor(curDev, a.engine.running() ? a.engine.sampleRate() : a.tune.sampleRate));
+    setAdcLevelCompensated(curDev.board == "airspyhf");   // the HF+ firmware scales its output itself: its dBFS level does not follow the slider
 
     if (mask & TbFreq) toolbarFreq(a, vertical, retune);
     const ModeUi* mu = modeUi(a.family);
@@ -482,7 +504,7 @@ void toolbarParts(App& a, int mask, bool vertical) {
 
     if (!a.newUi) toolbarStartStop(a, running);   // the new interface has its Start button in the side rail
 
-    if ((mask & TbDecoder) && (a.family == 0 || a.family == 3)) toolbarCompute(a, vertical, running);   // DVB-T2 / ATSC 3.0 (LDPC) and DVB-T (Viterbi)
+    if ((mask & TbDecoder) && (a.family == 0 || a.family == 3 || a.family == 4)) toolbarCompute(a, vertical, running);   // DVB-T2 / ATSC 3.0 (LDPC), DVB-T / ISDB-T (Viterbi)
     if ((mask & TbDecoder) && a.family == 0) toolbarStandard(a, vertical);   // the other families have one standard each: nothing to choose
 
     if ((mask & TbDecoder) && mu && mu->decoder) {
@@ -519,7 +541,7 @@ void toolbar(App& a) { toolbarParts(a, TbAll, false); }
 static double dialMhzFromAbs(const App& a, double absMhz) {
     const ModeTuning* mt = a.family >= 6 ? modeTuning(a.family + 2) : nullptr;
     const bool file = !a.devices.empty() && a.devIdx >= 0 && a.devIdx < (int)a.devices.size() &&
-                      (a.devices[a.devIdx].kind == DeviceInfo::File || a.devices[a.devIdx].isAudio());
+                      (a.devices[a.devIdx].kind == DeviceInfo::File || a.devices[a.devIdx].tunesAtDial());
     return dect2::dialMhzFromClick(absMhz, mt && !file ? mt->tuneOffsetHz : 0.0);   // the axis is the real RF: the clicked signal is the dial (#219)
 }
 
@@ -624,7 +646,7 @@ void secondModeControl(App& a, bool vertical) {
     if (pick >= 0) {   // the same check the engine makes, with what the radio runs at (or will)
         const bool run = a.engine.running();
         const ModeTuning* pt = modeTuning(engineStd(a));
-        const double centre = run ? a.engine.captureCentreHz() : a.tune.centerHz + (pt && a.devices[a.devIdx].kind != DeviceInfo::File ? pt->tuneOffsetHz : 0);
+        const double centre = run ? a.engine.captureCentreHz() : a.tune.centerHz + (pt && a.devices[a.devIdx].kind != DeviceInfo::File && !a.devices[a.devIdx].tunesAtDial() ? pt->tuneOffsetHz : 0);
         const double rate = run ? a.engine.sampleRate() : a.tune.sampleRate;
         const std::string why = Engine::secondaryCheck(engineStd(a), kModes[pick].family + 2, centre, rate, mhz * 1e6);
         if (!why.empty()) ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.3f, 1), "%s", why.c_str());

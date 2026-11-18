@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Digital video generator (Tools > Digital video generator): a camera, a still picture, a video file or the transmitter's test picture
 // (Test generator), with the overlay, encoded with
 // FFmpeg (the codec and settings of videogen_params.h) into one MPEG transport stream, written to a .ts file or sent over UDP / RTP.
@@ -8,17 +11,19 @@
 #include "videogen_params.h"
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace dect2::vgen {
 
+// Rtmp: an RTMP server (videogen_rtmp.h) that OBS Studio or another PC streams to; its sound is AudioSource::FromFile
 // Generator: a copy of the moving test picture of the transmitter's built-in test transport stream (demo_ts.cpp, the one the DVB-T2
 // T2Generator carries in its real PLP), drawn at the output resolution (drawTestCard); text goes on it with the overlay
-enum class Source { Camera, Picture, VideoFile, Generator };
-enum class AudioSource { Silence, Tone, FromFile, Microphone, AudioFile };   // AudioFile: your own sound file (or folder), see audioPath
-enum class Output { File, Udp, Rtp };
+enum class Source { Camera, Picture, VideoFile, Generator, Rtmp };
+enum class AudioSource { Silence, Tone, FromFile, Microphone, AudioFile };   // FromFile: the video file's or the RTMP stream's; AudioFile: your own sound file (or folder), see audioPath
+enum class Output { File, Udp, Rtp, Transmitter };   // Transmitter: the transport stream waits in a queue for the transmitter (generatorSpec(instanceId))
 enum class Fit { Stretch, Letterbox, Crop };
 
 struct GenConfig {
@@ -29,16 +34,20 @@ struct GenConfig {
     bool loop = true;                  // start again at the end (a folder starts over from its first file); off: the stream ends with the last file
     double slideSeconds = 10;          // a folder of pictures: how long each is shown
     int pattern = 0;                   // Generator: 0 test card, 1 colour bars, 2 grey ramp
+    std::string rtmpUrl = "rtmp://0.0.0.0:1935/live/stream";   // Rtmp: where to listen (kRtmpDefaultUrl); OBS streams to rtmp://<this PC>:1935/live, key "stream"
     AudioSource audio = AudioSource::Tone;
     std::string micId;                 // empty = the default input
     double toneHz = 1000;
     Output output = Output::File;
+    int instanceId = 1;                // 1..kMaxInstances: which generator this is (several run at once); names its queue for the transmitter
+    std::string ffmpegArgs;            // free-text encoder options ("-preset slow -tune zerolatency -x264-params keyint=50"): see parseEncoderArgs; empty = none
     std::string tsPath;                // File
     std::string host = "127.0.0.1";    // Udp / Rtp: where to send (unicast or multicast)
     int port = 5000;
     int ttl = 8;
     double seconds = 60;               // File: the length; streaming runs until stopped
     Fit fit = Fit::Letterbox;
+    bool previewOnly = false;          // the picture and the overlay in real time for preview(), nothing encoded, written or sent
     Settings enc;
     Layout overlay;
     std::shared_ptr<const std::vector<uint8_t>> font;   // TrueType for the overlay text
@@ -52,6 +61,8 @@ struct GenStats {
     double kbps = 0;                          // measured TS rate
     int lateFrames = 0;                       // live: frames the encoder was too slow for
     std::string videoEncoder, audioEncoder;   // the FFmpeg encoders actually used
+    std::string input;                        // Rtmp: waiting for a sender / what it sends / why listening failed
+    std::string notice;                       // the video encoder had to be opened without the profile / B-frames (and why)
     std::string error;
 };
 
@@ -66,6 +77,9 @@ void drawTestCard(uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs, in
 // What a file is, by its extension (the drop zone uses it to put a dropped file in the right slot)
 enum class MediaKind { Unknown, Picture, Video, Audio };
 MediaKind mediaKind(const std::string& path);
+// The sound a source should have when the user picks it: a video file or the RTMP server brings its own sound (a test tone or silence left over from
+// another source would be sent instead, #545); a source without sound of its own cannot keep "sound of the file / stream". Everything else stays.
+AudioSource audioForSource(Source source, AudioSource current);
 // The files of a folder of that kind, sorted by name (not case sensitive); a file gives just itself (any kind); empty when nothing fits
 std::vector<std::string> listMedia(const std::string& path, MediaKind kind);
 
@@ -79,6 +93,36 @@ std::string vlcOpenUrl(Output o, const std::string& host, int port);
 bool isMulticast(const std::string& host);
 // The length of a video file in seconds, 0 when FFmpeg cannot tell
 double mediaSeconds(const std::string& path);
+
+// ---- several generators, and the transmitter ----
+// Each running generator (instanceId 1..kMaxInstances) with Output::Transmitter queues its transport stream; the transmitter takes it as the
+// "video file" generatorSpec(id) = "generator:N" (digital TV standards: generatorTsSource; analog TV: the picture, through setGeneratorFrameSink).
+constexpr int kMaxInstances = 8;
+std::string generatorSpec(int id);
+bool parseGeneratorSpec(const std::string& s, int& id);             // "generator:3" -> 3
+bool generatorTsSource(int id, std::function<void(uint8_t*)>& out);   // fills one 188 byte packet: the next queued one, else a null packet
+size_t generatorQueued(int id);                                      // packets waiting
+void generatorPush(int id, const uint8_t* packets, size_t n);        // (the generator) n whole packets; the oldest go when the queue is full
+void generatorClear(int id);
+bool generatorPop(int id, uint8_t* pk);                              // the next queued packet; false when none is waiting (no null fill)
+void generatorSetRate(int id, double bps);                           // (the generator) its mux rate while it runs, 0 when it stops
+double generatorRate(int id);                                        // 0: not running with Output::Transmitter
+// Several generators as the services of one multiplex (the transmitter's Multiplex, #492): generator ids[k] is programme
+// firstServiceId + k, named names[k] (empty: the generator's own service name), see ts_remux.h. outBitrate: the channel's TS rate.
+std::function<void(uint8_t*)> generatorMuxSource(const std::vector<int>& ids, const std::vector<std::string>& names, const std::string& provider,
+                                                 int firstServiceId, double outBitrate);
+using FrameSink = std::function<void(int w, int h, const uint8_t* rgb24)>;
+void setGeneratorFrameSink(int id, FrameSink s);                     // the picture of every frame, RGB 8 bit packed; an empty function removes it
+bool generatorHasFrameSink(int id);
+void generatorPublishFrame(int id, int w, int h, const uint8_t* rgb24);
+
+// ---- free-text FFmpeg arguments ----
+// Split into an argument list (quotes group, nothing is expanded or run: there is no shell anywhere).
+std::vector<std::string> splitArgs(const std::string& text, std::string& err);
+struct ArgOpt { std::string key, value; };
+// "-key value" pairs for the video encoder (-b:v is b). False with err for a stray word, a missing value, a stream specifier, an option that
+// would change the input, output, container, codec, filters or hardware set-up, or a value that names a file or pipe.
+bool parseEncoderArgs(const std::string& text, std::vector<ArgOpt>& out, std::string& err);
 
 class VideoGenerator {
 public:

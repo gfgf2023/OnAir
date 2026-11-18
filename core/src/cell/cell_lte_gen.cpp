@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Cell towers, LTE test signal: one eNodeB carrier with its broadcast channels, built from the same specification tables the receiver
 // reads (36.211 / 36.212). Nothing is transmitted: the samples only exist in memory.
 #include "cell_lte_int.h"
@@ -37,7 +40,7 @@ struct Gen {
     Bits pbchBlock(int sfn) {
         Bits mib;
         auto put = [&](int v, int n) { for (int i = n - 1; i >= 0; i--) mib.push_back((v >> i) & 1); };
-        put(lteRbToBwIndex(c.nRb), 3); put(c.phichDur, 1); put(c.phichRes, 2); put((sfn >> 2) & 0xff, 8); put(0, 10);
+        put(lteRbToBwIndex(c.nRb), 3); put(c.phichDur, 1); put(c.phichRes, 2); put((sfn >> 2) & 0xff, 8); put(c.mibTail & 0x3ff, 10);
         const uint32_t mask = c.ports == 1 ? 0 : c.ports == 2 ? 0xFFFF : 0x5555;
         appendCrc(mib, kCrc16, 16, mask);
         const int M = ltePbchBits(c.extCp);

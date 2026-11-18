@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // General receiver (see general_rx.h): one channel of the band mixed down, filtered, demodulated (NFM, WFM, AM, USB, LSB, CW),
 // squelched and played; optionally recorded to WAV, one file per transmission.
 #include "dect2/general/general_rx.h"
@@ -34,6 +37,7 @@ namespace {
 using dect2::math::kPi;
 constexpr double kOutLevel = 0.5;          // full deviation / full AM depth / an SSB tone under the AGC: this peak
 constexpr double kBlockSec = 0.01;         // squelch decisions
+constexpr double kHangCwSec = 1.0;      // CW and beacons (NDBs) key on and off: a longer mute hang so the squelch does not chatter on every dot and gap
 constexpr double kHangSec = 0.15;      // the mute: long enough that a click does not get through. The file hang is separate (setTransmissionGate).
 constexpr int kNoiseN = 512;               // noise spectrum of the decimated stream
 constexpr int kNoiseAvg = 8;
@@ -44,6 +48,8 @@ const double kWfmW[] = {150000, 180000, 200000};
 const double kAmW[] = {4000, 6000, 9000, 12000};
 const double kSsbW[] = {1800, 2400, 2700, 3000};
 const double kCwW[] = {100, 250, 500, 1000};
+const double kDsbW[] = {3000, 5000, 6000, 9000};
+const double kRawW[] = {12000, 24000, 40000};
 
 // Real FIR with a doubled history (the window never wraps), output every `decim` inputs
 class RealFir {
@@ -89,6 +95,7 @@ struct Cfg {
     bool amAuto = false;        // AM: the Auto quality processor (am_proc.h)
     int amNr = -1, amBw = 0;    // its noise reduction (-1 auto, 0 off, 1 .. 100) and audio bandwidth (0 auto)
     bool amEnhance = false;
+    int fmPll = 0;              // 4.1 NFM: 0 discriminator, 1 phase-locked loop, 2 the loop when the carrier is under 8 dB over the noise
 };
 
 void put16(FILE* f, uint16_t v) { uint8_t b[2] = {(uint8_t)v, (uint8_t)(v >> 8)}; fwrite(b, 1, 2, f); }
@@ -160,7 +167,7 @@ struct Delay {
 } // namespace
 
 const char* generalDemodName(int d) {
-    static const char* const k[] = {"NFM", "WFM", "AM", "USB", "LSB", "CW"};
+    static const char* const k[] = {"NFM", "WFM", "AM", "USB", "LSB", "CW", "DSB", "RAW", "CW-L"};
     return d >= 0 && d < GenDemodCount ? k[d] : "?";
 }
 
@@ -169,7 +176,9 @@ const double* generalWidthPresets(int d, int& count) {
     case GenWfm: count = 3; return kWfmW;
     case GenAm: count = 4; return kAmW;
     case GenUsb: case GenLsb: count = 4; return kSsbW;
-    case GenCw: count = 4; return kCwW;
+    case GenCw: case GenCwl: count = 4; return kCwW;
+    case GenDsb: count = 4; return kDsbW;
+    case GenRaw: count = 3; return kRawW;
     default: count = 3; return kNfmW;
     }
 }
@@ -179,19 +188,37 @@ double generalDefaultWidth(int d) {
     case GenWfm: return 180000;
     case GenAm: return 9000;
     case GenUsb: case GenLsb: return 2700;
-    case GenCw: return 500;
+    case GenCw: case GenCwl: return 500;
+    case GenDsb: return 6000;
+    case GenRaw: return 24000;
     default: return 12500;
     }
 }
 
-void generalWidthRange(int d, double& lo, double& hi) {
+void generalWidthRange(int d, double& lo, double& hi, double srcRate) {
+    double maxRate = kGeneralMaxChannelRate;
+    if (srcRate > 0) { double r = kGeneralAudioRate; while (r * 2 <= srcRate && r * 2 <= maxRate) r *= 2; maxRate = r; }
+    const double edge = maxRate * 11.0 / 24.0;   // 22 kHz at the 48 kHz channel
     switch (d) {
     case GenWfm: lo = 50000; hi = 220000; break;
-    case GenAm: lo = 1000; hi = 20000; break;
-    case GenUsb: case GenLsb: lo = 500; hi = 6000; break;
-    case GenCw: lo = 50; hi = 3000; break;
+    case GenAm: lo = 1000; hi = 2 * edge; break;
+    case GenUsb: case GenLsb: lo = 500; hi = edge - kGeneralSsbLowCutHz; break;   // the upper edge (300 Hz + width) stays inside the channel rate
+    case GenCw: case GenCwl: lo = 50; hi = 2 * edge; break;
+    case GenDsb: lo = 1000; hi = 2 * edge; break;
+    case GenRaw: lo = 2000; hi = 2 * edge; break;
     default: lo = 2000; hi = 30000; break;
     }
+}
+
+double generalChannelRate(int d, double w, double srcRate) {
+    if (d == GenWfm) return kGeneralWideRate;
+    double lo, hi;
+    generalFilterEdges(d, w, lo, hi);
+    const double edge = std::max(std::fabs(lo), std::fabs(hi));
+    double r = kGeneralAudioRate;
+    while (edge > r * 11.0 / 24.0 + 1e-6 && r * 2 <= kGeneralMaxChannelRate) r *= 2;
+    if (srcRate > 0) while (r > kGeneralAudioRate && r > srcRate) r /= 2;
+    return r;
 }
 
 double generalClampWidth(int d, double hz) {
@@ -229,6 +256,11 @@ struct GeneralReceiver::Impl {
     qo100::Decimator dec;
     ExactResampler rs;
     double decRate = 0, demodRate = kGeneralAudioRate;
+    int adec = 1;                          // channel rate / 48 kHz (1 in every default case)
+    RealFir wideLp, wideLpDry;             // adec > 1: the wide audio down to 48 kHz (speaker, tap, files), the gated and the dry copy
+    std::vector<float> wAud, wDry;         // adec > 1: the wide demodulated audio of this feed, gated and dry
+    std::function<void(const float*, size_t, double)> wtapSet, wtap;
+    std::atomic<bool> wtapReq{false};
     std::vector<cf32> clean, decd, base;
     // channel filter
     std::vector<cf32> taps, hist;
@@ -246,6 +278,8 @@ struct GeneralReceiver::Impl {
     bool noiseImpossible = false;
     // demodulators
     cf32 prev{0, 0};
+    double pllPh = 0, pllW = 0;   // 4.1 FM phase-locked loop
+    bool pllWeak = false;         // the carrier is under 8 dB over the noise (fmPll 2)
     double gLin = 10, relEnv = 0, carK = 0;
     float deAl = 1;
     double car = 0, env = 0, bfoPh = 0;
@@ -342,7 +376,7 @@ struct GeneralReceiver::Impl {
     // AM through the processor (Auto quality, or a synchronous detector chosen by hand)
     AmProcessor amp;
     std::vector<float> ampOut;
-    bool useAmp() const { return cfg.demod == GenAm && !wide && (cfg.amAuto || cfg.amDet > 0); }
+    bool useAmp() const { return cfg.demod == GenAm && !wide && adec == 1 && (cfg.amAuto || cfg.amDet > 0); }
     void ampConfig() {
         AmProcConfig c;
         c.autoQuality = cfg.amAuto;
@@ -413,8 +447,9 @@ struct GeneralReceiver::Impl {
         built = false;
         if (curRate <= 0) return;
         wide = cfg.demod == GenWfm;
-        demodRate = wide ? kGeneralWideRate : kGeneralAudioRate;
-        const double pass = wide ? 115000.0 : 26000.0;
+        demodRate = generalChannelRate(cfg.demod, cfg.width, curRate);
+        adec = wide ? 1 : (int)std::lround(demodRate / kGeneralAudioRate);
+        const double pass = wide ? 115000.0 : adec > 1 ? 0.5417 * demodRate : 26000.0;
         dec.configure(curRate, pass, demodRate * (wide ? 1.0 : 2.0));
         decRate = dec.outRate();
         if (!rs.configure(decRate, demodRate)) return;
@@ -425,7 +460,10 @@ struct GeneralReceiver::Impl {
         win.resize(kNoiseN); wsum2 = 0;
         for (int i = 0; i < kNoiseN; i++) { win[(size_t)i] = (float)(0.5 - 0.5 * std::cos(2 * kPi * (i + 0.5) / kNoiseN)); wsum2 += (double)win[(size_t)i] * win[(size_t)i]; }
         if (wide) audLp.design(121, 15000.0 / demodRate, (int)std::lround(demodRate / kGeneralAudioRate));
-        else audLp.design(63, 4000.0 / demodRate, 1);
+        // NFM: 3 kHz audio low-pass (4.0, owner's choice; 3.9 had 4 kHz). FM noise rises with audio frequency, so 4 -> 3 kHz is about
+        // 3.7 dB less noise ((4/3)^3) while speech (300 .. 3000 Hz) is kept; 127 taps keep the passband flat up to about 2.7 kHz.
+        else audLp.design(127, 3000.0 / demodRate, 1);
+        if (adec > 1) wideLp.design(64 * adec + 1, 21000.0 / demodRate, adec), wideLpDry = wideLp;   // 48 kHz copy of the wide audio
         design();
         mixHz = 1e300;
         built = true;
@@ -454,8 +492,8 @@ struct GeneralReceiver::Impl {
         nco.reset(); dec.reset(); rs.reset();
         std::fill(hist.begin(), hist.end(), cf32(0, 0)); hpos = 0;
         acc.assign(kNoiseN, 0.0); accN = 0; fbuf.clear(); noisePsd = -1; noisePsdIn = -1;
-        prev = cf32(0, 0); car = 0; env = 0; carInit = false; bfoPh = 0; samReset(); nbMean = -1; nbHold = 0; nbG1 = nbG2 = nbFill = cf32(0, 0);
-        dcX = dcY = deY = 0; audLp.reset(); dry.reset();
+        prev = cf32(0, 0); pllPh = 0; pllW = 0; pllWeak = false; car = 0; env = 0; carInit = false; bfoPh = 0; samReset(); nbMean = -1; nbHold = 0; nbG1 = nbG2 = nbFill = cf32(0, 0);
+        dcX = dcY = deY = 0; audLp.reset(); dry.reset(); wideLp.reset(); wideLpDry.reset(); wAud.clear(); wDry.clear();
         blkPow = 0; blkN = 0; lvl = -1; open = false; hang = 0; ramp = 0;
         fmSum = 0; fmN = 0; cfo = 0;
         preAud.clear(); preIq.clear();
@@ -517,7 +555,8 @@ struct GeneralReceiver::Impl {
             const double thr = std::pow(10.0, cfg.sqDb / 10.0);
             want = lvl >= (open ? thr / 1.26 : thr);
         }
-        if (want) { open = true; hang = kHangSec; }
+        if (noiseCh > 0 && lvl > 0) pllWeak = lvl < noiseCh * (pllWeak ? 7.9 : 6.3);   // 4.1 fmPll 2: under 8 dB C/N (9 dB to leave)
+        if (want) { open = true; hang = generalIsCw(cfg.demod) ? kHangCwSec : kHangSec; }
         else if (open) { hang -= kBlockSec; if (hang <= 0) open = false; }
         (open ? blkOpen : blkShut)++;
     }
@@ -531,7 +570,21 @@ struct GeneralReceiver::Impl {
         case GenNfm: case GenWfm: {
             const cf32 d = z * std::conj(prev);
             prev = z;
-            const double f = std::atan2((double)d.imag(), (double)d.real()) * demodRate / (2 * kPi);
+            double f = std::atan2((double)d.imag(), (double)d.real()) * demodRate / (2 * kPi);
+            // 4.1: a second-order phase-locked loop (natural frequency 4 kHz, damping 0.707) on the limited signal: its frequency is the audio
+            const bool pllUse = cfg.demod == GenNfm && (cfg.fmPll == 1 || (cfg.fmPll == 2 && pllWeak));
+            if (cfg.demod == GenNfm && cfg.fmPll) {
+                const double m = std::abs(z);
+                const double wn = 2 * kPi * 4000.0 / demodRate, kp = 2 * 0.707 * wn, ki = wn * wn;
+                double e = 0;
+                if (m > 0) { const cf32 r = z * cf32((float)std::cos(pllPh), (float)-std::sin(pllPh)); e = std::atan2((double)r.imag(), (double)r.real()); }
+                pllW += ki * e;
+                pllW = std::clamp(pllW, -kPi / 2, kPi / 2);
+                const double step = pllW + kp * e;
+                pllPh += step;
+                if (pllPh > kPi) pllPh -= 2 * kPi; else if (pllPh < -kPi) pllPh += 2 * kPi;
+                if (pllUse) f = step * demodRate / (2 * kPi);
+            }
             if (std::norm(z) > 0) { fmSum += f; fmN++; }
             const float s = (float)(f / (cfg.demod == GenNfm ? 5000.0 : 75000.0) * kOutLevel);
             float y;
@@ -552,9 +605,9 @@ struct GeneralReceiver::Impl {
             a = (float)(cfg.agc ? (e - car) / std::max(car, 1e-9) * kOutLevel : (e - car) * g);
             break;
         }
-        default: {   // USB, LSB, CW: the real part (CW: moved up by the pitch)
-            cf32 v = z;
-            if (cfg.demod == GenCw) {
+        default: {   // USB, LSB, DSB, RAW, CW: the real part (CW: moved up by the pitch; CW-L: mirrored first, so the note falls as the signal rises)
+            cf32 v = cfg.demod == GenCwl ? std::conj(z) : z;
+            if (generalIsCw(cfg.demod)) {
                 v *= cf32((float)std::cos(bfoPh), (float)std::sin(bfoPh));
                 bfoPh += 2 * kPi * cfg.pitch / demodRate;
                 if (bfoPh > 2 * kPi) bfoPh -= 2 * kPi;
@@ -571,12 +624,24 @@ struct GeneralReceiver::Impl {
     void emit(float a) {
         const float dry = std::clamp(a, -1.f, 1.f);
         const float target = open ? 1.f : 0.f;
+        if (adec > 1) {   // a wide channel: the audio stays at the channel rate until the 48 kHz copy is cut from it
+            ramp += std::clamp(target - ramp, -1.f / (240 * adec), 1.f / (240 * adec));   // 5 ms
+            wAud.push_back(std::clamp(dry * ramp, -1.f, 1.f));
+            if (wantDry.load(std::memory_order_relaxed) || plainRec.load(std::memory_order_relaxed)) wDry.push_back(dry);
+            return;
+        }
         ramp += std::clamp(target - ramp, -1.f / 240, 1.f / 240);   // 5 ms
         aud.push_back(std::clamp(dry * ramp, -1.f, 1.f));
         if (wantDry.load(std::memory_order_relaxed) || plainRec.load(std::memory_order_relaxed)) dryAud.push_back(dry);
     }
 
     void play() {
+        if (adec > 1) {
+            for (float v : wAud) { float y; if (wideLp.push(v, y)) aud.push_back(y); }
+            for (float v : wDry) { float y; if (wideLpDry.push(v, y)) dryAud.push_back(y); }
+        }
+        if (wtapReq.exchange(false)) { std::lock_guard<std::mutex> lk(mu); wtap = wtapSet; }
+        if (wtap) { if (adec > 1) { if (!wAud.empty()) wtap(wAud.data(), wAud.size(), demodRate); } else if (!aud.empty()) wtap(aud.data(), aud.size(), kGeneralAudioRate); }
         const bool haveAud = !aud.empty();
         if (haveAud) {
             spk.apply(aud, afHp, afLp, afNotch);
@@ -803,7 +868,7 @@ void GeneralReceiver::feed(const cf32* x, size_t n) {
     if (m.cfgDirty.exchange(false)) {
         Cfg c; double r;
         { std::lock_guard<std::mutex> lk(m.mu); c = m.cfgSet; r = m.rate; }
-        const bool rebuild = !m.built || r != m.curRate || (c.demod == GenWfm) != (m.cfg.demod == GenWfm);
+        const bool rebuild = !m.built || r != m.curRate || (c.demod == GenWfm) != (m.cfg.demod == GenWfm) || generalChannelRate(c.demod, c.width, r) != m.demodRate;
         const bool demodCh = c.demod != m.cfg.demod;
         const bool refilter = demodCh || c.width != m.cfg.width;
         const bool retuned = c.chanOff != m.cfg.chanOff;
@@ -837,7 +902,7 @@ void GeneralReceiver::feed(const cf32* x, size_t n) {
     m.noiseFeed(m.decd.data(), m.decd.size());
     m.base.clear();
     m.rs.process(m.decd.data(), m.decd.size(), m.base);
-    m.aud.clear(); m.dryAud.clear(); m.iqBlk.clear();
+    m.aud.clear(); m.dryAud.clear(); m.iqBlk.clear(); m.wAud.clear(); m.wDry.clear();
     m.ampOut.clear();
     if (m.useAmp()) m.amp.process(m.base.data(), m.base.size(), m.ampOut);
     const int T = (int)m.taps.size();
@@ -890,6 +955,7 @@ void GeneralReceiver::setAgc(bool on, float g) {
     std::lock_guard<std::mutex> lk(p_->mu);
     if (p_->cfgSet.agc != on || p_->cfgSet.gainDb != g) { p_->cfgSet.agc = on; p_->cfgSet.gainDb = g; p_->cfgDirty = true; }
 }
+void GeneralReceiver::setFmPll(int mode) { std::lock_guard<std::mutex> lk(p_->mu); mode = std::clamp(mode, 0, 2); if (p_->cfgSet.fmPll != mode) { p_->cfgSet.fmPll = mode; p_->cfgDirty = true; } }
 void GeneralReceiver::setDeemphUs(double us) { std::lock_guard<std::mutex> lk(p_->mu); if (p_->cfgSet.deemphUs != us) { p_->cfgSet.deemphUs = std::max(0.0, us); p_->cfgDirty = true; } }
 void GeneralReceiver::setCwPitchHz(double hz) { std::lock_guard<std::mutex> lk(p_->mu); hz = std::clamp(hz, 200.0, 1500.0); if (p_->cfgSet.pitch != hz) { p_->cfgSet.pitch = hz; p_->cfgDirty = true; } }
 void GeneralReceiver::setAmDetector(int det) {
@@ -914,6 +980,7 @@ void GeneralReceiver::setAudioFilters(double hpHz, double lpHz, double notchHz) 
 void GeneralReceiver::setMuted(bool m) { p_->muted = m; }
 void GeneralReceiver::setSilent(bool s) { p_->silent = s; }
 void GeneralReceiver::setAudioTap(std::function<void(const float*, size_t)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->tapSet = std::move(cb); p_->tapReq = true; }
+void GeneralReceiver::setWideTap(std::function<void(const float*, size_t, double)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->wtapSet = std::move(cb); p_->wtapReq = true; }
 
 bool GeneralReceiver::startRecording(const std::string& path) {
     std::string msg;

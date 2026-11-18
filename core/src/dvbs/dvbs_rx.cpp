@@ -27,7 +27,19 @@ namespace dect2 {
 using namespace dvbs;
 
 double dvbsMaxSymbolRate(double fs, double rollOff) { return fs / (1.3 * (1.0 + rollOff)); }
-double dvbsMinAutoSymbolRate(double fs) { return std::max(60e3, fs * 40.0 / 4096.0 * 2.5); }   // about 40 spectrum bins across the carrier
+namespace {
+// The search spectrum (4096 bins) measures carriers of about 100 bins and more. Narrower ones (reduced bandwidth DATV, 25 to 333 ksym/s) are measured
+// in a second, finer spectrum of up to 131072 bins that the search keeps beside it, so that they have about 100 bins too, down to 10 ksym/s.
+constexpr double kMinSymbolRate = 10e3;
+double wideMinSymbolRate(double fs) { return std::max(60e3, fs * 40.0 / 4096.0 * 2.5); }   // about 40 spectrum bins across the carrier
+int narrowFftSize(double fs) {
+    int n = 4096;
+    while (n < 131072 && fs * 100.0 / n > kMinSymbolRate) n *= 2;
+    return n;
+}
+} // namespace
+double dvbsMinAutoSymbolRate(double fs) { return std::max(kMinSymbolRate, fs * 100.0 / narrowFftSize(fs)); }
+double dvbsMinSymbolRate() { return kMinSymbolRate; }
 
 ModeTuning dvbsTuning() {
     ModeTuning t;
@@ -44,6 +56,9 @@ namespace {
 using clk = std::chrono::steady_clock;
 constexpr size_t kHuntWindow = 49152;       // (DVB-S)        // symbols a DVB-S attempt looks at: 16384 for the carrier loop to settle, 32768 to find the code
 constexpr size_t kHuntKeep = 294912;        // symbols kept for the frame search of DVB-S2: up to eight long frames, the more the weaker a signal it finds
+// After an attempt that found nothing, the next one comes after 0.15 s or more of symbols but looks only at the last kHuntKeep: the
+// input before those (less kHuntWarm for the timing loop) goes by without the front end.
+constexpr uint64_t kHuntWarm = 65536;
 constexpr size_t kS2Window = 262144;
 constexpr size_t kCellsMax = 2048;
 
@@ -59,7 +74,8 @@ double snapRollOff(double a) {
 // spectral regrowth widen the -3 dB width far more than they narrow it); returns 0 when no clear line stands out (small
 // roll-offs give a weak one).
 constexpr int kCyclicN = 1 << 18;
-double cyclicRate(const std::vector<cf32>& x, double fs, double centre, double rs0) {
+constexpr size_t kRawKeep = (size_t)1 << 21;   // input kept while searching: a narrow carrier is measured on a second of it (cyclicRateNarrow)
+double cyclicRate(const std::vector<cf32>& x, double fs, double centre, double rs0, int kCyclicN = dect2::kCyclicN, float minRatio = 12.f) {
     if (x.size() < (size_t)kCyclicN) return 0;
     std::vector<cf32> v(x.end() - kCyclicN, x.end());
     Fft fft(kCyclicN);
@@ -93,11 +109,39 @@ double cyclicRate(const std::vector<cf32>& x, double fs, double centre, double r
     std::vector<float> sorted = mag;
     std::nth_element(sorted.begin(), sorted.begin() + (std::ptrdiff_t)(sorted.size() / 2), sorted.end());
     const float median = sorted[sorted.size() / 2];
-    if (!(mag[(size_t)(best - k0)] > 12.f * median) || best <= k0 || best >= k1) return 0;
+    if (!(mag[(size_t)(best - k0)] > minRatio * median) || best <= k0 || best >= k1) return 0;
     // parabolic interpolation of the peak
     const double a = mag[(size_t)(best - k0 - 1)], b = mag[(size_t)(best - k0)], c = mag[(size_t)(best - k0 + 1)];
     const double d = 0.5 * (a - c) / std::min(-1e-30, a - 2 * b + c);
     return (best + std::max(-0.5, std::min(0.5, d))) * fs / kCyclicN;
+}
+
+
+// A narrow carrier (25 ksym/s at 2 Msps) has only some 3000 symbols in the kCyclicN samples of cyclicRate: at a few dB of Es/N0 and a roll-off of
+// 0.20 its line does not stand out, and the spectrum's width, which the noise widens by 5 % there, was used instead (the hunt never locked). The
+// carrier is moved to 0 Hz and averaged down to about 5.4 samples per symbol first, so the line is measured over all the input kept (kRawKeep:
+// about a second at 2 Msps, eight times the symbols). A boxcar is enough: the folded noise has the density an ideal filter leaves, and
+// cyclicRate cuts the band to the carrier itself.
+double cyclicRateNarrow(const std::vector<cf32>& x, double fs, double centre, double rs0) {
+    const int D = (int)std::floor(fs / (4.0 * 1.35 * rs0));
+    if (D < 2) return cyclicRate(x, fs, centre, rs0);
+    std::vector<cf32> y(x.size() / (size_t)D);
+    const double w = -2 * M_PI * centre / fs;
+    std::complex<double> ph(1, 0);
+    const std::complex<double> st(std::cos(w), std::sin(w));
+    for (size_t j = 0; j < y.size(); j++) {
+        std::complex<double> acc(0, 0);
+        for (int k = 0; k < D; k++) { const cf32 v = x[j * (size_t)D + (size_t)k]; acc += std::complex<double>(v.real(), v.imag()) * ph; ph *= st; }
+        y[j] = cf32((float)acc.real(), (float)acc.imag());
+        if ((j & 255) == 255) ph /= std::abs(ph);
+    }
+    int n = 1;
+    while ((size_t)n * 2 <= y.size()) n *= 2;
+    if ((size_t)n * (size_t)D <= (size_t)kCyclicN) return cyclicRate(x, fs, centre, rs0);   // no more symbols than the plain measurement has
+    // the line is looked for only where the spectrum's width puts it, and the carrier is confirmed already (z-score >= 8): a ratio of 8 to the
+    // median of the bins there (noise-only bins exceed it with a probability far below one in 10^9) is safe, and the line of a 25 ksym/s carrier at
+    // 4 dB Es/N0 and roll-off 0.20 reaches 10 to 12
+    return cyclicRate(y, fs / D, 0.0, rs0, n, 8.f);
 }
 
 } // namespace
@@ -129,6 +173,7 @@ struct DvbsReceiver::Impl {
     std::mutex cbMu;
     std::function<void(const std::string&)> logCb;
     std::function<void(const uint8_t*, size_t, double)> pktCb;
+    std::function<void(const uint8_t*, size_t, int, int, bool, int)> dataFieldCb;   // every BBFRAME of a generic stream (setDataFieldCallback)
     // IP data: GSE from the BBFRAMEs (here), MPE and ULE from the transport stream (feedTs); one sink for the statistics and the PCAP file
     std::mutex ipMu;
     struct IsiIp { dvbsip::GseIp gse; dvbsip::HemDeframer hem; uint64_t fields = 0; };
@@ -163,6 +208,7 @@ struct DvbsReceiver::Impl {
     std::atomic<uint64_t> inputCount{0};
     uint64_t reportAt = 0;
     SpectrumEstimator spec;
+    SpectrumEstimator nspec;                  // the finer spectrum of the search, for narrow carriers (configure(): narrowFftSize)
     SpectrumResult specRes;
     std::vector<float> psdDb;
     int searchTries = 0;
@@ -179,6 +225,21 @@ struct DvbsReceiver::Impl {
     uint64_t huntSinceTry = 0;
     double rsNominal = 0;                       // the rate the spectrum (or the user) gave; hunts that fail try rates a little either side of it
     int huntFails = 0, ditherIdx = 0, huntCycles = 0;     // failed attempts at one rate, the rate in the dither list, complete lists tried
+    bool huntSkipped = false;                              // input went by since the last symbols: the hunt buffer starts again
+    int keptCycles = 0;                                    // huntCycles of the carrier hunted before the spectrum was measured again
+    double keptCenterHz = 0, keptRate = 0;
+    uint64_t huntSkipSamples = 0;                          // input samples let go by (tests)
+    // symbols between two attempts: a signal that is not there is looked for less often (the interval doubles after each complete
+    // round of rates, up to four times as long)
+    uint64_t huntInterval() const { return std::max<uint64_t>(65536, (uint64_t)(0.15 * rsUsed)) * (uint64_t)std::min(4, 1 << std::min(huntCycles, 2)); }
+    // input samples that may go by before the front end has to run for the next attempt (0: run it). Only once an attempt has failed:
+    // the first one after a carrier is found sees the same symbols as before.
+    uint64_t huntIdleSamples() const {
+        if (mode != kHunt || (huntFails == 0 && ditherIdx == 0 && huntCycles == 0) || rsUsed <= 0) return 0;
+        const uint64_t need = (uint64_t)kHuntKeep + kHuntWarm, iv = huntInterval();
+        if (huntSinceTry + need >= iv) return 0;
+        return (uint64_t)((double)(iv - need - huntSinceTry) * fs / rsUsed);
+    }
     // DVB-S: the carrier loop and the decoder run on a thread of their own, fed with the symbols of the front end
     QpskPll pll;
     S1Decoder s1;
@@ -231,6 +292,7 @@ struct DvbsReceiver::Impl {
         mode = kSearch;
         inputCount = 0; reportAt = 0;
         spec.reset();
+        nspec.reset();
         specRes = SpectrumResult();
         searchTries = 0;
         sym.clear(); y.clear();
@@ -313,12 +375,35 @@ struct DvbsReceiver::Impl {
                 rs = rc;
             }
         }
-        if (!carrier || rs < dvbsMinAutoSymbolRate(fs) * (manual > 0 ? 0.0 : 1.0) || rs > dvbsMaxSymbolRate(fs, 0.35) * 1.02) {
+        if (!carrier || rs < wideMinSymbolRate(fs) * (manual > 0 ? 0.0 : 1.0) || rs > dvbsMaxSymbolRate(fs, 0.35) * 1.02) {
+            if ((!carrier || manual <= 0 || manual < wideMinSymbolRate(fs)) && searchNarrow()) return;
             spec.reset();
             searchTries++;
             return;
         }
         startFront(specRes, rs);
+    }
+
+    // a carrier too narrow for the search spectrum (or too weak in it): the finer spectrum, once it has enough segments
+    bool searchNarrow() {
+        if (nspec.segments() < 48) return false;
+        nspec.setPick(pickOn.load(), pickHz.load());
+        const SpectrumResult r = nspec.analyse();
+        nspec.reset();
+        const double manual = manualRs.load();
+        if (!(r.valid && r.zscore >= 8.f && r.fitRms < 2.5f)) return false;
+        double rs = manual > 0 ? manual : r.rateHz;
+        if (manual <= 0) {
+            const double rc = cyclicRateNarrow(raw, fs, r.centerHz, rs);
+            if (rc > 0) {
+                if (std::fabs(rc / rs - 1) > 0.01) logf("symbol rate %.4f Msym/s from the spectrum's width, %.4f from its cyclic line", rs / 1e6, rc / 1e6);
+                rs = rc;
+            }
+        }
+        if ((manual <= 0 && rs < dvbsMinAutoSymbolRate(fs)) || rs > dvbsMaxSymbolRate(fs, 0.35) * 1.02) return false;
+        specRes = r;
+        startFront(r, rs);
+        return true;
     }
 
     void startFront(const SpectrumResult& r, double rs) {
@@ -334,7 +419,11 @@ struct DvbsReceiver::Impl {
         symTotal = 0; timingNarrow = false; recentred = false;
         huntBuf.clear(); huntSinceTry = 0;
         sfStrip.reset(); sfWasLocked = sfWasPilots = false;
-        rsNominal = rs; huntFails = 0; ditherIdx = 0; huntCycles = 0;
+        rsNominal = rs; huntFails = 0; ditherIdx = 0;
+        // the same carrier as before the spectrum was measured again: the hunt keeps its longer interval
+        const bool same = keptCycles > 0 && std::fabs(r.centerHz - keptCenterHz) < 0.02 * rs && std::fabs(rs / keptRate - 1.0) < 0.02;
+        huntCycles = same ? keptCycles : 0;
+        keptCycles = 0;
         mode = kHunt;
         logf("carrier found: %.3f Msym/s, %+.0f kHz from the centre", rs / 1e6, r.centerHz / 1e3);
     }
@@ -383,18 +472,30 @@ struct DvbsReceiver::Impl {
         huntBuf.insert(huntBuf.end(), sym.begin(), sym.end());
         if (huntBuf.size() > 2 * kHuntKeep) huntBuf.erase(huntBuf.begin(), huntBuf.end() - (std::ptrdiff_t)kHuntKeep);
         huntSinceTry += sym.size();
-        // a signal that is not there is looked for less often: the interval doubles after each complete round of rates, up to four times as long
-        const uint64_t interval = std::max<uint64_t>(65536, (uint64_t)(0.15 * rsUsed)) * (uint64_t)std::min(4, 1 << std::min(huntCycles, 2));
+        const uint64_t interval = huntInterval();
         if (huntBuf.size() >= kHuntWindow && huntSinceTry >= interval && symTotal > 20000) {
             huntSinceTry = 0;
-            if (tryDvbs2() || tryDvbs()) { huntFails = 0; return; }
+            // DVB-S first: its test is a fourth-power estimate and one sync search, while the DVB-S2 header hunt (fitHeader over every
+            // gain and code, the VL-SNR hunt) is the dearest part of acquiring; a DVB-S signal now skips it (CPU over the first 1.5 s of a
+            // 1 Msym/s DVB-S signal 0.29 -> 0.13 s per second, DVB-S2 lock and thresholds unchanged; 3.9 sensitivity pass D)
+            if (tryDvbs() || tryDvbs2()) { huntFails = 0; return; }
             // The spectrum gives the symbol rate to a percent or two at best, and in noise the timing loop cannot pull in much more than that:
             // after a few attempts the rate is moved a little and the front end starts again
             if (++huntFails >= 3 && huntBuf.size() >= 150000) {
                 static const double d[6] = {0.012, -0.012, 0.024, -0.024, 0.036, -0.036};
                 const double f = ditherIdx < 6 ? d[ditherIdx] : 0.0;
                 ditherIdx = (ditherIdx + 1) % 7;
-                if (ditherIdx == 0) huntCycles++;
+                if (ditherIdx == 0) {
+                    huntCycles++;
+                    // a whole round of rates found nothing: the carrier may have been measured on something else (the noise before the
+                    // signal came up, a neighbour): the spectrum is measured again, and the hunt goes on where it is
+                    keptCycles = huntCycles; keptCenterHz = front.config().centerHz; keptRate = rsNominal;
+                    mode = kSearch;
+                    spec.reset(); nspec.reset(); raw.clear();
+                    huntBuf.clear(); huntSinceTry = 0;
+                    logf("no frames at %.3f Msym/s: measuring the spectrum again", rsNominal / 1e6);
+                    return;
+                }
                 huntFails = 0;
                 DvbsFront::Config c = front.config();
                 c.symbolRate = rsNominal * (1.0 + f);
@@ -419,6 +520,7 @@ struct DvbsReceiver::Impl {
         s2.setSuperframePilots(sfPilotsNow());
         s2.setBlocking(blocking.load());
         s2.setDataFieldCallback([this](const uint8_t* bb, size_t n, int mod, int rate, bool sh, int tsGs) {
+            { std::function<void(const uint8_t*, size_t, int, int, bool, int)> dfc; { std::lock_guard<std::mutex> lk(cbMu); dfc = dataFieldCb; } if (dfc) dfc(bb, n, mod, rate, sh, tsGs); }
             std::vector<dvbsip::IpPacket> pk;
             const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
             if (n < 10) return;
@@ -802,6 +904,9 @@ void DvbsReceiver::configure(double inputRateHz) {
     p_->fs = inputRateHz;
     p_->spec.configure(inputRateHz, 4096);
     p_->spec.setStride((size_t)std::max(4096.0, inputRateHz * 0.004));
+    const int nn = narrowFftSize(inputRateHz);
+    p_->nspec.configure(inputRateHz, nn);
+    p_->nspec.setStride(2 * (size_t)nn);   // every other block: half the CPU of the search, 48 segments in about 1.3 s at 10 Msps and 1.6 s at 2 Msps
     p_->resetState();
 }
 bool DvbsReceiver::ready() const { return p_->fs >= dvbsTuning().minSampleRate - 1; }
@@ -814,6 +919,7 @@ void DvbsReceiver::resetNow() {
     I.resetReq = false; I.restartReq = false;
 }
 void DvbsReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->cbMu); p_->logCb = std::move(cb); }
+void DvbsReceiver::setDataFieldCallback(std::function<void(const uint8_t*, size_t, int, int, bool, int)> cb) { std::lock_guard<std::mutex> lk(p_->cbMu); p_->dataFieldCb = std::move(cb); }
 void DvbsReceiver::setPacketCallback(std::function<void(const uint8_t*, size_t, double)> cb) { std::lock_guard<std::mutex> lk(p_->cbMu); p_->pktCb = std::move(cb); }
 void DvbsReceiver::setSymbolDump(const std::string& path) {
     std::lock_guard<std::mutex> lk(p_->dumpMu);
@@ -875,6 +981,8 @@ void DvbsReceiver::flush() {
     I.publish();
 }
 
+uint64_t DvbsReceiver::idleInputSamples() const { return p_->huntSkipSamples; }
+
 bool DvbsReceiver::telemetry(DvbsTelemetry& out, uint64_t lastSeq) {
     std::lock_guard<std::mutex> lk(p_->tmu);
     if (p_->seq <= lastSeq) return false;
@@ -902,12 +1010,26 @@ void DvbsReceiver::feed(const cf32* x, size_t n) {
     I.inputCount += n;
     I.spec.push(x, n);
     if (I.mode == Impl::kSearch) {
+        I.nspec.push(x, n);
         I.raw.insert(I.raw.end(), x, x + n);
-        if (I.raw.size() > (size_t)kCyclicN) I.raw.erase(I.raw.begin(), I.raw.end() - kCyclicN);
+        if (I.raw.size() > kRawKeep + kRawKeep / 4) I.raw.erase(I.raw.begin(), I.raw.end() - (std::ptrdiff_t)kRawKeep);   // trimmed now and then, not at every block
         I.doSearch();
         if (I.mode != Impl::kSearch) std::vector<cf32>().swap(I.raw);
     }
-    else I.runFront(x, n);
+    else {
+        size_t off = 0;
+        if (const uint64_t idle = I.huntIdleSamples()) {   // hunting after a failed attempt: what the next one will not look at goes by
+            const size_t k = (size_t)std::min<uint64_t>(idle, n);
+            off = k;
+            I.huntSinceTry += (uint64_t)((double)k * I.rsUsed / I.fs);
+            I.huntSkipSamples += k;
+            I.huntSkipped = true;
+        }
+        if (off < n) {
+            if (I.huntSkipped) { I.huntSkipped = false; I.huntBuf.clear(); }
+            I.runFront(x + off, n - off);
+        }
+    }
     I.cidFeed(x, n);
     if (I.inputCount >= I.reportAt) {
         I.reportAt = I.inputCount + (uint64_t)(0.25 * I.fs);

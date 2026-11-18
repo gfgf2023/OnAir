@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Shared parts of the native radio drivers (source_rtlsdr.cpp, source_airspy.cpp, source_sdrplay.cpp, ...): loading a radio's own library at run time and the
 // base class every native source builds on.
 #pragma once
@@ -188,6 +191,10 @@ inline std::vector<std::string> libNames(const char* stem, std::initializer_list
             if (cut != std::string::npos) { dir.resize(cut + 1); for (const char* w : winNames) v.push_back(dir + w); }
         }
     }
+    // The OnAir codecs folders next (user data folder, extra folder, ONAIR_CODEC_DIR, codecs next to the program): a radio's DLL the user adds (fobos_sdr.dll,
+    // rtlsdr.dll ...) can go there too and survives an update (#472). The copies in the program's folder above still win.
+    for (const auto& cd : dect2::codec::systemCodecDirs())
+        for (const char* w : winNames) v.push_back(dect2::codec::joinPath(cd.path, w));
     if (const char* pf = getenv("ProgramFiles")) {
         for (const char* sub : {"\\PothosSDR\\bin\\", "\\UHD\\bin\\", "\\LimeSuite\\bin\\"}) {
             const std::string dir = std::string(pf) + sub;
@@ -210,6 +217,7 @@ inline std::vector<std::string> libNames(const char* stem, std::initializer_list
             if (sl != std::string::npos) dirs.push_back(d.substr(0, sl) + "/../Frameworks/");
         }
     }
+    for (const auto& cd : dect2::codec::systemCodecDirs()) dirs.push_back(dect2::codec::joinPath(cd.path, ""));   // the OnAir codecs folders (#472)
     for (const char* dir : {"", "/opt/homebrew/lib/", "/usr/local/lib/", "/opt/local/lib/"}) dirs.push_back(dir);
     for (const auto& dir : dirs) {
         for (const char* ver : soVersions) v.push_back(dir + std::string("lib") + stem + ver + ".dylib");
@@ -218,6 +226,13 @@ inline std::vector<std::string> libNames(const char* stem, std::initializer_list
     for (auto& p : versionedLibs(stem, dirs)) if (std::find(v.begin(), v.end(), p) == v.end()) v.push_back(p);
 #else
     (void)winNames;
+    // the OnAir codecs folders first (a library the user put there, #472), then the system's own places
+    std::vector<std::string> userDirs;
+    for (const auto& cd : dect2::codec::systemCodecDirs()) userDirs.push_back(dect2::codec::joinPath(cd.path, ""));
+    for (const auto& dir : userDirs) {
+        for (const char* ver : soVersions) v.push_back(dir + "lib" + stem + ".so" + ver);
+        v.push_back(dir + "lib" + stem + ".so");
+    }
     for (const char* ver : soVersions) v.push_back(std::string("lib") + stem + ".so" + ver);
     v.push_back(std::string("lib") + stem + ".so");
     // the multiarch folder of this build (Debian/Ubuntu); other distributions use lib64
@@ -235,6 +250,7 @@ inline std::vector<std::string> libNames(const char* stem, std::initializer_list
 #elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
     dirs.push_back("/usr/lib/powerpc64le-linux-gnu/");
 #endif
+    for (const auto& d : userDirs) dirs.insert(dirs.begin(), d);
     for (auto& p : versionedLibs(stem, dirs)) v.push_back(p);
 #endif
     return v;
@@ -396,6 +412,15 @@ inline bool openErrorLooksTransient(const std::string& e) {
                           "cannot open", "cannot connect", "timed out", "timeout"})
         if (l.find(k) != std::string::npos) return true;
     return false;
+}
+
+// Samples that arrive over a network from a server (SDR++ float packets or a garbled scale field, SpyServer float format): a NaN or infinity
+// would stay in every filter and AGC of the receiver until Stop. They are replaced by silence. Returns how many were replaced.
+inline size_t scrubNonFinite(cf32* p, size_t n) {
+    size_t bad = 0;
+    for (size_t i = 0; i < n; i++)
+        if (!std::isfinite(p[i].real()) || !std::isfinite(p[i].imag())) { p[i] = cf32(0.f, 0.f); bad++; }
+    return bad;
 }
 
 class NativeSource : public IqSource {
@@ -610,6 +635,7 @@ inline std::string trimmed(const char* s, size_t max) {
 // one entry per radio: list the connected ones, and open one (the arguments come from the list)
 void listRtl(std::vector<DeviceInfo>& out);
 void listAirspy(std::vector<DeviceInfo>& out);
+void listHydra(std::vector<DeviceInfo>& out);    // source_hydrasdr.cpp: HydraSDR RFOne
 void listBlade(std::vector<DeviceInfo>& out);
 void listLime(std::vector<DeviceInfo>& out);
 void listPluto(std::vector<DeviceInfo>& out);
@@ -617,8 +643,10 @@ void listUsrp(std::vector<DeviceInfo>& out);
 void listSdrplay(std::vector<DeviceInfo>& out);
 bool limeLibraryState(std::string* path, int* radios);   // LimeSuite: loaded or not; the radios its last scan found (-1 = not scanned)
 bool sdrplayApiInstalled();   // the SDRplay API library (sdrplay_api.dll / libsdrplay_api) was found
+bool spectranApiInstalled();  // Aaronia's RTSA API library (AaroniaRTSAAPI, from the RTSA-Suite PRO) was found (source_spectran.cpp)
 std::unique_ptr<IqSource> makeRtl(const DeviceInfo& d);
 std::unique_ptr<IqSource> makeAirspy(const DeviceInfo& d);
+std::unique_ptr<IqSource> makeHydra(const DeviceInfo& d);
 std::unique_ptr<IqSource> makeBlade(const DeviceInfo& d);
 std::unique_ptr<IqSource> makeLime(const DeviceInfo& d);
 std::unique_ptr<IqSource> makePluto(const DeviceInfo& d);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Telemetry of the ATSC receiver (plain data, shared with RxTelemetry).
 #pragma once
 #include <cstdint>
@@ -21,9 +24,16 @@ struct AtscTelemetry {
     double syncQuality = 0;       // 0..1 correlation of the segment sync
     uint64_t fields = 0, segments = 0, rsClean = 0, rsCorrected = 0, rsFailed = 0, fieldSyncMisses = 0, lockLosses = 0;
     double segErrorRate = 0;      // recent share of uncorrectable segments (0..1)
+    double decodeLoad = 0;        // the field decoder's time over the signal's time, averaged (1 = just keeping up; a radio drops fields above)
+    uint64_t fieldsDropped = 0;   // fields the decoder could not take in time (the picture has a gap there)
+    uint64_t packetsDropped = 0;  // decoded packets the consumer (player, recorder) did not take within about ten seconds
     std::vector<float> eqTaps;    // equaliser impulse response (feed-forward), cursor at `eqCursor`
     int eqCursor = 0;
     std::vector<float> levels;    // a sample of equalised data symbols (nominal -7..+7), for the eye/histogram view
+    // ATSC-M/H in the stream (presence and share of the channel only: the M/H services are not decoded)
+    bool mhPresent = false;
+    int mhPid = -1;
+    double mhSlotShare = 0;
     uint64_t seq = 0;
 };
 

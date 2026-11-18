@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Z-Wave frame layer (ITU-T G.9959 MAC, clean-room from the public specification): the regional channel tables, the MPDU layout of R1 / R2 / R3,
 // the checksum (R1, R2: XOR) and CRC-16 (R3), and the names of command classes and commands. Receive only: S0 and S2 payloads are named as
 // encrypted and never decoded.
@@ -42,6 +45,32 @@ struct Frame {
     std::vector<uint8_t> payload;
     bool checkOk = false;
 };
+
+// S0 encapsulation with a network key the user imported. S0 uses a nonce the receiver sent earlier in a NONCE_REPORT (0x98 0x80), so this keeps the
+// recent reports per node pair. Returns true when a 0x98 0x81 frame was authenticated and decrypted (plain: the payload after the sequence byte).
+class S0Session {
+public:
+    void observe(const Frame& f);          // every frame: remembers nonce reports
+    bool decrypt(const Frame& f, const uint8_t key[16], std::vector<uint8_t>& plain) const;
+private:
+    struct Rep { int src = -1, dst = -1; uint8_t nonce[8] = {}; };
+    std::vector<Rep> rep_;
+};
+
+// The route header at the start of a routed frame's payload (clean-room from the public descriptions of the routed frame, checked by loopback
+// only): octet 0 low nibble = type (0 routed frame, 1 routed ack, 2 routed error), octet 1 = repeater count (high nibble, at most 4) and the
+// index of the hop this copy is on (low nibble: 0 the source is sending, count: the last repeater is sending), then the repeater node numbers
+// in order from the source to the destination.
+struct Route {
+    bool valid = false;
+    int type = 0, count = 0, hop = 0;
+    std::vector<int> repeaters;
+    size_t size = 0;           // octets the header takes
+};
+bool parseRoute(const std::vector<uint8_t>& payload, Route& r);
+std::vector<uint8_t> buildRoute(int type, int hop, const std::vector<int>& repeaters);
+// The nodes a routed frame walks through: source, repeaters, destination (empty when the frame is not routed or its route header is bad)
+std::vector<int> routePath(const Frame& f, const Route& r);
 
 // MPDU octets with the check octets at the end (n = Length): fills f; false when too short or the Length disagrees. f.checkOk tells the check.
 bool parse(const uint8_t* d, size_t n, int rate, Frame& f);

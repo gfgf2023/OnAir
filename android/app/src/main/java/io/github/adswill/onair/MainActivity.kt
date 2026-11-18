@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair
 
 import android.content.Intent
@@ -45,6 +48,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) takeLink(intent)
 
         if (savedInstanceState == null) usbAttached(intent)
+        if (savedInstanceState == null) AppGraph.updates.checkOnStart()   // in-app update check (Settings > Updates turns it off)
         setContent {
             val settings by vm.settings.collectAsStateWithLifecycle()
             val ui by vm.ui.collectAsStateWithLifecycle()

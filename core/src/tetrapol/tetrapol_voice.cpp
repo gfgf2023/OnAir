@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // TETRAPOL voice gate, plug-in frame and per-call WAV (tetrapol_voice.h).
 #include "dect2/tetrapol/tetrapol_voice.h"
 #include <cstring>
@@ -52,6 +55,10 @@ Verdict CallGate::onVoice(double now, bool& started) {
         if (pendingKey_ >= 0 && now - pendingAt_ <= kPendingSec)
             verdict_ = keyRefClear(pendingKey_) ? Verdict::Clear : Verdict::Encrypted;
         pendingKey_ = -2;
+    }
+    if (chanKey_ >= 0) {   // encrypted wins; clear only fills in an unknown state
+        if (!keyRefClear(chanKey_)) verdict_ = Verdict::Encrypted;
+        else if (verdict_ == Verdict::Unknown) verdict_ = Verdict::Clear;
     }
     last_ = now;
     return verdict_;

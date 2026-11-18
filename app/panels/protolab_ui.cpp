@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // View > Protocol lab: a workbench for an unknown digital signal. Load a recording (or paste packets), pick the signal inside it, and the
 // lab tries demodulators, finds the baud rate, slices bits, tries the line codings, looks for a preamble / sync word and a CRC, and shows
 // which bytes are constant, counters, checksums or data. The result exports as a protocol description. The stages are in
 // core/src/protolab; this file is the window only. Nothing here decrypts anything.
 #include "dect2/common/thread_name.h"
+#include "dect2/common/diag.h"
 #include "../app.h"
 #include "dect2/common/u8file.h"
 #include "dect2/protolab/protolab.h"
@@ -90,7 +94,7 @@ void startWork(std::function<void()> job) {
     S.run = 1;
     S.err.clear();
     S.worker = dect2::namedThread("onair-protolab", [job] {
-        try { job(); } catch (const std::exception& e) { std::lock_guard<std::mutex> lk(S.mu); S.err = e.what(); }
+        try { job(); } catch (const std::exception& e) { DIAG(912131, "A Protocol lab job stopped with an error (%s), so its result is missing.", e.what()); std::lock_guard<std::mutex> lk(S.mu); S.err = e.what(); }
         S.run = 2;
     });
 }

@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include <functional>
+#include "dect2/common/diag.h"
 #include "dect2/common/thread_name.h"
 #include "dect2/dsp/sample_convert.h"
 #include "dect2/engine/mode_synth.h"
@@ -6,8 +10,13 @@
 #include "dect2/source/hamlib_rig.h"
 #include "dect2/source/source.h"
 #include "native_common.h"
+#include "fd_path.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "dect2/net/netradio.h"
 #include "dect2/source/synth_group.h"
+#include "dect2/source/synth_media.h"
 #include "dect2/dsp/gen_util.h"
 #include "dect2/tv/demo_ts.h"
 #include "dect2/dvbt/dvbt_gen.h"
@@ -94,7 +103,8 @@ bool hackrfAcquire(std::string& err) {
     if (g_hackrfRefs == 0) {
         int r = hackrf_init();
         if (r != HACKRF_SUCCESS) {
-            err = std::string("hackrf_init: ") + hackrf_error_name((hackrf_error)r);
+             DIAG_ERROR(360672, "Starting libhackrf failed (%s), so no HackRF can be opened.", hackrf_error_name((hackrf_error)r));
+             err = std::string("hackrf_init: ") + hackrf_error_name((hackrf_error)r);
             return false;
         }
     }
@@ -117,7 +127,8 @@ public:
         ring_ = &ring;
         int r = serial_.empty() ? hackrf_open(&dev_) : hackrf_open_by_serial(serial_.c_str(), &dev_);
         if (r != HACKRF_SUCCESS) {
-            err = std::string("open: ") + hackrf_error_name((hackrf_error)r);
+             DIAG_ERROR(477403, "Opening the HackRF through libhackrf failed (%s), so the radio stays closed.", hackrf_error_name((hackrf_error)r));
+             err = std::string("open: ") + hackrf_error_name((hackrf_error)r);
             hackrfRelease();
             return false;
         }
@@ -152,7 +163,8 @@ public:
         } else
         r = hackrf_start_rx(dev_, &HackrfSource::rxCb, this);
         if (r != HACKRF_SUCCESS) {
-            err = std::string("start_rx: ") + hackrf_error_name((hackrf_error)r);
+             DIAG_ERROR(745331, "Starting the HackRF receive stream through libhackrf failed (%s), so the radio is closed again.", hackrf_error_name((hackrf_error)r));
+             err = std::string("start_rx: ") + hackrf_error_name((hackrf_error)r);
             if (bias_) hackrf_set_antenna_enable(dev_, 0);   // apply() may have switched the antenna power on
             bias_ = false;
             hackrf_close(dev_);
@@ -179,10 +191,12 @@ public:
     bool realtimeHardware() const override { return true; }
 
 private:
+    double lastLoHz_ = -1;
     bool apply(const TuneSettings& s, std::string& err, bool live = false) {
         auto chk = [&](int r, const char* what) {
             if (r == HACKRF_SUCCESS) return true;
-            err = std::string(what) + ": " + hackrf_error_name((hackrf_error)r);
+             DIAG_ERROR(945252, "The HackRF refused a setting for %s through libhackrf (%s), so the setting is not applied.", what, hackrf_error_name((hackrf_error)r));
+             err = std::string(what) + ": " + hackrf_error_name((hackrf_error)r);
             return false;
         };
         if (!live || s.sampleRate != rate_) {
@@ -192,7 +206,9 @@ private:
         uint32_t bw = hackrfFilterFor(s);   // as hackrf_usb.cpp
         if (!chk(hackrf_set_baseband_filter_bandwidth(dev_, bw), "set_baseband_filter")) return false;
         // the HackRF's library has no frequency correction: the clock error is taken out of the frequency asked for
-        if (!sweep_ && !chk(hackrf_set_freq(dev_, (uint64_t)std::max(ppmCorrectedHz(s.centerHz, radioPpm(s)), 0.0)), "set_freq")) return false;
+        // a gain-only retune leaves the PLLs alone: re-setting the same frequency makes the HackRF's LO relock and breaks the decoder's lock on every gain step
+        const double loHz = std::max(ppmCorrectedHz(s.centerHz, radioPpm(s)), 0.0);
+        if (!sweep_ && (!live || loHz != lastLoHz_)) { if (!chk(hackrf_set_freq(dev_, (uint64_t)loHz), "set_freq")) return false; lastLoHz_ = loHz; }
         if (!chk(hackrf_set_lna_gain(dev_, (uint32_t)s.lnaDb), "set_lna_gain")) return false;
         if (!chk(hackrf_set_vga_gain(dev_, (uint32_t)s.vgaDb), "set_vga_gain")) return false;
         if (!chk(hackrf_set_amp_enable(dev_, s.ampOn ? 1 : 0), "set_amp_enable")) return false;
@@ -348,10 +364,15 @@ protected:
             f_ = n > 0 ? _wfopen(w.c_str(), L"rb") : nullptr;
         }
 #else
-        f_ = fopen(path_.c_str(), "rb");
+        const int fdNum = parseFdPath(path_);
+        if (fdNum >= 0) {   // a descriptor the host already opened: use a copy of it, never reopen the path (permission denied on Android, #546)
+            const int d = dup(fdNum);
+            if (d >= 0) { f_ = fdopen(d, "rb"); if (!f_) close(d); else fseek(f_, 0, SEEK_SET); }
+        }
+        if (!f_) f_ = fopen(path_.c_str(), "rb");
 #endif
-        if (!f_) { err = "cannot open " + path_ + ": " + strerror(errno); return false; }
-        if (off_ && fseek(f_, (long)off_, SEEK_SET) != 0) { err = "cannot seek in " + path_; return false; }
+        if (!f_) { DIAG_ERROR(759483, "The IQ file %s could not be opened (%s), so the file source stays closed.", path_.c_str(), strerror(errno)); err = "cannot open " + path_ + ": " + strerror(errno); return false; }
+        if (off_ && fseek(f_, (long)off_, SEEK_SET) != 0) { DIAG_ERROR(859954, "The IQ file %s could not be positioned at its start offset, so the file source stays closed.", path_.c_str()); err = "cannot seek in " + path_; return false; }
         pos_ = off_;
         return true;
     }
@@ -428,7 +449,7 @@ public:
 
 protected:
     double pace() override { std::lock_guard<std::mutex> lk(mu_); return cfg_.pace > 0.01 ? cfg_.pace : 1.0; }
-    double effectiveRate(const TuneSettings& s) override { if (s.synth.mode >= 4) return s.sampleRate > 0 ? s.sampleRate : 2e6; return s.synth.atsc ? (s.sampleRate > 0 && s.sampleRate < 12e6 ? s.sampleRate : 8e6) : nativeRateHz(s.bandwidthMhz); }
+    double effectiveRate(const TuneSettings& s) override { if (s.synth.mode >= 4) return s.sampleRate > 0 ? s.sampleRate : 2e6; return s.synth.atsc ? (s.sampleRate > 0 && s.sampleRate < 12e6 ? s.sampleRate : 8e6) : nativeRateHz(s.signalBwMhz()); }   // (the test signal of DVB-T2 / DVB-T is made at the channel's native rate; a custom capture width is the radio's)
     bool prepare(const TuneSettings& s, std::string&) override {
         cfg_ = s.synth;
         gainDb_ = s.lnaDb + s.vgaDb + (s.ampOn ? 14 : 0);
@@ -438,6 +459,7 @@ protected:
 
     size_t produceMode(cf32* dst, size_t maxN) {   // the test signal of a mode added after FM
         if (regen_ || !ms_ || msMode_ != cfg_.mode) {
+            SynthMediaScope media(cfg_);   // Synthetic content: the picture and sound of the user's files (synth_media.h), built-in when none
             ms_ = makeModeSynth(cfg_.mode, cfg_, rate_);
             msMode_ = cfg_.mode;
             regen_ = false;
@@ -460,7 +482,8 @@ protected:
                 atsc::ChannelConfig cc;
                 cc.snrDb = cfg_.snrDb; cc.cfoHz = cfg_.cfoHz; cc.sroPpm = cfg_.sroPpm;
                 if (cfg_.echoDb > 0) cc.echoes.push_back({cfg_.echoDelay / rate_ * 1e6, -cfg_.echoDb, 0});
-                agen_ = std::make_unique<atsc::Generator>(cfg_.demoTv ? demoTsSource(19.39e6) : dvbt::testTsSource(), cc, rate_);
+                SynthMediaScope media(cfg_);
+                agen_ = std::make_unique<atsc::Generator>(cfg_.demoTv || SynthMediaScope::current() ? demoTsSource(19.39e6) : dvbt::testTsSource(), cc, rate_);
                 regen_ = false;
             }
             atmp_.clear();
@@ -471,11 +494,22 @@ protected:
             return maxN;
         }
         if (regen_) {
+            SynthMediaScope media(cfg_);
+            const bool withMedia = SynthMediaScope::current() != nullptr;
             if (cfg_.dvbt) {
                 dvbt::Params tp;
                 tp.mode = cfg_.dvbtMode; tp.guard = cfg_.dvbtGuard; tp.mod = cfg_.dvbtMod; tp.crHp = tp.crLp = cfg_.dvbtRate;
-                tgen_ = std::make_unique<dvbt::Generator>(tp, cfg_.demoTv ? demoTsSource(dvbt::netBitrate(tp, 64e6 / 7)) : dvbt::testTsSource());
+                tgen_ = std::make_unique<dvbt::Generator>(tp, cfg_.demoTv || withMedia ? demoTsSource(dvbt::netBitrate(tp, 64e6 / 7)) : dvbt::testTsSource());
                 gen_.reset();
+            } else if (withMedia) {   // DVB-T2: PLP 0 carries the transport stream made from the user's files, as the transmitter's does
+                TxParams tp = cfg_.tx;
+                tp.payload = true;
+                auto ts = std::make_shared<std::function<void(uint8_t*)>>();   // the padding needs the bit rate, which the generator knows once built
+                tp.tsSource = [ts](uint8_t* pk) { (*ts)(pk); };
+                gen_ = std::make_unique<T2Generator>(tp);
+                const double br = gen_->tsBitrate(rate_);
+                *ts = demoTsSource(br > 1e6 ? br : 20e6);
+                tgen_.reset();
             } else { gen_ = std::make_unique<T2Generator>(cfg_.tx); tgen_.reset(); }
             sbuf_.assign(4, cf32(0, 0));
             pos_ = 1;
@@ -705,6 +739,7 @@ static bool isAorIqName(const std::string& path) {
 FileFormat guessFormat(const std::string& path) {
     auto ends = [&](const char* e) { size_t n = strlen(e); return path.size() >= n && path.compare(path.size() - n, n, e) == 0; };
     if (ends(".cu8") || ends(".u8")) return FileFormat::CU8;
+    if (ends(".cs16") || ends(".ci16") || ends(".s16")) return FileFormat::CI16;
     if (ends(".cf32") || ends(".fc32") || ends(".cfile")) return FileFormat::CF32;
     if (isAorIqName(path)) return FileFormat::CF32;   // AOR's ariq_rcv writes float32 I/Q
     return FileFormat::CS8;

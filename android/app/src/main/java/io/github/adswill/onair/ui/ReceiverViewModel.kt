@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui
 
 import android.app.Application
@@ -142,14 +145,31 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
     // receive session
     fun toggle() = repo.toggle()
     fun selectMode(idx: Int) = repo.selectMode(idx)
+    /** A mode picked in the list: selected, and receiving starts when [UiPrefs.autoStart] is on (one tap from the list to a running decoder). */
+    fun pickMode(idx: Int) { repo.selectMode(idx); if (ui.value.autoStart) repo.startIfIdle() }
+    fun startIfIdle() = repo.startIfIdle()
+
+    // IQ recording (Record IQ in the receiver menu)
+    val rec: StateFlow<io.github.adswill.onair.data.IqRecording> = repo.rec
+    fun startRecording() = repo.startRecording()
+    fun stopRecording() = repo.stopRecording()
+    fun recordingCapMb(): Int = repo.recordingCapMb()
+    fun recordingAutoSave(): Boolean = repo.recordingAutoSave()
+    fun setRecordingAutoSave(on: Boolean) = repo.setRecordingAutoSave(on)
+    fun setRecordingCapMb(mb: Int) = repo.setRecordingCapMb(mb)
+    fun lastRecording(): java.io.File? = repo.lastRecording()
+    fun clearRecordingNote() = repo.clearRecordingNote()
+    fun setAutoStart(on: Boolean) { uiStore.update { it.copy(autoStart = on) } }
+    fun markBatteryHintShown() { uiStore.update { it.copy(batteryHintShown = true) } }
     fun tune(mhz: Double) = repo.tune(mhz)
     fun clearError() = repo.clearError()
     fun clearResults() = repo.clearResults()
     fun setUiVisible(v: Boolean) = repo.setUiVisible(v)
 
     /** Mode and frequency together (deep links, bookmarks): the frequency is stored for the mode first, so the switch lands on it. */
-    fun tuneTo(modeIdx: Int?, mhz: Double?) {
+    fun tuneTo(savedIdx: Int?, mhz: Double?) {
         val st = state.value
+        val modeIdx = savedIdx?.let { Modes.live(it) }?.takeIf { it >= 0 } ?: savedIdx   // a bookmark of a removed type row opens its receiver
         if (modeIdx == null || modeIdx == st.modeIndex || modeIdx !in Modes.all.indices) { if (mhz != null && mhz > 0) tune(mhz); return }
         if (mhz != null && mhz > 0) repo.updateSettings { it.copy(freqMhz = it.freqMhz + (modeIdx to mhz)) }
         repo.selectMode(modeIdx)
@@ -169,6 +189,12 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Use a saved network radio: its kind becomes the source and its address the endpoint. */
     fun useNetworkRadio(r: NetworkRadio) {
+        if (r.kind == SourceKind.NETWORK) {   // a type of the core's network list (SDR++ server): the list holds it, the source is "network"
+            val t = io.github.adswill.onair.netradio.NetRadioType.ofKey(r.netKey) ?: return
+            repo.radios.addNetworkRadio(io.github.adswill.onair.netradio.AddNetworkRadioForm(t, r.host, r.port.toString(), label = r.name))
+            if (settings.value.source != SourceKind.NETWORK) repo.chooseSource(SourceKind.NETWORK) else repo.refreshCaps()
+            return
+        }
         repo.setEndpoint(r.kind, r.host, r.port)
         if (settings.value.source != r.kind) repo.chooseSource(r.kind) else repo.refreshCaps()
     }
@@ -177,6 +203,10 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
 
     // sound, general receiver
     fun setSound(volume: Float, muted: Boolean) = repo.setSound(volume, muted)
+    val codecs get() = repo.codecs
+    fun importCodec(uri: Uri) = repo.importCodec(uri)
+    fun removeCodec() = repo.removeCodec()
+    fun cdrListen(serviceId: Int) = repo.cdrListen(serviceId)
     fun setGeneral(demod: Demod, squelch: Boolean, squelchAuto: Boolean, squelchDb: Float) = repo.setGeneral(demod, squelch, squelchAuto, squelchDb)
 
     // display

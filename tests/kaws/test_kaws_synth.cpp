@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // KAWS through the engine on the synthetic source (setStandard(135)): the built-in test signal is the real transmitter's output (a chat message and a short beacon in the UTC slots of the computer clock) with a
 // carrier offset of +30 Hz (after the 20 kHz tuning offset) and a little noise; the receiver must lock, decode and read the carrier offset back. Also: the transmit-mode and tuning tables name it,
 // and a second start with the signal option set (modeOpt[0]) still decodes.
@@ -59,7 +62,7 @@ static bool run(int opt, double maxSec) {
 int main() {
     const ModeTuning mt = kawsTuning();
     CHECK(mt.stdMode == 135 && modeTuningById("kaws") && modeTuningById("kaws")->stdMode == 135, "tuning table");
-    run(0, 200);
-    run(5, 120);   // modeOpt[0] = 5: profile 4 (15 s slots)
+    run(0, 450);   // returns as soon as the first message is decoded (about 60 s on a Mac); the Windows CI runner is several times slower
+    run(5, 300);   // modeOpt[0] = 5: profile 4 (15 s slots)
     return testSummary("kaws synth");
 }

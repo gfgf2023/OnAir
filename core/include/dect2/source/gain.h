@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADC level assessment, automatic gain control and a gain sweep ("gain helper") for the HackRF's three gain stages.
 #pragma once
 #include "dect2/dsp/spectrum.h"
@@ -25,6 +28,11 @@ enum class AdcStatus { NoSignal, Low, Good, High, Overload };
 void setAdcBits(int bits);
 int adcBits();
 double adcLowDbfs();
+// A radio whose output level does not follow its gain control (the Airspy HF+ family: the firmware compensates the preamp in its gain
+// chain and treats the attenuator as the gain distribution, so the slider need not move the level). Its dBFS level says nothing about
+// whether more gain helps: classifyAdc() then never reports Low and the level-based "raise the gain" advice is not given.
+void setAdcLevelCompensated(bool on);
+bool adcLevelCompensated();
 AdcStatus classifyAdc(double rmsDbfs, double peak, double clipFraction);
 const char* adcStatusName(AdcStatus s);
 // One-line explanation / advice for the status, e.g. "ADC clipping: reduce the gain".

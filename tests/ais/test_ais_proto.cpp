@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // AIS message layer: known answers from gpsd's test/sample.aivdm and sample.aivdm.chk (real sentences, with the values that the noaadata
 // tools and the Maritec decoder gave), the frame check value of the X.25 FCS, NRZI and stuffing round trips, and !AIVDM sentences rebuilt
 // bit for bit from the decoded payload. (The type 5 ETA hour is 14 as in sample.aivdm.chk, the regression file; the comment in sample.aivdm says 16.)
@@ -178,7 +181,7 @@ int main() {
     {
         AisMsg m;
         const Bits b = fromSentences({"!AIVDM,1,1,,B,:5MlU41GMK6@,0*6C"});    // type 10
-        CHECK(!decodeMessage(b, m) && m.type == 10 && m.mmsi == 366814480, "type 10 is counted, not decoded");
+        CHECK(decodeMessage(b, m) && m.type == 10 && m.mmsi == 366814480 && m.destMmsi == 366832740, "type 10 addressed to a station");
         Bits s = fromSentences({"!AIVDM,1,1,,A,15RTgt0PAso;90TKcjM8h6g208CQ,0*4A"});
         s.resize(150);
         CHECK(!decodeMessage(s, m), "short type 1 refused");

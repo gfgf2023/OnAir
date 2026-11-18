@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Reception Doctor analysis (docs/RECEPTION-DOCTOR.md). One averaged spectrum (Hann, 4096 bins, 50 % overlap) plus time-domain level statistics.
 #include "dect2/doctor/reception_doctor.h"
+#include "dect2/source/gain.h"
 #include "dect2/dsp/fftutil.h"
 #include "dect2/engine/sig_ident.h"
 #include <algorithm>
@@ -123,7 +127,9 @@ Report diagnose(const cf32* x, size_t n, const Context& c) {
 
     // ---- 2. too little signal: the level is near the converter's own noise, or the spectrum has nothing standing out
     if (!clipping && !c.locked) {
-        const bool lowLevel = m.rmsDbfs < -48;
+        // a strong signal in the passband means the low overall level is the user's deliberate gain cut (or a clean quiet band), not a starved converter
+        const bool strongSig = haveSignal && m.strongestOverFloorDb > 20;
+        const bool lowLevel = m.rmsDbfs < -48 && !strongSig && !(c.live && adcLevelCompensated());   // (AirspyHF+: the level is the firmware's, not the gain's)
         if (lowLevel && c.live) {
             Finding f; f.code = Code::WeakSignal; f.severity = SevWarn; f.a = m.rmsDbfs;
             f.text = c.gainMaxDb > 0 && c.gainDb >= c.gainMaxDb - 1

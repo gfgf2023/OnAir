@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wide multi-signal decode: ONE wide capture, several different signals decoded at once and found automatically.
 //
 //   span -> TV: SpanScanner (which 7 / 8 MHz slots hold a signal) -> detectTv on each (DVB-T or DVB-T2) -> MultiTv per standard, one receiver per slot
@@ -35,6 +38,7 @@ enum class WsKind : int {
     Pager, Packet,      // known channels: the WideModes banks
     Am, Nfm,            // analogue voice: the Multi-VFO bank (air band: AM)
     DvbT, DvbT2,        // TV: MultiTv
+    Tetra, Inmarsat,    // span decoders: one receiver takes the whole capture and finds and decodes every carrier of its system itself
     NoDecoder,          // identified, but nothing here decodes it (TETRA, ISDB-T, ATSC ...); identity says what it is
     Count
 };
@@ -104,6 +108,8 @@ struct WsConfig {
 // database knows: carriers on it (within 7 kHz) get this kind when the measurement does not say better.
 struct WsKnown { double absHz = 0; WsKind kind = WsKind::Unknown; };
 
+constexpr int kFirstManualId = 500000;   // addManual() entries have ids from here
+
 class WideSession {
 public:
     WideSession();
@@ -124,11 +130,18 @@ public:
     void setEnabled(int id, bool on);
     void setPinned(int id, bool on);
     void setPriority(int id, int adj);
+    // A signal the user marked on the spectrum (a selection: its centre and width): it becomes an entry like a found carrier, identified by the same
+    // identifier or given a kind by hand (k != Unknown). Returns the entry's id (usable at once with setEnabled / setKind ...). remove(id) takes a
+    // marked entry away; a found carrier is switched off instead (it would be found again).
+    int addManual(double offsetHz, double bandwidthHz, WsKind k = WsKind::Unknown);
+    void remove(int id);
     void setKind(int id, WsKind k);                 // by hand: for an unidentified carrier, or to overrule the identifier (WsKind::Unknown: back to automatic)
     void setListen(int id);                         // the entry whose sound / detail the user follows: never dropped (0: none)
     void setBudget(double frac);                    // 0: no limit
     void setLoadOverride(double v);                 // test hook: the load the guard sees (< 0: measure)
     void setKnownChannels(const std::vector<WsKnown>& k);
+    // Only the signals the user placed (addManual) are decoded and identified; the carriers found by themselves are listed as off (Several modes at once)
+    void setOnlyManual(bool on);
     void useFrequencyDatabase(bool on);             // the built-in frequency database as known channels (default on)
 
     // ---- results

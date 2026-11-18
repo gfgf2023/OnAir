@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The TV recorder in the interface: the programme guide grid (Guide tab), scheduled recordings and the recordings list (Recordings tab), and the
 // timeshift / playback bar of the Player tab. The work is in core/src/tv (epg, recorder, timeshift, playback); this file keeps the state, feeds it from
 // the engine's packet tap and draws it.
 #include "dect2/common/thread_name.h"
+#include "dect2/common/diag.h"
 #include "../app.h"
 #include "i18n/i18n.h"
 #include "dect2/net/remote_api.h"   // jsonEscape
@@ -160,6 +164,7 @@ void savePrefs() {
 void tap(const uint8_t* p, size_t n, const TsSnapshot* snap, double secs) {
     TvRec& s = *&S();
     if (!snap) return;
+    s.col.setTextEncoding(snap->textEncoding);
     s.col.advance(secs);
     for (size_t i = 0; i < n; i++) s.col.feed(p + i * 188);
     s.rec.feed(p, n, *snap, s.muxKey);
@@ -186,7 +191,7 @@ void init(App& a) {
     std::error_code ec;
     std::filesystem::create_directories(u8file(s.dir), ec);
     auto& p = plat::prefs();
-    s.cfg.dir = p.getS("tvrec_dir", plat::dataDir() + "/recordings");
+    s.cfg.dir = p.getS("tvrec_dir", recordingsDir());
     s.cfg.nameTemplate = p.getS("tvrec_tpl", "{title}_{date}_{time}");
     s.padPre = (int)p.getI("tvrec_pre", 60); s.padPost = (int)p.getI("tvrec_post", 300);
     s.cfg.tuners = (int)std::max(1L, p.getI("tvrec_tuners", 1)); s.minFreeGb = (int)p.getI("tvrec_minfree", 2);
@@ -296,8 +301,26 @@ void startFile(App& a, const RecordingEntry& e) {
             a.engine.player().select(-1);
             t.pSel = false;
             a.engine.teletext().reset();
+            if (t.file.t2mi()) { char b[96]; snprintf(b, sizeof b, "playback: T2-MI on PID 0x%X, playing PLP %d of %zu", t.file.t2miPid(), t.file.t2miPlp(), t.file.t2miPlps().size()); a.engine.log(b); }
             t.feeder.start(&t.file, 0, playSink);
-        } else t.msg = "cannot open " + path;
+        } else { DIAG(372551, "The recording %s could not be opened for playback (the file may be missing or not a transport stream).", path.c_str()); t.msg = "cannot open " + path; }
+        t.loading = false;
+    });
+}
+
+// a T2-MI recording: play another PLP (the file source rebuilds its transport stream, one pass over the recording)
+void switchT2miPlp(int plp) {
+    TvRec& s = S();
+    if (s.loading) return;
+    s.loading = true;
+    if (s.loader.joinable()) s.loader.join();
+    s.loader = dect2::namedThread("onair-tvload", [plp] {
+        TvRec& t = S();
+        t.feeder.stop();
+        if (!t.file.selectT2miPlp(plp)) { DIAG(879217, "The T2-MI recording could not rebuild PLP %d, so playback stays on the previous PLP.", plp); t.msg = "cannot rebuild PLP " + std::to_string(plp); }
+        { std::lock_guard<std::mutex> lk(t.pmu); t.pdemux.reset(); t.psnap = TsSnapshot(); t.psnapT = 0; }
+        resetPlayerLocked();
+        t.feeder.start(&t.file, 0, playSink);
         t.loading = false;
     });
 }
@@ -655,6 +678,17 @@ void tvPlaybackBar(App& a) {
         ImGui::TextDisabled("%d:%02d / %d:%02d%s", (int)(pos - t0) / 60, (int)(pos - t0) % 60, (int)dur / 60, (int)dur % 60, s.feeder.atEnd() ? "  (end)" : "");
         ImGui::SameLine();
         if (ImGui::Button(tr("Stop"))) stopPlayback(a, true);
+        if (s.file.t2mi()) {   // a modulator feed (T2-MI): the PLP whose transport stream plays
+            ImGui::SameLine();
+            const int cur = s.file.t2miPlp();
+            char lb[32]; snprintf(lb, sizeof lb, "PLP %d", cur);
+            ImGui::SetNextItemWidth(110 * gUi);
+            if (ImGui::BeginCombo("##t2miplp", lb)) {
+                for (int p : s.file.t2miPlps()) { char b[24]; snprintf(b, sizeof b, "PLP %d", p); if (ImGui::Selectable(b, p == cur) && p != cur) switchT2miPlp(p); }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("T2-MI on PID 0x%X: the transport stream of this PLP plays", s.file.t2miPid());
+        }
         // sidecar subtitles: show the current cue under the controls
     }
     (void)pl;

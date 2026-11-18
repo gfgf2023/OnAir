@@ -3,6 +3,7 @@
 // of other transport streams (SDT other), the event counts of other transport streams (EIT other), local time offsets (TOT) and the conditional access table (CAT).
 // Signalling only: nothing is descrambled. Fed with CRC-checked sections by TsDemux.
 #pragma once
+#include "dvb_text.h"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -25,7 +26,14 @@ struct SiTransponder {
     double orbitDeg = 0;          // satellite: degrees east (negative: west)
     double bandwidthMhz = 0;      // terrestrial
     std::vector<int> services;    // from the service list descriptor of the transport stream loop
+    std::vector<uint8_t> cellList;   // payloads of the cell_list_descriptors (0x6C, EN 300 468 6.2.7), concatenated as sent: the transmitter cells (smart5/cell_tx.h)
 };
+
+// Which satellite the NIT says this is: the orbital position most of its satellite transponders give. Compared with the carriers found (frequency MHz of each transponder as it
+// is at L-band plus the LNB, so give the Ku frequencies): the share of the found carriers the NIT lists says how sure it is, and a poor match with a good number of carriers says the
+// dish looks at another satellite than the NIT's, or the LNB is off.
+struct SiOrbitGuess { bool valid = false; double orbitDeg = 0; int transponders = 0; int matched = 0, carriers = 0; };
+SiOrbitGuess siGuessOrbit(const struct SiSnapshot& s, const std::vector<double>& foundMhz, double tolMhz = 5.0);
 
 struct SiNetwork {
     int id = 0;
@@ -72,6 +80,9 @@ public:
     void section(int pid, const uint8_t* s, int len);
     SiSnapshot snapshot() const;
     void reset() { *this = SiCollector(); }
+    void setTextEncoding(dvbsi::TextEncoding encoding) { textEncoding_ = encoding; }
+    dvbsi::TextContext textContext() const { return {textEncoding_, textCountry_}; }
+    void resetTextCountry() { textCountry_.clear(); }
 private:
     void nit(const uint8_t* s, int len);
     void bat(const uint8_t* s, int len);
@@ -87,6 +98,8 @@ private:
     int64_t totUtc_ = 0;
     std::map<int, SiCaSystem> ca_;
     uint64_t sections_ = 0;
+    dvbsi::TextEncoding textEncoding_ = dvbsi::TextEncoding::Dvb;
+    std::string textCountry_;
 };
 
 } // namespace dect2

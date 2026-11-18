@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // POCSAG and FLEX at the bit level: the BCH(31,21) code word, the message parsers and the encoders (the test signal and the tests use the encoders).
 // POCSAG: ITU-R M.584-2. FLEX has no free specification; the layout here follows the public descriptions of the protocol.
 // Bit order: a "word" is 32 bits with the first transmitted bit in bit 31: 21 data bits, 10 BCH check bits, one even parity bit.
@@ -69,6 +72,7 @@ private:
     uint32_t ric_ = 0;
     int fn_ = 0, fixedBits_ = 0;
     std::vector<uint8_t> bits_;
+    std::vector<uint8_t> bad_;                     // parallel to bits_: 1 = the bit was lost with a code word (filled with 0)
 };
 
 // ---- FLEX

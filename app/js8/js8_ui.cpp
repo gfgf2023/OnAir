@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // JS8Call screens: the dial-frequency presets, the submodes looked for (normal, fast, turbo), the waterfall of the audio passband with
 // the newest frames marked, then four views: every frame decoded (UTC, submode, SNR, DT, Hz, text), the messages put together from
 // their frames (directed messages, free text, relays), the stations heard (call, grid, SNR, last heard), and their grids on a map.
@@ -238,9 +241,9 @@ void mapView(App& a) {
             S.map.zoom = std::max(2, std::min(10, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
         }
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     npos = 0;
@@ -265,10 +268,12 @@ void mapView(App& a) {
             dl->AddCircleFilled(q, r, v.cq ? IM_COL32(240, 180, 80, 255) : IM_COL32(90, 200, 220, 255));
             dl->AddCircle(q, r, IM_COL32(0, 0, 0, 160), 16, 1.f);
             contactlines::markSelected(dl, v.call, q);
+            if (adsbmap::labelsAt(S.map.zoom, false)) {
             const ImVec2 ts = ImGui::CalcTextSize(v.call.c_str());
             const ImVec2 lp(q.x + 10 * gUi, q.y - ts.y * 0.5f - 2 * gUi);
             dl->AddRectFilled(lp, ImVec2(lp.x + ts.x + 8 * gUi, lp.y + ts.y + 4 * gUi), IM_COL32(10, 12, 14, 210), 2.f);
             dl->AddText(ImVec2(lp.x + 4 * gUi, lp.y + 2 * gUi), IM_COL32(235, 238, 240, 255), v.call.c_str());
+            }
         }
     dl->PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 8 * gUi, p0.y + 8 * gUi));
@@ -339,6 +344,7 @@ void receiver(App& a) {
     auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", k); kvColumn(130 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::Text(fmt, v...); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
     kv("state", "%s", dect2::js8Summary(t).c_str());
     kv("clock", "%s, DT median %+.2f s", t.timeMode ? "the recording's start time" : "system clock (UTC)", t.clockErr);
+    if (t.clockTrim != 0.f) kv("correction", "computer clock %+.1f s (automatic)", t.clockTrim);
     for (int m = 0; m < 3; m++)
         kv(dect2::js8::spec(m).name, "%s, %llu slots, %d frames in the last, %.0f ms to decode", t.enabled[m] ? "on" : "off", (unsigned long long)t.slots[m], t.lastSlotCount[m], t.decodeMs[m]);
     kv("frames", "%llu decoded, %llu candidates that did not", (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad);

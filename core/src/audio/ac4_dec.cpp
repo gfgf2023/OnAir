@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/audio/ac4_dec.h"
 #include "../source/native_common.h"
 #include <algorithm>
@@ -133,6 +136,7 @@ Ac4Dsi parseDac4(const uint8_t* p, size_t n) {
     d.fsIndex = (int)((v >> 13) & 1);
     d.frameRateIndex = (int)((v >> 9) & 0xf);
     d.presentations = (int)(v & 0x1ff);
+    d.raw.assign(p, p + n);
     d.valid = true;
     return d;
 }
@@ -293,6 +297,7 @@ std::vector<std::string> searchFolders(const std::string& override) {
     std::vector<std::string> v;
     if (!override.empty()) { v.push_back(override); return v; }
     if (const char* e = getenv("DECT2_AC4_DIR")) if (*e) v.push_back(e);
+    { const std::string x = dect2::codec::externalFfmpegDir(); if (!x.empty()) v.push_back(x); }   // the user's own FFmpeg folder (Settings)
     for (auto& d : native::codecFolders()) v.push_back(d);
     return v;
 }

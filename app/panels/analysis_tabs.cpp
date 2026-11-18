@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // receiver analysis tabs: sync, history, frame map, signalling, constellations, channel, impulse, SNR, FEC, transport stream, log
 #include "../app.h"
+#include "dect2/t2/tv_diag.h"
 #include <cmath>
 #include <ctime>
 
@@ -187,29 +191,96 @@ void frameMapTab(App& a) {
     ImGui::Dummy(ImVec2(availW + 70, ch * bm.size()));
 }
 
+// The IP datagrams of DVB-H (MPE / MPE-FEC) and of DVB-C2 GSE PLPs: a pcap file in the data folder with one click; the UDP forward
+// (to a player or an analyser) under Advanced. Both start off. Only what is received in the clear is written.
+static void ipOutputControls(App& a, uint64_t packetsSeen) {
+    IpOut& io = a.engine.ipOutput();
+    IpOutConfig c = io.config();
+    static char host[64] = "127.0.0.1";
+    static int port = 5004;
+    static bool whole = false, udpOn = false;
+    ImGui::Spacing();
+    ImGui::TextColored(pal::heading(), "%s", tr("IP datagrams"));
+    ImGui::TextDisabled(tr("%llu IP packets received"), (unsigned long long)packetsSeen);
+    bool pc = c.pcap;
+    if (ImGui::Checkbox(tr("Write them to a pcap file"), &pc)) {
+        IpOutConfig n = c;
+        n.pcap = pc;
+        n.pcapPath = plat::dataDir() + "/broadcast_ip.pcap";
+        io.configure(n);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Every IP packet (DVB-H MPE, DVB-C2 GSE) goes to broadcast_ip.pcap in the data folder (libpcap, link type RAW). Open it in Wireshark. Switching it on again starts a new file."));
+    if (ImGui::TreeNode(trw("Advanced: forward over UDP"))) {
+        ImGui::SetNextItemWidth(140 * gUi);
+        ImGui::InputText(tr("address"), host, sizeof host);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90 * gUi);
+        ImGui::InputInt(tr("port"), &port, 0);
+        port = std::max(0, std::min(65535, port));
+        ImGui::Checkbox(tr("whole IP packets (not just the UDP payload)"), &whole);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Off: the payload of each UDP datagram goes to the address, so a player can open udp://@:port (port 0 keeps each datagram's own port). On: every IP packet is sent whole, for an analyser."));
+        bool on = c.udp;
+        if (ImGui::Checkbox(tr("forward"), &on) || (on && (std::string(host) != c.udpHost || port != c.udpPort || whole != c.wholePackets))) {
+            IpOutConfig n = c;
+            n.udp = on; n.udpHost = host; n.udpPort = port; n.wholePackets = whole;
+            if (!(n == c)) io.configure(n);
+        }
+        udpOn = on;
+        ImGui::TreePop();
+    }
+    (void)udpOn;
+    const IpOutStats st = io.stats();
+    if (c.pcap) ImGui::TextDisabled(tr("pcap: %llu packets, %.1f MB in %s"), (unsigned long long)st.written, (double)st.bytesWritten / 1e6, c.pcapPath.c_str());
+    if (c.udp) ImGui::TextDisabled(tr("UDP: %llu datagrams to %s:%d, %llu not UDP, %llu send errors"), (unsigned long long)st.forwarded, c.udpHost.c_str(), c.udpPort, (unsigned long long)st.notUdp, (unsigned long long)st.sendErrors);
+    const std::string err = io.error();
+    if (!err.empty()) ImGui::TextColored(pal::warnAmber(), "%s", err.c_str());
+}
+
 void signallingTab(App& a) {
+    if (a.rx.standard == 742) {   // DVB-C2: the L1 and, for GSE PLPs, the IP output
+        const Dvbc2Telemetry& t = a.rx.dvbc2;
+        if (!t.l1Ok) { ImGui::TextDisabled("%s", tr("the L1 signalling part 2 has not been decoded yet")); return; }
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted(dvbc2::l1Summary(t.l1).c_str());
+        bool gse = t.ipPackets > 0;
+        for (const auto& r : t.plps) {
+            ImGui::TextDisabled(tr("data slice %d PLP %d: %s %s, payload %s"), r.sliceId, r.plpId, dvbc2::modName(r.mod), dvbc2::codName(r.fecType, r.cod), r.payloadType == 3 ? "TS" : r.payloadType == 2 ? "GSE" : r.payloadType == 1 ? "GCS" : "GFPS");
+            gse |= r.payloadType == 2;
+        }
+        ImGui::PopTextWrapPos();
+        if (gse) ipOutputControls(a, t.ipPackets);
+        return;
+    }
     if (a.rx.standard == 1) {
         const RxTelemetry& rx = a.rx;
         if (!rx.dvbt.tpsOk) { { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("TPS (transmission parameter signalling) has not been decoded yet"); ImGui::PopTextWrapPos(); } return; }
-        static const char* modes[] = {"2K", "8K"}; static const char* hier[] = {"non-hierarchical", "hierarchical, alpha = 1", "hierarchical, alpha = 2", "hierarchical, alpha = 4"};
+        static const char* modes[] = {"2K", "8K", "4K (DVB-H)", "?"}; static const char* hier[] = {"non-hierarchical", "hierarchical, alpha = 1", "hierarchical, alpha = 2", "hierarchical, alpha = 4"};
         dvbt::Params q; q.mode = rx.dvbt.mode; q.guard = rx.dvbt.guard; q.mod = rx.dvbt.mod; q.hier = rx.dvbt.hier; q.crHp = rx.dvbt.crHp; q.crLp = rx.dvbt.crLp;
         { ImGui::PushTextWrapPos(0); ImGui::TextColored(pal::heading(), "DVB-T transmission parameters (TPS, EN 300 744)"); ImGui::PopTextWrapPos(); }
         if (ImGui::BeginTable("tps", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
             ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, 200 * gUi);
             auto row = [&](const char* k, const char* fmt, auto... args) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextDisabled("%s", k); ImGui::TableNextColumn(); char b[160]; snprintf(b, sizeof b, fmt, args...); ImGui::TextUnformatted(b); };
-            row("FFT mode", "%s (%d carriers, %d data carriers per symbol)", modes[rx.dvbt.mode & 1], dvbt::carriersK(rx.dvbt.mode), dvbt::dataCarriers(rx.dvbt.mode));
+            row("FFT mode", "%s (%d carriers, %d data carriers per symbol)", modes[rx.dvbt.mode & 3], dvbt::carriersK(rx.dvbt.mode), dvbt::dataCarriers(rx.dvbt.mode));
             row("Guard interval", "%s of the useful symbol (%d samples)", dvbt::guardName(rx.dvbt.guard), dvbt::guardSamples(rx.dvbt.mode, rx.dvbt.guard));
             row("Constellation", "%s", dvbt::modName(rx.dvbt.mod));
             row("Hierarchy", "%s", hier[rx.dvbt.hier & 3]);
             row("Code rate (high priority)", "%s", dvbt::rateName(rx.dvbt.crHp));
             row("Code rate (low priority)", "%s", dvbt::rateName(rx.dvbt.crLp));
             row("Cell identifier", "%d", rx.dvbt.cellId);
+            if (rx.dvbt.mode != dvbt::k8K) row("Inner interleaver", "%s", rx.dvbt.indepth ? "in-depth (DVB-H)" : "native");
+            if (rx.dvbt.dvbh) {
+                row("DVB-H", "%s, %s", rx.dvbt.timeSlicing ? "time slicing" : "no time slicing", rx.dvbt.mpeFec ? "MPE-FEC" : "no MPE-FEC");
+                if (rx.dvbt.mpePid >= 0)
+                    row("IP datagrams (MPE)", "%llu on PID %d, MPE-FEC rows corrected %llu, failed %llu", (unsigned long long)rx.dvbt.mpeDatagrams, rx.dvbt.mpePid,
+                        (unsigned long long)rx.dvbt.mpeRowsCorrected, (unsigned long long)rx.dvbt.mpeRowsFailed);
+            }
             row("Frame in superframe", "%d of 4   (symbol %d of 68)", rx.dvbt.frameIdx + 1, rx.dvbt.symbolIdx + 1);
             row("Net bit rate", "%.2f Mbit/s", dvbt::netBitrate(q, rx.nativeRate) / 1e6);
             row("TPS block age", "%.2f s", rx.dvbt.secSinceTps);
             ImGui::EndTable();
         }
         if (rx.dvbt.hier) { ImGui::PushTextWrapPos(0); ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.2f, 1), "! hierarchical modulation is announced: only the high-priority stream is decoded correctly by this receiver"); ImGui::PopTextWrapPos(); }
+        if (rx.dvbt.dvbh || rx.dvbt.mpePid >= 0) ipOutputControls(a, rx.dvbt.mpeDatagrams);
         return;
     }
     const RxTelemetry& rx = a.rx;
@@ -429,7 +500,9 @@ void constellationsTab(App& a) {
     if (const ModeUi* mu = modeUi(a.family)) { if (mu->panels) mu->panels(a); return; }
     if (a.dabMode) { dabPanels(a); return; }
     if (a.fmMode) { fmPanels(a); return; }
-    if (a.rx.standard == 2) { atscPanels(a); return; }
+    // ATSC 1.0 (family 1) is 8-VSB: one axis of 8 levels, not OFDM. Decide by the selected mode, not only by the last report, so a stopped
+    // receiver or another mode's last report never shows the DVB-T/T2 OFDM plots (TPS / P1 carriers, pilots) for ATSC.
+    if (a.rx.standard == 2 || (a.family == 1 && !a.atsc3Mode)) { atscPanels(a); return; }
     const RxTelemetry& rx = a.rx;
     const float availW = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
     // the new interface packs the plots to the left and uses the rest for numbers, when there is room for them (else they are on the Receiver tab)
@@ -614,6 +687,23 @@ void impulseTab(App& a) {
         plt::PlotLine("pdp", xs.data(), rx.irDb.data(), (int)xs.size(), sp);
         plt::EndPlot();
     }
+    // Echo table and verdict (tv_diag.h): which paths there are, which are before the main one or beyond the guard interval, and what to do about it.
+    const dect2::tvdiag::EchoReport er = dect2::tvdiag::findEchoes(rx.irDb, rx.irTauMin, rx.nativeRate, rx.guard);
+    ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(er.verdict.c_str()); ImGui::PopTextWrapPos();
+    if (!er.fix.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", er.fix.c_str()); ImGui::PopTextWrapPos(); }
+    if (!er.echoes.empty() && ImGui::BeginTable("##echoes", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("delay (us)"); ImGui::TableSetupColumn("level (dB)"); ImGui::TableSetupColumn("extra path (km)"); ImGui::TableSetupColumn("kind");
+        ImGui::TableHeadersRow();
+        for (const dect2::tvdiag::Echo& e : er.echoes) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("%+.2f", e.delayUs);
+            ImGui::TableNextColumn(); ImGui::Text("%.1f", e.levelDb);
+            ImGui::TableNextColumn(); ImGui::Text("%.2f", e.extraKm);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(e.kind == dect2::tvdiag::EchoKind::PreEcho ? "pre-echo" : e.kind == dect2::tvdiag::EchoKind::BeyondGuard ? "beyond guard" : "inside guard");
+        }
+        ImGui::EndTable();
+    }
 }
 
 void snrTab(App& a) {
@@ -630,6 +720,17 @@ void snrTab(App& a) {
         plt::Spec sp; sp.LineColor = ImVec4(0.35f, 0.85f, 0.45f, 1); sp.FillFade = 0.9f;
         plt::PlotLine("snr", xs.data(), rx.snrDb.data(), (int)xs.size(), sp);
         plt::EndPlot();
+    }
+    // Narrowband interferers: dips of the per-carrier SNR that a multipath notch does not explain (tv_diag.h).
+    {
+        const auto dips = dect2::tvdiag::findCarrierDips(rx.snrDb, a.freqMhz, binMhz * rx.snrStep);
+        int shown = 0;
+        for (const auto& d : dips) {
+            if (!d.narrow || shown >= 4) continue;
+            ImGui::PushTextWrapPos(0); ImGui::TextDisabled("Narrowband interferer near %.3f MHz: %.0f dB dip, %d points wide. Check for LTE, a radio link or cable ingress on that frequency.", d.freqMhz, d.depthDb, d.widthPoints); ImGui::PopTextWrapPos();
+            shown++;
+        }
+        if (!dips.empty() && shown == 0) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("Broad dips in the SNR: a multipath notch or tilt, see the Echoes tab."); ImGui::PopTextWrapPos(); }
     }
 }
 
@@ -696,10 +797,16 @@ static void tsPidsView(App& a) {
     { ImGui::PushTextWrapPos(0); ImGui::Text("network \"%s\"  onid 0x%04X  tsid 0x%04X   %s", ts.networkName.c_str(), ts.onid, ts.tsid, ts.utc.c_str()); ImGui::PopTextWrapPos(); }
     { ImGui::PushTextWrapPos(0); ImGui::Text("multiplex %s (null packets %s)   packets %llu   continuity errors %llu   TEI %llu",
                 fmtKbps(b, sizeof b, ts.muxKbps), fmtKbps(b2, sizeof b2, ts.nullKbps), (unsigned long long)ts.totalPackets, (unsigned long long)ts.ccErrors, (unsigned long long)ts.teiPackets); ImGui::PopTextWrapPos(); }
+    {   // ETSI TR 101 290: the checks that have fired (only those)
+        std::string fired;
+        for (const Tr290Check& c : a.engine.tr290Checks()) if (c.count) { char x[64]; snprintf(x, sizeof x, "%s%s %llu", fired.empty() ? "" : ", ", c.name, (unsigned long long)c.count); fired += x; }
+        ImGui::PushTextWrapPos(0); ImGui::Text("TR 101 290: %s  PCR jitter %.3f ms", fired.empty() ? tr("no errors") : fired.c_str(), a.engine.tr290JitterMs()); ImGui::PopTextWrapPos();
+    }
     { ImGui::PushTextWrapPos(0); ImGui::Text("BB frames %llu (lost %llu)  mode %s  ISSYI %d NPD %d  SIS/MIS %d ISI %d  resyncs %llu  CRC-8 errors %llu  skipped %llu", (unsigned long long)a.bb.frames, (unsigned long long)a.bb.framesLost,
                 a.bb.hem ? "high-efficiency" : "normal", a.bb.issyi, a.bb.npd, a.bb.sisMis, a.bb.isi, (unsigned long long)a.bb.resyncs, (unsigned long long)a.bb.crcErrors, (unsigned long long)a.bb.unsupported); ImGui::PopTextWrapPos(); }
     ImGui::PopFont();
     ImGui::Spacing();
+    smart5TvCard(a);   // round-5 smart checks: off air at the source, fault split, cell, interferers (app/smart5)
     if (ImGui::BeginTable("pids", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp, ImVec2(0, -1))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthFixed, 70 * gUi);
@@ -744,6 +851,10 @@ static void tsTablesView(App& a, int view) {
     ImGui::PushFont(a.mono, 0);
     auto none = [&](const char* what) { ImGui::TextDisabled("%s", what); };
     if (view == 1) {   // networks and transponders
+        if (si && !si->networks.empty()) {
+            const SiOrbitGuess g = siGuessOrbit(*si, {});
+            if (g.valid) ImGui::TextColored(pal::accent(), "%s %.1f %c  (%d %s)", tr("Satellite by its own network table:"), std::fabs(g.orbitDeg), g.orbitDeg >= 0 ? 'E' : 'W', g.transponders, tr("transponders"));
+        }
         if (!si || si->networks.empty()) none("no network information table received yet");
         else for (const auto& n : si->networks) {
             ImGui::TextColored(pal::accent(), "network 0x%04X \"%s\"%s  %zu transport streams", n.id, n.name.c_str(), n.actual ? "  (this network)" : "", n.transponders.size());
@@ -857,7 +968,7 @@ static void tsTablesView(App& a, int view) {
 
 static int g_tsView = 0;
 void tsTab(App& a) {
-    subNav("tsv", g_tsView, {"PIDs", "Networks", "Other services", "Bouquets", "Time", "Conditional access", "Carousels", "Data", "Interactive"});
+    subNav("tsv", g_tsView, {"PIDs", "Networks", "Other services", "Bouquets", "Time", "Conditional access", "Data services", "Data", "Interactive"});
     if (g_tsView == 0) tsPidsView(a);
     else tsTablesView(a, g_tsView);
 }

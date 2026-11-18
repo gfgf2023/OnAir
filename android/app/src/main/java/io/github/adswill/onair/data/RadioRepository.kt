@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.data
 
 import android.content.Context
@@ -49,6 +52,8 @@ class RadioRepository(
     private val onRadioLost: suspend (message: String) -> Unit,
     /** The USB radios changed (one became ready or went away): the source's capabilities may have changed. */
     private val onRadiosChanged: () -> Unit,
+    /** A radio became ready (permission given, opened): the repository may switch the source to it. */
+    private val onRadioReady: (UsbRadio) -> Unit = {},
 ) {
     private val backend = AndroidUsbBackend(ctx)
     private val _features = MutableStateFlow(UsbFeatures.none)
@@ -113,7 +118,13 @@ class RadioRepository(
         }
         // keep the drivers' view in step with what is ready
         scope.launch {
-            usb.radios.map { l -> l.filter { it.ready }.map { it.key } }.distinctUntilChanged().collect { refreshUsbInfo(); onRadiosChanged() }
+            var known = emptySet<String>()
+            usb.radios.map { l -> l.filter { it.ready }.map { it.key } }.distinctUntilChanged().collect { keys ->
+                val fresh = keys.filter { it !in known }
+                known = keys.toSet()
+                refreshUsbInfo(); onRadiosChanged()
+                fresh.firstOrNull()?.let { k -> usb.radio(k)?.let(onRadioReady) }
+            }
         }
     }
 

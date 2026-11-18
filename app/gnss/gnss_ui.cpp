@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GNSS screens: the sky plot, the signal strength of every satellite, the position (card and map), the channel table, the search,
 // the correlator plots and the options of the test signal.
 #include "app.h"
+#include "ui/kit/export.h"
 #include "drive_nav.h"
 #include "panels/clocksync_ui.h"
 #include "../adsb/adsb_map.h"
@@ -10,7 +14,9 @@
 #include <cmath>
 #include <ctime>
 #include <deque>
+#include <map>
 #include "dect2/common/u8file.h"
+#include "../ui/font_size.h"
 
 namespace {
 
@@ -81,8 +87,10 @@ std::string satNameK(int sys, int prn, int fcn) {
     return b;
 }
 
+void pushSysFilter(App& a);   // the Systems choice (decoder() below)
 void tick(App& a) {
     loadState();
+    pushSysFilter(a);
     clockPublishGps(a);
     driveNavTick(a);
     a.tune.synth.modeOpt[5] = (int)std::lround(a.freqMhz * 1000.0);    // the test signal renders the sky as the tune sees it
@@ -313,9 +321,9 @@ void mapView(App& a, ImVec2 size) {
     const GnssTelemetry& t = a.rx.gnss;
     const bool on = live(a);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     if (S.fixes.size() > 1) {   // the trail of fixes: on a fixed antenna it shows the scatter of the solution
@@ -397,6 +405,15 @@ void channelTable(const App& a, bool compact) {
     const GnssTelemetry& t = a.rx.gnss;
     const bool on = live(a);
     const int cols = compact ? 4 : 13;
+    {
+        static std::string note;
+        resexp::Table x; x.cols = {"system", "prn", "state", "cn0_dbhz", "doppler_hz", "code_chips", "az_deg", "el_deg", "lock_s", "frames_ok", "frames_bad", "residual_m", "health", "in_fix"};
+        if (on) for (const auto& c : t.channels)
+            x.add({gnssSystemName(c.sys), std::to_string(c.prn), gnssChStateName(c.state), resexp::num(c.cn0, 1), resexp::num(c.dopplerHz, 0), resexp::num(c.codePhase, 2),
+                   c.hasAzEl ? resexp::num(c.azDeg, 0) : "", c.hasAzEl ? resexp::num(c.elDeg, 0) : "", resexp::num(c.lockSecs, 0), std::to_string(c.framesOk), std::to_string(c.framesBad),
+                   c.used ? resexp::num(c.residualM, 1) : "", c.health < 0 ? "" : c.health == 0 ? "ok" : "bad", c.used ? "yes" : ""});
+        kit::exportBar(x, "gnss_channels", note, compact ? "gxs" : "gxf");
+    }
     if (!ImGui::BeginTable(compact ? "##gch_s" : "##gch_f", cols, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Sat");
@@ -701,7 +718,7 @@ void clockView(App& a) {
     const GnssFix& f = t.fix;
     ImGui::BeginChild("##gnssclk", ImVec2(0, 0));
     auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", k); kvColumn(130 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::Text(fmt, v...); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
-    ImGui::PushFont(a.mono, 30 * gUi);
+    ImGui::PushFont(a.mono, 30.f);
     if (f.valid && f.timeValid) ImGui::TextColored(t.utcValid ? pal::okGreen() : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.19s UTC", gnssUtcText(f).c_str());
     else ImGui::TextDisabled("----.--.-- --:--:-- UTC");
     ImGui::PopFont();
@@ -822,6 +839,7 @@ void receiver(App& a) {
         }
         ImGui::EndTable();
     }
+    smart5GnssCard(a);   // round-5 smart checks (app/smart5, docs/SMART5-UI-3.9.md)
 }
 
 void panels(App& a) {
@@ -945,8 +963,29 @@ void tuner(App& a, bool& retune) {
                                                   "and give the antenna a view of the sky. Indoors there is usually nothing to receive.");
 }
 
+// the system filter: one satellite system wanted (GnssReceiver::setSystems). Galileo is not offered alone: its search needs a GPS lock in the same band.
+struct SysChoice { const char* name; int sys; };
+const SysChoice kSysChoices[] = {{"every system", -1}, {"GPS", GnssGps}, {"QZSS", GnssQzss}, {"GLONASS", GnssGlonass}, {"BeiDou", GnssBeidou}};
+constexpr int kNumSysChoices = (int)(sizeof kSysChoices / sizeof *kSysChoices);
+int& sysFilter() { static int v = std::clamp((int)plat::prefs().getI("gnssSysFilter", 0), 0, kNumSysChoices - 1); return v; }
+void pushSysFilter(App& a) {   // on a change only (setSystems replans the search), once per receiver
+    static std::map<const App*, int> pushed;
+    auto it = pushed.find(&a);
+    if (it != pushed.end() && it->second == sysFilter()) return;
+    pushed[&a] = sysFilter();
+    const int s = kSysChoices[sysFilter()].sys;
+    a.engine.gnss().setSystems(s < 0 ? 0xFFFFFFFFu : gnssSystemBit(s));
+}
+
 void decoder(App& a, bool&) {
     loadState();
+    ImGui::TextDisabled("SYSTEMS"); ImGui::SameLine(0, 5 * gUi);
+    ImGui::SetNextItemWidth(std::min(140 * gUi, ImGui::GetContentRegionAvail().x));
+    if (ImGui::BeginCombo("##gsys", kSysChoices[sysFilter()].name)) {
+        for (int i = 0; i < kNumSysChoices; i++) if (ImGui::Selectable(kSysChoices[i].name, i == sysFilter())) { sysFilter() = i; plat::prefs().setI("gnssSysFilter", i); pushSysFilter(a); }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Track one satellite system only, or every system the tune covers. GLONASS and BeiDou need their own tune (Band above).");
     ImGui::TextDisabled("MASK"); ImGui::SameLine(0, 5 * gUi);
     ImGui::SetNextItemWidth(std::min(90 * gUi, ImGui::GetContentRegionAvail().x));   // no wider than the side panel
     float m = (float)S.elMask;

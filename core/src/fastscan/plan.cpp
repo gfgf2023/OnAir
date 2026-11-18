@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/fastscan/plan.h"
 #include <algorithm>
 #include <cctype>
@@ -153,6 +156,7 @@ std::vector<ChannelPower> channelise(const float* db, const float* fl, size_t n,
 std::string guessMode(double hz, double bwHz) {
     (void)bwHz;
     if (hz >= 118e6 && hz <= 137e6) return "am";
+    if (hz >= 225e6 && hz <= 400e6) return "am";   // the military UHF air band (AM; the 328.6 - 335.4 MHz glide slopes are AM too)
     return "fm";
 }
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/tv/epg.h"
 #include "dect2/tv/dvb_text.h"
 #include "dect2/tv/ts_proto.h"
@@ -9,6 +12,7 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -45,7 +49,7 @@ bool dvbTime(const uint8_t* p, int64_t& unixSec) {
 
 // ---- EIT ---------------------------------------------------------------------------------------------------------------------------------------
 namespace {
-void eventDescriptors(const uint8_t* d, int n, EpgItem& ev) {
+void eventDescriptors(const uint8_t* d, int n, EpgItem& ev, const dvbsi::TextContext& context) {
     std::map<int, std::string> ext;
     std::string extLang;
     int p = 0;
@@ -61,8 +65,9 @@ void eventDescriptors(const uint8_t* d, int n, EpgItem& ev) {
                     const int tl = b[4 + nl];
                     if (5 + nl + tl <= dl) {
                         ev.lang.assign((const char*)b, 3);
-                        ev.title = dvbsi::dvbText(b + 4, nl);
-                        ev.text = dvbsi::dvbText(b + 5 + nl, tl);
+                        const auto eventContext = context.withLanguage(ev.lang);
+                        ev.title = dvbsi::dvbText(b + 4, nl, eventContext);
+                        ev.text = dvbsi::dvbText(b + 5 + nl, tl, eventContext);
                     }
                 }
             }
@@ -114,7 +119,7 @@ void eventDescriptors(const uint8_t* d, int n, EpgItem& ev) {
     if (!ext.empty()) {
         std::string all;
         for (auto& kv : ext) all += kv.second;
-        ev.extended = dvbsi::dvbText((const uint8_t*)all.data(), (int)all.size());
+        ev.extended = dvbsi::dvbText((const uint8_t*)all.data(), (int)all.size(), context.withLanguage(extLang));
         if (ev.lang.empty()) ev.lang = extLang;
     }
 }
@@ -186,12 +191,12 @@ bool epgPickLanguage(const uint8_t* s, int len, const std::string& wantIn, std::
     return !out.empty();
 }
 
-bool parseEitSection(const uint8_t* s, int len, EitSection& out) {
+bool parseEitSection(const uint8_t* s, int len, EitSection& out, const dvbsi::TextContext& context) {
     out = EitSection();
     if (len < 18 || s[0] < 0x4E || s[0] > 0x6F) return false;
     const int total = 3 + (((s[1] & 0x0F) << 8) | s[2]);
     if (total < 18 || total > len) return false;
-    if (tsp::crc32(s, total) != 0) return false;
+    if (tsp::crc32(s, total) != 0) { DIAG_DEBUG_EVERY(752979, 10.0, "An EIT section for service 0x%04X failed its CRC check, so its programme events are ignored.", (unsigned)((s[3] << 8) | s[4])); return false; }
     out.tableId = s[0];
     out.sid = (s[3] << 8) | s[4];
     out.version = (s[5] >> 1) & 0x1F;
@@ -218,7 +223,7 @@ bool parseEitSection(const uint8_t* s, int len, EitSection& out) {
             ev.start = st;
             ev.duration = dh * 3600 + dm * 60 + ds;
             ev.other = other;
-            eventDescriptors(s + p + 12, dl, ev);
+            eventDescriptors(s + p + 12, dl, ev, context);
             out.events.push_back(std::move(ev));
         }
         p += 12 + dl;
@@ -231,11 +236,12 @@ bool parseEitSection(const uint8_t* s, int len, EitSection& out) {
             if (it == picks.end()) continue;
             const EpgLangPick& pk = it->second;
             ev.lang = pk.lang;
-            if (pk.hasShort) { ev.title = dvbsi::dvbText(s + pk.titleOff, pk.titleLen); ev.text = dvbsi::dvbText(s + pk.textOff, pk.textLen); }
+            const auto selectedContext = context.withLanguage(pk.lang);
+            if (pk.hasShort) { ev.title = dvbsi::dvbText(s + pk.titleOff, pk.titleLen, selectedContext); ev.text = dvbsi::dvbText(s + pk.textOff, pk.textLen, selectedContext); }
             if (!pk.ext.empty()) {
                 std::string all;
                 for (auto& e : pk.ext) all.append((const char*)s + e.first, (size_t)e.second);
-                ev.extended = dvbsi::dvbText((const uint8_t*)all.data(), (int)all.size());
+                ev.extended = dvbsi::dvbText((const uint8_t*)all.data(), (int)all.size(), selectedContext);
             }
         }
     }
@@ -251,7 +257,7 @@ bool parseTimeSection(const uint8_t* s, int len, TotInfo& out) {
     }
     if (s[0] != 0x73 || len < 14) return false;
     const int total = 3 + (((s[1] & 0x0F) << 8) | s[2]);
-    if (total < 14 || total > len || tsp::crc32(s, total) != 0) return false;
+    if (total < 14 || total > len || tsp::crc32(s, total) != 0) { DIAG_DEBUG_EVERY(196026, 10.0, "A TOT or TDT section failed its length or CRC check, so the broadcast time is not updated from it."); return false; }
     if (!dvbTime(s + 3, out.utc)) return false;
     const int dl = ((s[8] & 0x0F) << 8) | s[9];
     int p = 10;
@@ -312,7 +318,7 @@ bool EpgDb::ingest(const ServiceKey& k, const EpgItem& evIn, int64_t now) {
     }
     auto it = db_.find(k);
     if (it == db_.end()) {
-        if (db_.size() >= lim_.maxServices) return false;
+        if (db_.size() >= lim_.maxServices) { DIAG_DEBUG_EVERY(383206, 30.0, "The programme guide already holds %zu services, so events of a further service are dropped.", db_.size()); return false; }
         it = db_.emplace(k, std::vector<EpgItem>()).first;
     }
     auto& v = it->second;
@@ -491,7 +497,7 @@ std::string EpgDb::toJson() const {
 bool EpgDb::fromJson(const std::string& json) {
     using namespace tvjson;
     Value root;
-    if (!parse(json, root) || root.type != Value::Obj) return false;
+    if (!parse(json, root) || root.type != Value::Obj) { DIAG_DEBUG(643112, "The saved programme guide is not valid JSON, so it is not loaded."); return false; }
     const Value* svcs = root.get("services");
     if (!svcs || svcs->type != Value::Arr) return false;
     std::map<ServiceKey, std::vector<EpgItem>> nd;
@@ -516,19 +522,20 @@ bool EpgDb::fromJson(const std::string& json) {
 bool EpgDb::save(const std::string& path) const {
     const std::string tmp = path + ".tmp";
     FILE* f = u8fopen(tmp, "wb");
-    if (!f) return false;
+    if (!f) { DIAG_ERROR(645984, "The programme guide file %s could not be created, so the guide is not saved.", tmp.c_str()); return false; }
     const std::string j = toJson();
     const bool ok = fwrite(j.data(), 1, j.size(), f) == j.size();
     fclose(f);
     std::error_code ec;
-    if (!ok) { std::filesystem::remove(u8file(tmp), ec); return false; }
+    if (!ok) { DIAG_ERROR(792533, "Writing the programme guide file %s failed (the disk may be full), so the guide is not saved.", tmp.c_str()); std::filesystem::remove(u8file(tmp), ec); return false; }
     std::filesystem::rename(u8file(tmp), u8file(path), ec);
+    if (ec) DIAG_ERROR(319122, "The programme guide file %s could not be put in place (%s), so the guide is not saved.", path.c_str(), ec.message().c_str());
     return !ec;
 }
 
 bool EpgDb::load(const std::string& path) {
     FILE* f = u8fopen(path, "rb");
-    if (!f) return false;
+    if (!f) { DIAG_DEBUG(622671, "The saved programme guide %s could not be opened, so the guide starts empty.", path.c_str()); return false; }
     std::string j;
     char buf[65536];
     size_t n;
@@ -553,9 +560,14 @@ int64_t EpgCollector::nowLocked() const {
 }
 
 void EpgCollector::section(int pid, const uint8_t* s, int len) {
+    dvbsi::TextContext context{textEncoding_};
+    if (!zones_.empty()) {
+        context.country = zones_.front().country;
+        for (const auto& zone : zones_) if (zone.country != context.country) { context.country.clear(); break; }
+    }
     if (pid == 0x12) {
         EitSection e;
-        if (!parseEitSection(s, len, e)) { bad_++; return; }
+        if (!parseEitSection(s, len, e, context)) { bad_++; return; }
         ok_++;
         if (db_) db_->ingestSection(e, nowLocked());
     } else if (pid == 0x14) {
@@ -569,10 +581,13 @@ void EpgCollector::section(int pid, const uint8_t* s, int len) {
         int tsid = 0, onid = 0;
         std::vector<tsp::SdtService> v;
         if (!tsp::parseSdt(s, len, tsid, onid, v)) return;
-        if (s[0] == 0x42) { onid_ = onid; tsid_ = tsid; }
+        if (s[0] == 0x42) {
+            if ((onid_ && onid_ != onid) || (tsid_ && tsid_ != tsid)) { zones_.clear(); context.country.clear(); }
+            onid_ = onid; tsid_ = tsid;
+        }
         for (auto& sv : v) {
             if (!sv.hasName || sv.name.off + sv.name.len > (uint32_t)len) continue;
-            names_[ServiceKey{onid, tsid, sv.sid}] = dvbsi::dvbText(s + sv.name.off, (int)sv.name.len);
+            names_[ServiceKey{onid, tsid, sv.sid}] = dvbsi::dvbText(s + sv.name.off, (int)sv.name.len, context);
         }
     }
 }
@@ -590,5 +605,9 @@ std::vector<LocalTimeOffset> EpgCollector::zones() const { std::lock_guard<std::
 uint64_t EpgCollector::sections() const { std::lock_guard<std::mutex> lk(mu_); return ok_; }
 uint64_t EpgCollector::badSections() const { std::lock_guard<std::mutex> lk(mu_); return bad_; }
 void EpgCollector::setFixedNow(int64_t t) { std::lock_guard<std::mutex> lk(mu_); fixedNow_ = t; }
+void EpgCollector::setTextEncoding(dvbsi::TextEncoding encoding) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (textEncoding_ != encoding) { textEncoding_ = encoding; zones_.clear(); }
+}
 
 } // namespace dect2

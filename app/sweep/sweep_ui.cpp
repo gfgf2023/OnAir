@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The sweep scanner (View > Sweep scanner): a fast wideband sweep of a frequency range with a noise-floor measurement, a trace with the floor
 // and the detection threshold, a waterfall of the sweeps, and a log of the signals found. Click a signal to tune it. The sweep itself is in
 // core/src/sweep (docs/scanner.md); this file is the window and the worker thread.
+#include "../d40/d40_ui.h"
 #include "dect2/common/thread_name.h"
 #include "../app.h"
 #include "dect2/sweep/sweep.h"
@@ -60,6 +64,7 @@ void worker(DeviceInfo dev, TuneSettings t, SweepConfig c, bool autoSettle) {
     runSchedule(src, c, [&](const Sweep& s) {
         std::lock_guard<std::mutex> l(S.mu);
         S.last = s; S.log.update(s); S.seq++;
+        d40ScanFeed(s);   // 4.0: activity map and new-signal alert (app/d40)
         if (S.recordSurvey) S.survey.add(s);
         std::vector<float> row(kHistCols, -150.f);
         for (size_t i = 0; i < s.bins(); i++) { float& r = row[std::min<size_t>(kHistCols - 1, i * kHistCols / s.bins())]; r = std::max(r, s.db[i]); }
@@ -217,6 +222,19 @@ void surveyPanel(App& a) {
         }
         ImGui::EndTable();
     }
+    {
+        const auto rec = S.survey.recurring();
+        if (!rec.empty()) {
+            ImGui::Text("%s", tr("Signals on a schedule"));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Signals that come back at regular times during this survey, and when each is due next."));
+            const double now = (double)std::time(nullptr);
+            for (size_t i = 0; i < rec.size() && i < 20; i++) {
+                const auto& q = rec[i];
+                ImGui::Text("%.3f MHz  %s %.0f min  %s %.0f min  (%d %s)", q.freqHz / 1e6, tr("every"), q.periodSec / 60.0, tr("next in"), std::max(0.0, q.nextSec - now) / 60.0, q.starts, tr("times"));
+            }
+        }
+    }
+    d40ScanCard(S.persist);   // 4.0: activity map, signal names, new-signal alerts (app/d40)
     ImGui::Text("%s", tr("Quietest slots"));
     if (ImGui::BeginTable("##quiet", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
         ImGui::TableSetupColumn(tr("From MHz")); ImGui::TableSetupColumn(tr("Width kHz")); ImGui::TableSetupColumn(tr("Occupancy %")); ImGui::TableSetupColumn(tr("Peak dB above floor"));

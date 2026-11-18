@@ -1,9 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Start-up of the main program: the startup guard and first-run dialogs, and the developer / test command-line flags.
 // Split from main.cpp.
 // The flags are listed where they are parsed (parseDevFlags); none of them is saved.
+#include "station/station_loc.h"
+#include "dect2/audio/dolby_audio.h"
+#include <algorithm>
 #include "dect2/packs/datasets.h"
 #include "dect2/session/session_store.h"
 #include "ui/input_map.h"
+#include "ui/kit/mode_panel.h"
 #include "dect2/source/device_pick.h"
 #ifdef __linux__
 #include <unistd.h>
@@ -11,6 +18,7 @@
 #include "app.h"
 #include "ui/contrast.h"
 #include "ui/touch.h"
+#include "canvas/canvas.h"
 #include "ui/tour_logic.h"
 #include "ui/setup_logic.h"
 #include "dect2/source/iq_file.h"
@@ -25,6 +33,9 @@
 #include "main_internal.h"
 #include "state/workspace.h"
 #include "gfx/render_caps.h"
+#include "voice/tgdir_ui.h"
+#include "ui/ui_preview.h"
+void recordingLibraryDevOpen();   // panels/recording_library_ui.cpp
 
 // the startup guard (a start that keeps crashing), the first-start tour and setup, the radio list and the results of the last run
 void startApp(App& app, int argc, char** argv) {
@@ -40,6 +51,7 @@ void startApp(App& app, int argc, char** argv) {
         guardNote = "OnAir did not finish starting " + std::to_string(failedStarts) + " times in a row, so it starts with the default settings this time. "
                   + (kept.empty() ? std::string("The old settings could not be kept.") : "The old settings are kept in " + kept + ".");
     }
+    stationloc::migrate();   // #453: the older per-screen positions fold into the one station location before any screen reads them
     loadPrefs(app);
     modeVisibilityLoad(app);   // Modes shown has a file of its own that settings.conf resets do not touch
     if (failedStarts == 1) {
@@ -56,6 +68,9 @@ void startApp(App& app, int argc, char** argv) {
     {
         std::vector<std::string> keys;
         for (const auto& it : plat::basePrefs().dumpAll()) keys.push_back(it.key);
+        bool fresh = !plat::prefs().getB("setupDone", false);   // no settings of any earlier use (the wizard's own and the system's keys do not count)
+        for (const std::string& k : keys) if (!setup::isOwnOrSystemKey(k) && k != "apiToken") fresh = false;   // the API token is made at the first start
+        modepanel::startup(fresh);   // Simple / Advanced default (ui/kit/mode_panel.h)
         setupPending = setup::wizardPending(argc == 1, plat::prefs().getB("setupDone", false), keys, failedStarts >= 2, plat::prefs().has("setupStep"));
     }
     app.wizOpen = tour::autoStart(argc == 1, plat::prefs().getB(tour::prefKey(), false), setupPending);   // the tour runs on the very first start only
@@ -63,9 +78,17 @@ void startApp(App& app, int argc, char** argv) {
     if (getenv("DECT2_WIZARD")) app.wizOpen = true;   // test hook: open the tour at start-up (DECT2_WIZSTEP picks the step)
     if (getenv("DECT2_SETUP")) { app.wizOpen = false; setupWizardOpen(app); if (const char* ss = getenv("DECT2_SETUPSTEP")) app.setupStep = atoi(ss);
         if (const char* sl = getenv("DECT2_SETUPLOC")) snprintf(app.setupLoc, sizeof app.setupLoc, "%s", sl);   // test hooks: a position and the ticked interests (bits)
-        if (const char* si = getenv("DECT2_SETUPINT")) app.setupInterests = (unsigned)atoi(si); }
+        if (const char* si = getenv("DECT2_SETUPINT")) app.setupInterests = (unsigned)atoi(si);
+        if (const char* sc = getenv("DECT2_SETUPCOUNTRY")) { app.setupLoc[0] = 0; snprintf(app.setupCountry, sizeof app.setupCountry, "%s", sc); }   // test hook: a regional preset by country code
+        if (const char* sa = getenv("DECT2_SETUPANT")) app.setupAntenna = atoi(sa); }
     app.wizStepT = ImGui::GetTime();
     app.engine.player().setHardwareDecode(plat::prefs().getB("hwVideo", true));
+    {   // TV sound: speaker layout and Dolby passthrough (Settings > Audio, dolby_audio.h)
+        dect2::DolbyOutputConfig& dc = dect2::DolbyOutputConfig::global();
+        dc.layout = (int)std::max(0L, std::min(4L, plat::prefs().getI("surroundLayout", 0)));
+        dc.passthrough = plat::prefs().getB("dolbyPassthrough", false);
+        dc.setDevice(plat::prefs().getS("iecDevice", ""));
+    }
     app.tune.synth.demoTv = true;   // the synthetic DVB-T / ATSC signal carries a test-card programme
     if (const char* ws = getenv("DECT2_WIZSTEP")) wizEnter(app, atoi(ws));
     app.engine.log("OnAir started");
@@ -93,7 +116,8 @@ void startApp(App& app, int argc, char** argv) {
         app.engine.log("no radio connected - use the synthetic signal or an IQ file");
 #endif
     }
-    workspaceSessionStart(app, argc == 1);   // the last-session file: a session that did not end is offered for restore
+    settingsStartup(app, argc == 1);   // Settings > General: the start-up frequency and mode, the receiver at launch (ui/settings_apply.cpp)
+    workspaceSessionStart(app, argc == 1 && sessionRestoreChoice() != 2);   // the last-session file: a session that did not end is offered for restore (unless Settings says never)
     if (getenv("DECT2_DEMO")) { wizAction(app, 2); }   // test: start the demo programme straight away
     // the decoded results of the last run (each mode's lists, until its Clear), then saved every 30 s and at exit
     {   // the session store (docs/MODE-EXPERIENCE.md): logging is on by default; it never blocks the start
@@ -115,7 +139,9 @@ void startApp(App& app, int argc, char** argv) {
 void parseDevFlags(App& app, int argc, char** argv, DevOpts& o) {
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--autostart") o.autostart = true;
-        if (std::string(argv[i]) == "--no-first-run") {
+        // --drag-selftest too: its injected gestures run past frame 90, where a fresh profile opens the first-start question (the public map,
+        // a modal that takes every click), so it implies --no-first-run
+        if (std::string(argv[i]) == "--no-first-run" || std::string(argv[i]) == "--drag-selftest") {
 #ifdef _WIN32
             _putenv_s("DECT2_SKIP_FIRSTRUN", "1");
 #else
@@ -143,6 +169,9 @@ void parseDevFlags(App& app, int argc, char** argv, DevOpts& o) {
         if (std::string(argv[i]) == "--fmscan") o.fmScanAuto = true;
         if (std::string(argv[i]) == "--vfo" && i + 1 < argc) o.fileVfoMhz = atof(argv[++i]);
         if (std::string(argv[i]) == "--ssb-conversations") ssbConvDevOpen(app, i + 1 < argc && std::string(argv[i + 1]) == "demo");   // dev: open View > Conversations (demo: with the synthetic signals)
+        if (std::string(argv[i]) == "--mcp") mcpDevOpen(app);   // dev: View > Data feeds on the AI assistant (MCP) section, switched on
+        if (std::string(argv[i]) == "--trunk-pool") app.trunkPoolOpen = true;   // dev: the Multi-radio trunking window open (screenshots)
+        if (std::string(argv[i]) == "--wide-all") { app.wideAllOpen = true; app.engine.setWideAll(true); }   // dev: Everything in view open and on (screenshots)
         if (std::string(argv[i]) == "--passes") app.passesOpen = true;
         if (std::string(argv[i]) == "--df") app.dfOpen = true;
         if (std::string(argv[i]) == "--passive-radar") app.passiveRadarOpen = true;
@@ -153,6 +182,7 @@ void parseDevFlags(App& app, int argc, char** argv, DevOpts& o) {
         if (std::string(argv[i]) == "--packs") app.packsOpen = true;   // dev: open View > Data packs
         if (std::string(argv[i]) == "--map") app.mapOpen = true;   // dev: open View > Map
         if (std::string(argv[i]) == "--memory-selftest") o.memSelfTest = true;
+        if (std::string(argv[i]) == "--drag-selftest") o.dragSelfTest = true;
         if (std::string(argv[i]) == "--memdev" && i + 1 < argc) memoryDev(atoi(argv[++i]));   // dev: 1 the Store current dialog, 2 the quick list as a window
         if (std::string(argv[i]) == "--memory") app.memoryOpen = true;   // dev: open View > Memory
         if (std::string(argv[i]) == "--memtab") app.memoryTab = true;    // dev: the Memory tab of the main screen
@@ -162,6 +192,10 @@ void parseDevFlags(App& app, int argc, char** argv, DevOpts& o) {
         if (std::string(argv[i]) == "--tour") { app.wizOpen = true; app.wizStep = i + 1 < argc && argv[i + 1][0] != '-' ? atoi(argv[++i]) : -1; }   // dev: open the tour (at this step)
         if (std::string(argv[i]) == "--controls") inputmap::windowOpen() = true;   // dev: the View > Controls window open (screenshots)
         if (std::string(argv[i]) == "--credits") app.creditsOpen = true;   // dev: the Credits window open (screenshots)
+        if (std::string(argv[i]) == "--settings") settingsOpen() = true;   // dev: the Settings window open (screenshots, tools/ui_shots.sh)
+        if (std::string(argv[i]) == "--ghost") app.specGhost = true;   // dev: the spectrum ghost overlay on (screenshots)
+        if (std::string(argv[i]) == "--reclib") recordingLibraryDevOpen();   // dev: the Recording library window open (screenshots)
+        if (std::string(argv[i]) == "--tgdir") tgdirui::devOpen();   // dev: the Talkgroup names blocks open (screenshots)
         if (std::string(argv[i]) == "--mute") { app.muted = true; app.volume = 0; }
         if (std::string(argv[i]) == "--specdemo") app.specDemo = true;   // dev: a synthetic spectrum (FM, OFDM, SSB) without a radio, for screenshots of the looks
         if (std::string(argv[i]) == "--tunerstyle" && i + 1 < argc) app.tunerStyle = std::max(0, std::min(1, atoi(argv[++i])));   // dev: the tuner look (0 Classic, 1 Simple), not saved
@@ -206,15 +240,18 @@ void parseDevFlags(App& app, int argc, char** argv, DevOpts& o) {
         if (std::string(argv[i]) == "--viewmenu") app.devViewMenu = 1;
         if (std::string(argv[i]) == "--viewmenu2") app.devViewMenu = 2;
         if (std::string(argv[i]) == "--kitgallery") app.kitGallery = true;   // dev: the UI kit gallery page instead of the main window
+        if (std::string(argv[i]) == "--previewgallery") uiprev::galleryOn() = true;   // dev: every hover preview of the looks on one page (ui/ui_preview.h)
         if (std::string(argv[i]) == "--theme" && i + 1 < argc) app.uiTheme = atoi(argv[++i]);
         if (std::string(argv[i]) == "--light") app.lightUi = true;   // dev: View > Theme > Light
         if (std::string(argv[i]) == "--touch") app.touchUi = true;   // the touch interface (not saved)
         if (std::string(argv[i]) == "--touchsheet" && i + 1 < argc) { app.touchUi = true; touch::devOpen(argv[++i]); }   // dev: a touch sheet open at the start (keypad[:7.1], step, modes, menu, gain, vol, tuner, more[1-3])
+        if (std::string(argv[i]) == "--touchsize" && i + 1 < argc) app.touchSize = touch::clampTouchSize(atoi(argv[++i]));   // 0 Small .. 4 Extra large (not saved unless changed in the program)
         if (std::string(argv[i]) == "--touchscale" && i + 1 < argc) app.touchScale = std::max(1.f, std::min(2.f, (float)atof(argv[++i])));
         if (std::string(argv[i]) == "--hc") app.highContrast = true;   // dev: View > Theme > High contrast
         if (std::string(argv[i]) == "--variant" && i + 1 < argc) app.uiVariant = std::max(0, std::min(7, atoi(argv[++i])));
         if (std::string(argv[i]) == "--classic") app.newUi = false;
         if (std::string(argv[i]) == "--dock") app.dockOn = true;   // dev: View > Docking on
+        if (std::string(argv[i]) == "--workspace" && i + 1 < argc) canvas::devStart(argv[++i]);   // dev: the Workspace layout on a template (0-3) or a workspace file (app/canvas)
         if (std::string(argv[i]) == "--dockselftest") { app.dockOn = true; dockDevSelfTest(); }   // dev: drives docking with scripted input and exits (ui2_dock.cpp)
         if (std::string(argv[i]) == "--docktree" && i + 1 < argc) { app.dockOn = true; dockDevTree(argv[++i]); }   // dev: a dock layout in its text form (ui/dock_tree.h)
         if (std::string(argv[i]) == "--rate" && i + 1 < argc) app.file.sampleRate = atof(argv[++i]) * 1e6;

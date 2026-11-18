@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #if defined(__linux__)
 #include "usb_fd_io.h"
+#include "dect2/common/diag.h"
 #include <linux/usbdevice_fs.h>
 #include <sys/ioctl.h>
 #include <poll.h>
@@ -41,7 +45,7 @@ struct LinuxSys : UsbFdSys {
         u.u.buffer = u.buf.data();
         u.u.buffer_length = (int)u.buf.size();
         u.u.usercontext = &u;
-        if (ioctl(st.fd, USBDEVFS_SUBMITURB, &u.u) < 0) return false;
+        if (ioctl(st.fd, USBDEVFS_SUBMITURB, &u.u) < 0) { DIAG_DEBUG(459081, "The kernel refused to queue a USB transfer for the radio (errno %d), so no more transfers are started.", errno); return false; }
         u.inFlight = true; st.inFlight++;
         return true;
     }

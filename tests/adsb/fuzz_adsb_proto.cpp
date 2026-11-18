@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Seeded mutation run of the ADS-B / Mode S message layer, meant for DECT2_SANITIZE=ON: decoding, the CRC,
 // single-bit correction, Comm-B inference and CPR must never crash or hang on any bytes or numbers. Also a libFuzzer target with -DONAIR_LIBFUZZER.
 #include "dect2/adsb/adsb_msg.h"
@@ -30,7 +33,9 @@ static void one(const uint8_t* d, size_t n) {
     const int le = (int)(v * 2), lo = (int)(m[3] << 9);
     sink += cprGlobalAirborne(le, lo, le + 5, lo + 9, m[4] & 1, lat, lon) + cprLocalAirborne(le, lo, m[4] & 1, a, b, lat, lon) +
             cprGlobalSurface(le, lo, le + 5, lo + 9, m[4] & 1, a, b, lat, lon) + cprLocalSurface(le, lo, m[4] & 1, a, b, lat, lon);
-    sink += (unsigned long long)(cprNl(a) + (int)distanceNm(a, b, b, a) + (int)bearingDeg(a, b, a, b) + (int)magDeclinationDeg(a, b));
+    // the inputs are any 8 bytes taken as doubles, so the results may be NaN or huge: fold them without a float-to-int cast (UB out of range)
+    auto fold = [](double x) { uint64_t u; memcpy(&u, &x, 8); return u; };
+    sink += (unsigned long long)cprNl(a) + fold(distanceNm(a, b, b, a)) + fold(bearingDeg(a, b, a, b)) + fold(magDeclinationDeg(a, b));
     sink += raText(v, m[5], m[6] & 1).size();
 }
 

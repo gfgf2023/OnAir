@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Z-Wave monitor (ITU-T G.9959 FSK: R1 9.6 kbit/s Manchester, R2 40 kbit/s, R3 100 kbit/s GFSK) on the sub-GHz channels of each region. Receive
 // only. Every channel of the region that lies inside the band the radio takes in gets a narrowband front end (mix, low-pass, decimate to 400 ksps);
 // an energy detector marks the bursts, each is FM demodulated and tried at the rates of its channel: bit timing from the preamble, start-of-frame
@@ -28,6 +31,8 @@ public:
     void setRegion(const std::string& id);   // "EU", "US", ... ; "" picks by the frequency
     bool ready() const;
     void reset();
+    void setToneDetection(bool on);          // chips from tone energies (default on; off: the discriminator only, as in 3.9)
+    bool toneDetection() const;
     void clearResults();
     void feed(const cf32* x, size_t n);
     bool telemetry(ZwaveTelemetry& out, uint64_t lastSeq);

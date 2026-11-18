@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Elektro-L N3 / N4 / N5 HRIT / LRIT screens: the same xRIT product list as GOES, with satellite and link presets.
+#include "ui/kit/mode_panel.h"
 #include "app.h"
 #include "panels/gallery.h"
 #include "gfx/gfx.h"
@@ -28,7 +32,7 @@ namespace goes = dect2::goes;
 
 const char* const kFilters[] = {"All products", "Images", "Text"};
 const char* const kCraft[] = {"Elektro-L N3 (76°E)", "Elektro-L N4 (165.8°E)", "Elektro-L N5 (14.5°W)"};
-const char* const kLink[] = {"HRIT 665.4 ksym/s", "HRIT 1.0 Msym/s", "LRIT 128 ksym/s", "LRIT 64 ksym/s", "GGAK 5 ksym/s (1693 MHz)"};
+const char* const kLink[] = {"HRIT 665.4 ksym/s", "HRIT 1.0 Msym/s", "LRIT 128 ksym/s", "LRIT 64 ksym/s", "GGAK 5 ksym/s (1693 MHz)", "LRIT 294 ksym/s", "HRIT 1.15 Msym/s OQPSK"};
 
 struct State {
     bool loaded = false;
@@ -53,7 +57,7 @@ void loadState() {
     S.autoSave = plat::prefs().getB("elektroAutoSave", true);
     S.filter = std::clamp((int)plat::prefs().getI("elektroFilter", 0), 0, 2);
     S.craft = std::clamp((int)plat::prefs().getI("elektroCraft", 0), 0, 2);
-    S.link = std::clamp((int)plat::prefs().getI("elektroLink", 0), 0, 4);
+    S.link = std::clamp((int)plat::prefs().getI("elektroLink", 0), 0, 6);
 }
 
 bool live(const App& a) { return a.rx.standard == 81; }  // family 80 / stdMode 82
@@ -348,6 +352,7 @@ void receiver(App& a) {
     kvRow(a, "packets", "%llu, %llu CRC errors", (unsigned long long)t.packets, (unsigned long long)t.crcErrors);
     kvRow(a, "files", "%llu, %llu with errors, %zu products kept", (unsigned long long)t.files, (unsigned long long)t.fileErrors, t.products.size());
     kvRow(a, "input", "%.3f Msps, %.1f dBFS", t.inputRate / 1e6, t.levelDb);
+    smart5GeoCard(a);   // round-5 smart checks (app/smart5, docs/SMART5-UI-3.9.md)
 }
 
 void panels(App& a) {
@@ -423,7 +428,7 @@ void tuner(App& a, bool& retune) {
     ImGui::TextDisabled("Link");
     sameLineIf(90 * gUi, 5 * gUi);
     ImGui::SetNextItemWidth(180 * gUi);
-    if (ImGui::Combo("##ellink", &S.link, kLink, 4)) {
+    if (ImGui::Combo("##ellink", &S.link, kLink, 7)) {
         plat::prefs().setI("elektroLink", S.link); plat::prefs().flush();
         a.engine.elektro().setLink(S.link); S.appliedLink = S.link;
     }
@@ -448,6 +453,12 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
+// Simple view: the picture with its controls, and the signal and the products / channels beside it
+static void command(App& a) {
+    modepanel::panes({{"##elkcpic", nullptr, [&a] { tab(a); }, 2.2f, 300.f},
+                      {"##elkcsig", tr("Signal"), [&a] { receiver(a); ImGui::Spacing(); list(a); }, 1.f, 240.f}}, 340.f);
+}
+
 extern const ModeUi kElektroUi;
 const ModeUi kElektroUi = {
     .sideTitle = "PRODUCTS",
@@ -462,4 +473,5 @@ const ModeUi kElektroUi = {
     .tuner = tuner,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Interface rules that can be checked on the sources of app/ without running the program (docs/GUI-AUDIT.md lists what was checked by hand):
 //  1. no SetCursorPos / SetCursorScreenPos right before the end of a window, child, group or function: ImGui reports "Code uses SetCursorPos()
 //     to extend window/parent boundaries" (##main2). Restore a saved spot with restoreCursor(), or submit a Dummy().
@@ -129,8 +132,6 @@ static const AllowDup kAllowDup[] = {
     {"app/hfdig/hfdig_sstv_ui.cpp", "##sstvpic"}, {"app/hfdig/hfdig_sstv_ui.cpp", "##sstvside"},   // wide and narrow layouts
     {"app/marine/marine_ui.cpp", "##msv"},
     {"app/mesh/mesh_ui.cpp", "all presets"},                                                     // one protocol entry or all
-    {"app/panels/tx_payload_ui.cpp", "Callsign"}, {"app/panels/tx_payload_ui.cpp", "Grid"}, {"app/panels/tx_payload_ui.cpp", "Text"},
-    {"app/panels/tx_payload_ui.cpp", "Baud"}, {"app/panels/tx_payload_ui.cpp", "Latitude"}, {"app/panels/tx_payload_ui.cpp", "Longitude"},   // switch cases
     {"app/panels/tx_step_settings.cpp", "Output level (dB)"},                                    // slider or field
     {"app/rooms/rooms_send.cpp", "Go live (Live rooms)..."},                                     // disabled or live form
     {"app/scan/scan_db_ui.cpp", "Cancel"},                                                       // dialog stages
@@ -238,6 +239,34 @@ static void ruleTranslationBudget(const fs::path& root) {
 }
 
 // ---------------------------------------------------------------- 7
+// the menu bar's right-hand items sit at the bar's vertical centre: a SmallButton lowers itself by the line's text-baseline offset (the bar's
+// extra frame padding), so every placement there zeroes it (noBaseShift) right after SetCursorPosY(y); else the text touches the bar's bottom line
+static void ruleMenuBarCentre(const std::vector<Src>& srcs) {
+    for (const Src& s : srcs) {
+        if (s.rel != "app/ui/ui2_shell.cpp") continue;
+        const size_t a = s.text.find("static void menuBarRight("), b = s.text.find("void restoreDefaultView", a);
+        CHECK(a != std::string::npos && b != std::string::npos, "menuBarRight not found");
+        if (a == std::string::npos || b == std::string::npos) return;
+        const std::string body = s.text.substr(a, b - a);
+        size_t at = 0; int n = 0;
+        while ((at = body.find("SetCursorPosY(y);", at)) != std::string::npos) {
+            at += 17; n++;
+            CHECK(body.compare(at, 15, " noBaseShift();") == 0, "ui2_shell.cpp menuBarRight: SetCursorPosY(y) not followed by noBaseShift() (text sits below the bar's centre)");
+        }
+        CHECK(n >= 3, "menuBarRight: expected 3 placements, found %d", n);
+    }
+}
+
+// ---------------------------------------------------------------- 8
+// ImGui 1.92 PushFont(font, size) takes the size before the interface scale (FontScaleDpi = gUi) and applies it itself: a size from
+// GetFontSize() (already scaled) or a pixel size times gUi is scaled twice, 1.5x too large at 150 %, and outgrows its row (#502)
+static void ruleFontSizeOnce(const std::vector<Src>& srcs) {
+    const std::regex re(R"(PushFont\([^;,]*,[^;]*(GetFontSize\(\)|\bgUi\b))");
+    for (const Src& s : srcs)
+        for (auto it = std::sregex_iterator(s.text.begin(), s.text.end(), re); it != std::sregex_iterator(); ++it)
+            CHECK(false, "%s:%d: PushFont size scaled twice (use fontBase() * k or a bare pixel size, ui/font_size.h): %s", s.rel.c_str(), lineOf(s.text, (size_t)it->position()), it->str().c_str());
+}
+
 static void windowFit() {
     using winfit::V2;
     const V2 disp{1280, 720};
@@ -277,6 +306,8 @@ int main() {
     ruleDuplicateIds(srcs);
     ruleModalsOpened(srcs);
     ruleTranslationBudget(root);
+    ruleMenuBarCentre(srcs);
+    ruleFontSizeOnce(srcs);
     windowFit();
     if (!failures) std::printf("ok: %zu sources\n", srcs.size());
     return failures ? 1 : 0;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Radio clips dialog: choose a range on the history bar (or a preset), choose what goes in, save a folder + zip, copy the Discord text.
 #include "dect2/common/thread_name.h"
 #include "clips_ui.h"
@@ -10,6 +13,7 @@
 #include "dect2/source/iq_record.h"
 #include <chrono>
 #include <future>
+#include "../ui/input_map.h"
 
 using namespace clips;
 
@@ -226,7 +230,8 @@ void tick(App& a) {
     const int want = C.audio ? C.audioSec : 0;
     if (C.appliedAudio != want && (want == 0 || r.audioSeen())) { r.configure(want); C.appliedAudio = want; }   // allocated only when sound was heard
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper && ImGui::IsKeyPressed(ImGuiKey_C, false)) { if (D.open) D.open = false; else open(); }
+    if (inputmap::pressed(inputmap::Action::ClipsWin)) { if (D.open) D.open = false; else open(); }   // C by default
+    (void)io;
     if (D.open) draw(a);
 }
 

@@ -97,11 +97,16 @@ Every message is one JSON object with `type`. Unknown fields, wrong types and va
 | `subscribe` | `decoder` (an id from `welcome.decoders`), `freq_hz` (required when `needs_freq`) | at most 4 a session |
 | `unsubscribe` | `decoder`, `freq_hz` | |
 | `ping` | `t` (any number, echoed) | |
+| `control` | `take` (bool, required) | take (`true`) or give back (`false`) the control slot when the host set `web_control=slot`. Refused with `busy` while another listener holds it |
 | `bye` | | the server closes with 1000 |
 
 Passband limits per mode (Hz relative to the tuned frequency): AM and NFM -10000 .. 10000, WFM -110000 .. 110000, USB -1000 .. 10000, LSB -10000 .. 1000, CW -1500 .. 1500. Defaults: AM +-4500, NFM +-6250, WFM +-100000, USB 100 .. 2800, LSB -2800 .. -100, CW +-250 (heard at a 700 Hz tone).
 
 **Forbidden types.** `tx`, `transmit`, `ptt`, `arm`, `tx_arm`, `carrier`, `key`, `keys`, `import_key`, `key_import`, `voicekeys`, `decrypt`, `record`, `recording`, `save`, `upload`, `exec`, `shell`, `config`, `admin` are answered with `{"type":"error","code":"forbidden"}`. There is no way to transmit, arm a transmitter, load or use keys, decrypt, or write to the server's disk from a web session; the server code cannot even reach the transmit path (see docs/ONAIR-WEB.md, Safety).
+
+## Tuning permission
+
+The welcome carries `control`: `{"type":"control","mode":"everyone|members|slot|nobody","can_tune":bool,"holder":bool,"busy":bool,"left_s":n,"slot_min":n}` (missing on older servers: everyone can tune). A `tune` without the right is refused with `not_allowed` and changes nothing; in slot mode the session keeps its receiver where it was. The server sends a `control` message whenever the slot changes hands or expires. Each listener still has their own receiver: the slot limits who may retune, it is not a shared dial.
 
 ## Server text messages
 
@@ -116,7 +121,7 @@ Passband limits per mode (Hz relative to the tuned frequency): AM and NFM -10000
 | `error` | `code`, `message` (English text) |
 | `kicked` | `reason`: `kicked`, `kicked: <admin's text>`, `idle`, `time_limit`, `cpu_budget`, `bandwidth_budget`, `server_busy`, `slow_client`, `bye` |
 
-Error codes: `bad_json`, `bad_message`, `unknown_type`, `forbidden`, `out_of_range`, `not_allowed` (the host has turned it off), `forbidden_range` (the host limits the frequency ranges and this tuning, passband or decoder is outside them or blocked; the text says why and may name the nearest allowed frequency; the session keeps its previous tuning), `rate_limited`, `busy`, `auth`.
+Error codes: `bad_json`, `bad_message`, `unknown_type`, `forbidden`, `out_of_range`, `not_allowed` (the host has turned it off), `forbidden_range` (the host limits the frequency ranges and this tuning, passband or decoder is outside them or blocked; the text says why and may name the nearest allowed frequency; the session keeps its previous tuning), `rate_limited`, `busy`, `auth`, `not_running` (a `tune` while the host's receiver delivers no samples: the text says whether it is stopped, being started for you (when tuning is allowed and `web_listener_start` is on, the default) or could not start, with the host's reason; tune again when `capture` comes).
 
 **Frequency ranges and the spectrum.** When the host limits ranges, spectrum rows are masked on the server: bins the listener may not see carry the noise floor of the visible part (so the row is still a normal `0x10` frame; the client needs no change to stay correct, only to look good). A `tune` is checked as a whole (frequency, mode, passband together) and, with any range set, the passband must also lie inside the usable 96 % of the capture. A `subscribe` with `freq_hz` is refused with `forbidden_range` when the decoder's slice is not visible; the `host` decoder is silent unless the whole capture is visible. This is an additive change: `proto` stays 1.
 

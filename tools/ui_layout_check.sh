@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Checks the layout of the interface for overlapping, cut-off and squashed controls: runs the developer build of the app (configured with
 # -DDECT2_UI_LAYOUT_CHECK=ON, see app/ui/layout_check.cpp) hidden and muted for every mode and tab at the window sizes and display scales of
 # common Windows laptops and monitors, and sums up the reports. It never captures the screen and never plays sound. The app runs as a renamed
@@ -8,7 +11,8 @@
 #   environment: JOBS=4 (runs at the same time), QUICK=1 (the three smallest sizes, fewer tabs), SIZES="1366x660@1.25 ..." (WxH@scale),
 #                MODES="dvb fm adsb ..." (only these), VARIANT=n (layout of the new interface, 0-7), CLASSIC=1 (the classic interface),
 #                SHOTS=1 (also a screenshot of each run), RADIO=1 (a fake radio, tests/source/native_fakes.cpp, selected and stopped instead of the
-#                running test signal: the radio's gain, bias-tee and settings controls show)
+#                running test signal: the radio's gain, bias-tee and settings controls show), UILEVEL=simple (the Simple view of every mode;
+#                the default is advanced, the tabs)
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${1:-$ROOT/build-ui}"
@@ -99,7 +103,11 @@ uplink	--mode uplink	Overview|Uplink|Receiver|History
 ale	--mode ale	Overview|ALE|Receiver|History
 astro	--mode astro	Overview|Astronomy|Receiver|History
 ble	--mode ble	Overview|Devices|Receiver|History
+btc	--mode btc	Overview|Devices|Receiver|History
 zigbee	--mode zigbee	Overview|Zigbee|Receiver|History
+thread	--mode thread	Overview|Thread|Receiver|History
+xlink	--mode wfbng	Overview|Links|Receiver|History
+rclink	--mode reticulum	Overview|Links|Receiver|History
 wisun	--mode wisun	Overview|Wi-SUN|Receiver|History
 zwave	--mode zwave	Overview|Z-Wave|Receiver|History
 eczas	--mode eczas	Overview|e-Czas|Receiver|History
@@ -108,14 +116,61 @@ wmbus	--mode wmbus	Overview|Meters|Receiver|History
 tones	--mode tones	Overview|Tones|Receiver|History
 sarsat	--mode sarsat	Overview|Beacons|Receiver|History
 argos	--mode argos	Overview|Argos|Receiver|History
+fy4lrit	--mode fy4lrit	Overview|Products|Receiver|History
+fy4ahrit	--mode fy4ahrit	Overview|Products|Receiver|History
+fy2svissr	--mode fy2svissr	Overview|Products|Receiver|History
 pactor	--mode pactor	Overview|PACTOR-I|Receiver|History
+pactor2	--mode pactor2	Overview|PACTOR-II|Receiver|History
+pactor3	--mode pactor3	Overview|PACTOR-III|Receiver|History
+pactor4	--mode pactor4	Overview|PACTOR-IV|Receiver|History
 esubghz	--mode esubghz	Overview|Flipper chat|Receiver|History
 roshf	--mode roshf	Overview|ROS|Receiver|History
 ssdv	--mode ssdv	Overview|SSDV|Receiver|History
 ebicab	--mode ebicab	Overview|Balise|Receiver|History
+rpr	--mode rpr	Overview|Robust Packet|Receiver|History
 inmsat	--mode inmsat	Overview|Inmarsat|Receiver|History
 nrf24	--mode nrf24	Overview|nRF24|Receiver|History
 atis	--mode atis	Overview|ATIS|Receiver|History
+umts	--mode umts	Cells|Receiver|History
+cdma2000	--mode cdma2000	Cells|Receiver|History
+tdscdma	--mode tdscdma	Cells|Receiver|History
+selcal	--mode selcal	Overview|SELCAL|Receiver|History
+sensors	--mode sensors	Overview|Sensors|Receiver|History
+sferics	--mode sferics	Overview|Sferics|Receiver|History
+qrss	--mode qrss	Overview|Messages|Receiver|History
+dfcw	--mode dfcw	Overview|Messages|Receiver|History
+fsk441	--mode fsk441	Overview|Messages|Receiver|History
+jt6m	--mode jt6m	Overview|Messages|Receiver|History
+iscat	--mode iscat	Overview|Messages|Receiver|History
+pi4	--mode pi4	Overview|Messages|Receiver|History
+throb	--mode throb	Overview|Messages|Receiver|History
+supersid	--mode supersid	Overview|Stations|Receiver|History
+riometer	--mode riometer	Overview|Absorption|Receiver|History
+pulsar	--mode pulsar	Overview|Pulsar|Receiver|History
+gk2alrit	--mode gk2alrit	Overview|Products|Receiver|History
+gk2ahrit	--mode gk2ahrit	Overview|Products|Receiver|History
+noaaapt	--mode noaaapt	Overview|Picture|Receiver|History
+noaahrpt	--mode noaahrpt	Overview|Picture|Receiver|History
+noaagac	--mode noaagac	Overview|Picture|Receiver|History
+noaadsb	--mode noaadsb	Overview|Picture|Receiver|History
+meteorhrpt	--mode meteorhrpt	Overview|Picture|Receiver|History
+elektrordas	--mode elektrordas	Overview|Picture|Receiver|History
+arktikardas	--mode arktikardas	Overview|Picture|Receiver|History
+arktikaggak	--mode arktikaggak	Overview|Picture|Receiver|History
+awsl	--mode awsl	Overview|Picture|Receiver|History
+goesgrb	--mode goesgrb	Overview|Frames|Receiver|History
+goesgvar	--mode goesgvar	Overview|Frames|Receiver|History
+goescda	--mode goescda	Overview|Frames|Receiver|History
+goesmdl	--mode goesmdl	Overview|Frames|Receiver|History
+gk2auhrit	--mode gk2auhrit	Overview|Frames|Receiver|History
+gk2acdas	--mode gk2acdas	Overview|Frames|Receiver|History
+sband	--mode sband	Overview|Frames|Receiver|History
+geoscan	--mode geoscan	Overview|Frames|Receiver|History
+lucky7	--mode lucky7	Overview|Frames|Receiver|History
+spino	--mode spino	Overview|Frames|Receiver|History
+erminaz	--mode erminaz	Overview|Frames|Receiver|History
+fy3ahrpt	--mode fy3ahrpt	Overview|Picture|Receiver|History
+fy3mpt	--mode fy3mpt	Overview|Picture|Receiver|History
 pskd	--mode pskd	Overview|PSK|Receiver|History
 sigfox	--mode sigfox	Overview|Sigfox|Receiver|History
 mt63	--mode mt63	Overview|MT63|Receiver|History
@@ -125,6 +180,7 @@ cquam	--mode cquam	Overview|C-QUAM|Receiver|History
 ardop	--mode ardop	Overview|ARDOP|Receiver|History
 mscatter	--mode mscatter	Overview|Meteors|Receiver|History
 goesdcs	--mode goesdcs	Overview|Platforms|Receiver|History
+hrdcp	--mode hrdcp	Overview|Platforms|Receiver|History
 modeac	--mode modeac	Overview|Replies|Receiver|History
 sbas	--mode sbas	Overview|SBAS|Receiver|History
 asterix	--mode asterix	Overview|Surveillance|Receiver|History
@@ -150,6 +206,7 @@ cubesat	--mode cubesat	Overview|Frames|Receiver|History
 globalstar	--mode globalstar	Overview|Activity|Receiver|History
 vdes	--mode vdes	Overview|Messages|Receiver|History
 flarm	--mode flarm	Overview|Aircraft|Receiver|History
+adsl	--mode adsl	Overview|Aircraft|Receiver|History
 hfbeacon	--mode hfbeacon	Overview|Beacons|Receiver|History
 dji	--mode dji	Overview|Signals|Receiver|History
 loraraw	--mode loraraw	Overview|LoRa|Receiver|History
@@ -162,6 +219,7 @@ for size in $SIZES; do
     while IFS=$'\t' read -r id args tabs; do
         [ -n "${MODES:-}" ] && ! echo " $MODES " | grep -q " $id " && continue
         IFS='|' read -r -a tl <<< "$tabs"
+        [ "${UILEVEL:-advanced}" = simple ] && tl=("${tl[0]}")   # the Simple view has no tabs: one run per mode
         [ "${QUICK:-0}" = 1 ] && tl=("${tl[@]:0:3}")   # quick: the overview, the main tab and the next one
         for t in "${tl[@]}"; do printf '%s\t%s\t%s\t%s\n' "$size" "$id" "$args" "$t" >> "$JOBLIST"; done
     done <<< "$MODELIST"
@@ -185,7 +243,7 @@ worker() {   # worker n: every JOBS-th line of the job list, with its own copy o
         [ "${SHOTS:-0}" = 1 ] && extra=(DECT2_LAYOUT_AT=1000)   # the report at frame 390, the screenshot at 400
         # shellcheck disable=SC2086
         env HOME="$( [ "$(uname)" = Darwin ] && echo "$HOME" || echo "$OUT/home$n")" XDG_CONFIG_HOME="$OUT/home$n" \
-            DECT2_WINSIZE="$wh" DECT2_UISCALE="$sc" DECT2_LAYOUT_REPORT="$rep" DECT2_LAYOUT_TAG="$tag" "${extra[@]}" \
+            DECT2_UILEVEL="${UILEVEL:-advanced}" DECT2_WINSIZE="$wh" DECT2_UISCALE="$sc" DECT2_LAYOUT_REPORT="$rep" DECT2_LAYOUT_TAG="$tag" "${extra[@]}" \
             perl -e 'alarm shift; exec @ARGV' 90 "$OUT/bin/$name" --hidden --mute $args --tab "$tab" ${VARIANT:+--variant $VARIANT} ${CLASSIC:+--classic} $START --shot "$OUT/shots/$tag.png" \
             > "$OUT/reports/$tag.log" 2>&1
         [ -s "$rep" ] || echo "no report: $tag (see $OUT/reports/$tag.log)" >&2

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // FreeDV decoder of the HF digital receiver. Without the codec2 library (the normal case): the loader says "not found" cleanly, the
 // decoder counts audio and reports no library, and there is no test audio. With DECT2_CODEC2_PATH pointing at the library: a loopback
 // (freedv_tx test audio, plus noise, into the decoder) per mode must reach sync and decode speech frames. Quick; no sound.
@@ -37,7 +40,6 @@ int main() {
     std::mt19937 rng(7);
     dect2::normal_distribution<float> nd(0.f, 1.f);
     for (int m = 0; m < kFreedvModes; m++) {
-        if (strcmp(freedvModeName(m), "RADE") == 0) continue;   // RADE is librade, not codec2
         SynthConfig sc;
         sc.modeOpt[1] = m;
         auto gen = makeFreedvTestAudio(sc);

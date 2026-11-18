@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // EBICab / Eurobalise telemetry, shared by the receiver and the UI. The first members are copied into RxTelemetry (history plot, top bar).
 #pragma once
 #include "dect2/ebicab/ebicab_proto.h"
@@ -17,6 +20,7 @@ struct EbicabTelegram {
     double timeSec = 0;
     bool longFmt = false, inverted = false;
     ebicab::Header header;
+    std::vector<ebicab::Packet> packets;   // SUBSET-026 packets after the header
     std::string hex;             // the user bits
     int repeats = 1;             // copies seen in a row (the balise repeats its telegram while the train passes)
     float snrDb = 0;

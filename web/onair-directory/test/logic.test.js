@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -197,4 +200,10 @@ test("reachability probe: fixed path, no redirects, boolean only", async () => {
   seen.length = 0;
   assert.equal(await probeReachable("http://127.0.0.1/", f(200, '{"proto":1,"name":"x"}')), false);   // private literal: never fetched
   assert.equal(seen.length, 0);
+});
+
+test("dev-only *.localhost listing is off unless the flag is given", () => {
+  assert.equal(validateUrl("http://abc.relay.localhost:8099/").ok, false);
+  assert.equal(validateUrl("http://abc.relay.localhost:8099/", true).ok, true);
+  assert.equal(validateUrl("http://abc.example.com/", true).ok, true === validateUrl("http://abc.example.com/").ok);
 });

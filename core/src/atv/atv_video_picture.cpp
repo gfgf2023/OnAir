@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV picture decoder: turning a line into pixels (extractPicture), publishing fields and capturing lines.
 #include "atv_video_impl.h"
+#include "dect2/atv/atv_blend.h"
 
 namespace dect2 {
 
@@ -11,14 +15,14 @@ void AtvVideo::Impl::extractPicture(double tL, int row, int field) {
     if (g <= 0) return;
     // the span of samples this line's active part needs, with margins for the filters
     const double a0 = tL + (F.blankEndUs - 1.0) * spu, a1 = tL + (F.blankEndUs + F.activeUs + 1.0) * spu;
-    const long sa = (long)std::floor(a0) - 24, sb = (long)std::ceil(a1) + 24;
+    const int64_t sa = (int64_t)std::floor(a0) - 24, sb = (int64_t)std::ceil(a1) + 24;
     const size_t len = (size_t)(sb - sa + 1);
     const bool useColour = (colourKind == kAtvPal || colourKind == kAtvNtsc) && !bpf.empty();
     const bool colourNow = useColour && colourLocked && !killer && colourCapable && prm.colourOn;
     const bool secamNow = colourKind == kAtvSecam && secamLineOk && !bpf.empty() && !killer && colourCapable && prm.colourOn;
     std::vector<float>& rawv = yv;
     rawv.resize(len);
-    for (size_t k = 0; k < len; k++) rawv[k] = rv[(uint64_t)(sa + (long)k) & kMask];
+    for (size_t k = 0; k < len; k++) rawv[k] = rv[(uint64_t)(sa + (int64_t)k) & kMask];
     const double clampB = Bline;
     // luminance: the video without the colour subcarrier band (or all of it for a picture without colour)
     std::vector<float>& lum = lumBuf;
@@ -95,6 +99,9 @@ void AtvVideo::Impl::extractPicture(double tL, int row, int field) {
     const bool avgPrev = pal && prevValid && prevLineNo + 1 == curNo;
     // luminance at the pixels: 8-tap windowed sinc, positions stepped along the line
     const float stepY = (float)(pxUs * spu), pos0 = (float)(tL + (F.blankEndUs + 0.5 * pxUs) * spu - (double)sa);
+    // a line whose pixels would reach outside the samples copied for it is not a line (a time that does not fit its position, #520: the sample
+    // counter passes 2^31 after 215 s at 10 Msps, which a 32-bit long of Windows could not hold): the picture keeps what it had
+    if (!(pos0 >= 3.f) || !(pos0 + (float)(W - 1) * stepY + 5.f < (float)len)) return;
     yRowP.resize((size_t)W);
     {
         const float* kt = kern.data();
@@ -236,14 +243,7 @@ void AtvVideo::Impl::temporalFilter(AtvFrame& f) {
         return;
     }
     const double T = 5.0 * sig * 255.0 + 8.0;
-    for (size_t i = 0; i < f.rgba.size(); i++) {
-        if ((i & 3) == 3) continue;
-        const int c = f.rgba[i], p = tfPrev[i];
-        const double d = std::abs(c - p);
-        const double w = d <= T ? k : std::min(1.0, k + (d - T) / T);
-        const int o = (int)std::lround(p + (c - p) * w);
-        f.rgba[i] = (uint8_t)o;
-    }
+    atvTemporalBlend(f.rgba.data(), tfPrev.data(), f.rgba.size() & ~(size_t)3, k, T);
     tfPrev = f.rgba;
 }
 
@@ -256,10 +256,64 @@ void AtvVideo::Impl::captureLine(double tL) {
     const double a = tL - 2.0 * spu, span = P;
     for (int k = 0; k < n; k++) {
         const double t = a + span * k / n;
-        const long i0 = (long)std::floor(t);
+        const int64_t i0 = (int64_t)std::floor(t);
         const double fr = t - (double)i0;
         const double r = rvAt((uint64_t)i0) * (1 - fr) + rvAt((uint64_t)i0 + 1) * fr;
         lineWave[(size_t)k] = (float)((Bline - r) / g);
+    }
+
+}
+
+// A blanking line for the VITS analyser: the whole line period from the sync's leading edge, at the input rate, in IRE (blanking 0, white 100).
+// Each line number is averaged over 16 fields before it is handed over. The scale comes from the line's own sync pulse and blanking level (as a VITS analyser measures against the sync amplitude), so the
+// receiver's slow level tracking does not enter the measurement.
+void AtvVideo::Impl::vitsLine(double tL, int lineNo) {
+    if (vitsAcc.size() >= 32 && !vitsAcc.count(lineNo)) return;
+    const int n = (int)std::lround(P);
+    if (n < 16 || spu <= 0) return;
+    std::vector<double> raw((size_t)n);
+    for (int k = 0; k < n; k++) {
+        const double t = tL + k;
+        const int64_t i0 = (int64_t)std::floor(t);
+        const double fr = t - (double)i0;
+        raw[(size_t)k] = rvAt((uint64_t)i0) * (1 - fr) + rvAt((uint64_t)i0 + 1) * fr;
+    }
+    auto mean = [&](double a, double b) {   // microseconds from the sync's leading edge
+        const int i0 = std::max(0, (int)(a * spu)), i1 = std::min(n, (int)(b * spu));
+        double s = 0; for (int i = i0; i < i1; i++) s += raw[(size_t)i];
+        return i1 > i0 ? s / (i1 - i0) : 0.0;
+    };
+    const double tip = mean(0.8, 4.0), blank = mean(8.8, 10.2);   // the sync tip, and the back porch after the colour burst
+    if (std::fabs(blank - tip) < 1e-9) return;
+    std::vector<double>& acc = vitsAcc[lineNo];
+    if (acc.size() != (size_t)n) { acc.assign((size_t)n, 0.0); vitsN[lineNo] = 0; }   // a new line length (another standard or rate): start again
+    for (int k = 0; k < n; k++) acc[(size_t)k] += 100.0 * fmt.syncLevel * (blank - raw[(size_t)k]) / (blank - tip);
+    if (++vitsN[lineNo] < 16) return;
+    std::vector<float> v((size_t)n);
+    for (int k = 0; k < n; k++) v[(size_t)k] = (float)(acc[(size_t)k] / 16);
+    vitsPub[lineNo] = std::move(v);
+    acc.assign((size_t)n, 0.0);
+    vitsN[lineNo] = 0;
+}
+
+// The ghost report: blanking lines without data, averaged (a ghost of the sync pulse shows on them, and no picture can look like one)
+void AtvVideo::Impl::ghostLine(double tL) {
+    const double g = lineGain();
+    if (g <= 0) return;
+    const int n = 512;
+    if (ghostAcc.size() != (size_t)n) { ghostAcc.assign((size_t)n, 0.f); ghostN = 0; }
+    const double a = tL - 2.0 * spu;
+    for (int k = 0; k < n; k++) {
+        const double t = a + P * k / n;
+        const int64_t i0 = (int64_t)std::floor(t);
+        const double fr = t - (double)i0;
+        ghostAcc[(size_t)k] += (float)((Bline - (rvAt((uint64_t)i0) * (1 - fr) + rvAt((uint64_t)i0 + 1) * fr)) / g);
+    }
+    if (++ghostN >= 48) {
+        std::vector<float> avg((size_t)n);
+        for (int k = 0; k < n; k++) avg[(size_t)k] = ghostAcc[(size_t)k] / ghostN;
+        ghost = atvFindGhost(avg, 2.0, n * spu / P, P / spu > 90 ? 9.0 : P / spu < 55 ? 2.5 : 4.7);
+        std::fill(ghostAcc.begin(), ghostAcc.end(), 0.f); ghostN = 0;
     }
 }
 

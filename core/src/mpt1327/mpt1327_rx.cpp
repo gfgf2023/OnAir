@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // MPT 1327 control channel decoder: MSK-style differential FFSK demodulator, per-phase sync search, codeword framing.
 #include "dect2/mpt1327/mpt1327_rx.h"
 #include <cmath>
@@ -85,6 +88,7 @@ struct Decoder::Impl {
     void handleCodeword(uint64_t cw) {
         collecting = false;
         const double t = (double)sample / kFs;
+        if (!tolActive && !valid(cw) && correct(cw)) st.corrected++;   // one wrong bit is repaired (Appendix 2); the tolerant framing never guesses
         if (valid(cw) && (!tolActive || plausible(cw))) {
             st.good++;
             lastGoodT = t;
@@ -145,7 +149,7 @@ struct Decoder::Impl {
             handleCodeword(inverted ? ~h : h);
             return;
         }
-        const uint64_t cwPrev = inv ? ~h : h;   // the last 64 bits: a control channel system codeword when this is a real sync
+        uint64_t cwPrev = inv ? ~h : h;   // the last 64 bits: a control channel system codeword when this is a real sync
         int sys = 0;
         const bool real = valid(cwPrev) && decodeCcsc(cwPrev, sys);
         const double now = (double)sample / kFs;

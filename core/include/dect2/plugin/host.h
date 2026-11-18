@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The plugin host: loads plugin libraries, runs each plugin instance on its own worker thread with a watchdog (or in a helper process),
 // keeps the list of installed plugins, their enabled state, permissions and settings, hands out stable mode numbers, and provides safe mode.
 // The C ABI the plugins see is sdk/include/onair_plugin.h; this file is the C++ side the program uses. docs/plugins.md explains it.
@@ -92,6 +95,7 @@ struct Entry {
     Manifest m;
     std::string dir, libraryPath, error;           // error: why it cannot run ("" = fine)
     bool bundled = false, valid = false, enabled = false, permsAnswered = false;
+    bool revoked = false;                          // switched off by the store's revocation list (error says why)
     uint32_t granted = 0;
     bool needsPrompt() const { return valid && m.permissions && !permsAnswered; }
 };
@@ -145,11 +149,19 @@ public:
     void tick(double nowUnix);                      // call about once a second: ticks plugins, notices failed ones (disables them, logs why)
     // the IQ stream a running mode asked for (0 = none)
     bool wantedIq(const std::string& id, double& centreHz, double& sampleRate) const;
+    // The sound of the plugins (audio_out, permission "audio-out"): the app plays it. Called on the plugin's thread (or the helper's reader
+    // thread) with mono float PCM; must not block. Without a sink the audio is dropped.
+    using AudioSink = std::function<int(const std::string& pluginId, const float* pcm, size_t n, double sampleRate)>;
+    void setAudioSink(AudioSink s);
 
     // install / remove
     bool installFile(const std::string& zipPath, std::string& installedId, std::string& err);
     bool installBytes(const std::vector<uint8_t>& zip, std::string& installedId, std::string& err);
     bool remove(const std::string& id, std::string& err);
+    // The kill switch of the plugin store: id -> (version spec, reason). Written to plugins/revoked.json; every installed plugin it covers is
+    // stopped, shown as failed with the reason and cannot be turned on until the entry is gone. An empty map clears the list.
+    void setRevoked(const std::map<std::string, std::pair<std::string, std::string>>& r);
+    std::map<std::string, std::pair<std::string, std::string>> revoked() const;
 
     std::vector<std::string> log(const std::string& id, size_t n = 200) const;
     std::string pluginsDir() const { return cfg_.pluginsDir; }

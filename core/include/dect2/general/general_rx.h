@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // General receiver: listen anywhere in the radio's band with NFM, WFM (mono), AM, USB, LSB or CW.
 //
 // The channel (dial frequency + a channel offset, set by a click on the spectrum) is mixed to 0 Hz, decimated by two per stage
@@ -30,19 +33,29 @@ namespace dect2 {
 
 struct GeneralTelemetry;   // general_tel.h
 
-enum GeneralDemod { GenNfm = 0, GenWfm, GenAm, GenUsb, GenLsb, GenCw, GenDemodCount };
+// GenDsb: both sidebands, no carrier (a product detector at the dial); GenRaw: no demodulation, the channel's I (in-phase) part is the audio and
+// recordings keep the channel IQ; GenCwl: CW with the beat note below the carrier (the mirror of GenCw). Appended in 4.0: the numbers of the
+// first six stay (saved settings, memories, the remote API and the web / Android clients use them).
+enum GeneralDemod { GenNfm = 0, GenWfm, GenAm, GenUsb, GenLsb, GenCw, GenDsb, GenRaw, GenCwl, GenDemodCount };
+inline bool generalIsCw(int d) { return d == GenCw || d == GenCwl; }
 
 constexpr double kGeneralAudioRate = 48000.0;
 constexpr double kGeneralWideRate = 240000.0;       // WFM demodulation rate (5 x 48 kHz)
+constexpr double kGeneralMaxChannelRate = 768000.0; // widest channel rate of the narrow demodulators (48 kHz x 16)
+constexpr double kGeneralEdgeFrac = 11.0 / 24.0;    // a filter edge may reach this fraction of the channel rate (22 kHz at 48 kHz)
 constexpr double kGeneralSsbLowCutHz = 300.0;       // USB / LSB: the passband starts this far from the dial
 
-const char* generalDemodName(int demod);             // "NFM", "WFM", "AM", "USB", "LSB", "CW"
+const char* generalDemodName(int demod);             // "NFM", "WFM", "AM", "USB", "LSB", "CW", "DSB", "RAW", "CW-L"
 // Width presets of a demodulator (Hz), the default among them, and the range a dragged edge may set
 const double* generalWidthPresets(int demod, int& count);
 double generalDefaultWidth(int demod);
-void generalWidthRange(int demod, double& minHz, double& maxHz);
+// srcRateHz > 0: the upper limit also stays inside what a channel at no more than that input rate can hold
+void generalWidthRange(int demod, double& minHz, double& maxHz, double srcRateHz = 0);
+// The rate the demodulator channel runs at: WFM 240 kHz; the others 48 kHz while the filter edge fits (always for the default widths), then
+// 96, 192, 384, 768 kHz as the edge needs, never above the input rate (when > 0). The audio for the speaker, tap and recordings stays 48 kHz.
+double generalChannelRate(int demod, double widthHz, double srcRateHz = 0);
 double generalClampWidth(int demod, double hz);
-// The channel filter relative to the channel frequency: [-w/2, w/2] for NFM / WFM / AM / CW, [300, 300 + w] USB, [-300 - w, -300] LSB
+// The channel filter relative to the channel frequency: [-w/2, w/2] for NFM / WFM / AM / CW / DSB / RAW / CW-L, [300, 300 + w] USB, [-300 - w, -300] LSB
 void generalFilterEdges(int demod, double widthHz, double& loHz, double& hiHz);
 double generalDefaultDeemphUs(int demod);           // WFM 50 us, the others off (0)
 
@@ -66,6 +79,9 @@ public:
     void setSquelch(bool on, bool autoMode, float levelDb);   // levelDb: the "level" threshold in dBFS
     void setAgc(bool on, float manualGainDb);        // AM / SSB / CW: AGC, or a fixed gain (dB) when off
     void setDeemphUs(double us);                     // NFM / WFM: 0 off, 50, 75, 750
+    // 4.1 NFM below the FM threshold: 0 the discriminator (default), 1 a phase-locked loop demodulator, 2 automatic (the loop while the carrier is
+    // under 8 dB over the noise beside the channel). See docs/SENSITIVITY-4.1.md for what it measured.
+    void setFmPll(int mode);
     void setCwPitchHz(double hz);
     // AM detector: 0 envelope (default), 1 synchronous (a PLL on the carrier: no distortion when the carrier fades, a little less noise
     // near the threshold), 2 synchronous upper sideband only, 3 lower only (an interfering station on the other side is left out)
@@ -87,6 +103,9 @@ public:
     float noiseRemoverVad() const;                   // speech probability of the last 10 ms (0 while off)
     void setSilent(bool s);                          // demodulate but never open the sound device (tests, command line)
     void setAudioTap(std::function<void(const float* x, size_t n)> cb);   // tests: the 48 kHz audio after the squelch
+    // The demodulated passband at the channel rate (the 48 kHz audio itself while the channel runs at 48 kHz), after the squelch, before the
+    // audio filters: for decoders that need a wide signal. rateHz is the real rate of x; it can change with the filter width.
+    void setWideTap(std::function<void(const float* x, size_t n, double rateHz)> cb);
 
     bool startRecording(const std::string& wavPath); // 16-bit mono 48 kHz WAV of what is heard; false when the file cannot be made
     void stopRecording();

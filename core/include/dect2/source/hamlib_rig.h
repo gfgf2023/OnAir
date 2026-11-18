@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Hamlib CAT rig entries the user adds (serial port + model). IQ/audio uses a separate sound-card path when configured.
 #pragma once
 #include "source.h"
@@ -44,6 +47,9 @@ std::string hamlibRigDeviceName(const HamlibRig& r);
 std::vector<DeviceInfo> hamlibRigDevices(const std::vector<HamlibRig>& v);
 
 bool hamlibSupported();   // false when built without Hamlib
+// The Hamlib library itself: always there when it was linked; the Windows packages load libhamlib-4.dll at run time (#495), and without it
+// this is false with the reason (what to put where) in *why.
+bool hamlibLibraryReady(std::string* why = nullptr);
 
 // What the running Hamlib source last learned from the rig, for the interface: the dial and mode the operator turned on the rig.
 // seq grows each time the RIG changed it (not when OnAir set it), so the interface applies each change once.

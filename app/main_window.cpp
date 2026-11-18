@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The main window: choosing the GLFW platform on Linux, creating and sizing the window, and loading the fonts.
 // Split from main.cpp; main() calls createMainWindow() and loadFonts().
 // Linux picks X11 or Wayland here; on macOS and Windows the window is created as is.
@@ -7,6 +10,8 @@
 #include "app.h"
 #include "dect2/power/power.h"
 #include "ui/typography.h"
+#include "ui/cjk_fonts.h"
+#include "i18n/i18n.h"
 #include "ui/contrast.h"
 #include "dect2/source/iq_file.h"
 #include "panels/gallery.h"
@@ -15,7 +20,12 @@
 #include <chrono>
 #include <cstdlib>
 #if defined(__linux__)
+#include <cstring>
+#include <dirent.h>
+#include <functional>
+#include <unistd.h>
 #include <dlfcn.h>
+#include "gfx/render_caps.h"
 #endif
 #include "main_internal.h"
 
@@ -59,6 +69,75 @@ static bool glfwOnWayland() {
     if (auto getPlatform = (int (*)())dlsym(RTLD_DEFAULT, "glfwGetPlatform")) return getPlatform() == kGlfwPlatformWayland;
     auto display = (void* (*)())dlsym(RTLD_DEFAULT, "glfwGetWaylandDisplay");   // GLFW 3.3 built for Wayland
     return display && display();
+}
+#endif
+
+
+#if defined(__linux__)
+// #470: the renderer a window's context got (glGetString(GL_RENDERER)), read before the back end exists; "" when it cannot be read
+static std::string contextRenderer(GLFWwindow* w) {
+    glfwMakeContextCurrent(w);
+    auto gs = (const unsigned char* (*)(unsigned))glfwGetProcAddress("glGetString");
+    const unsigned char* r = gs ? gs(0x1F01) : nullptr;   // GL_RENDERER
+    std::string out = r ? (const char*)r : "";
+    glfwMakeContextCurrent(nullptr);
+    return out;
+}
+// The GPU render nodes (/dev/dri/renderD*) with their kernel driver, and whether this user may open them. Empty: no GPU node at all.
+struct GpuNode { std::string path, driver; bool access = false; };
+static std::vector<GpuNode> gpuNodes() {
+    std::vector<GpuNode> v;
+    DIR* d = opendir("/dev/dri");
+    if (!d) return v;
+    while (dirent* e = readdir(d)) {
+        if (strncmp(e->d_name, "renderD", 7) != 0) continue;
+        GpuNode n;
+        n.path = std::string("/dev/dri/") + e->d_name;
+        n.access = access(n.path.c_str(), R_OK | W_OK) == 0;
+        char link[512] = {0};
+        const std::string sys = std::string("/sys/class/drm/") + e->d_name + "/device/driver";
+        const ssize_t k = readlink(sys.c_str(), link, sizeof link - 1);
+        if (k > 0) { link[k] = 0; const char* b = strrchr(link, '/'); n.driver = b ? b + 1 : link; }
+        v.push_back(n);
+    }
+    closedir(d);
+    return v;
+}
+// A desktop OpenGL context that came back as a software renderer (llvmpipe) while a GPU is there: OpenGL ES 3.0 through EGL reaches the GPU's
+// own driver where GLX does not (a Raspberry Pi 5's V3D: GLES 3.1, desktop GL only 3.1 and often llvmpipe through XWayland's GLX, #470).
+// ONAIR_GL=desktop keeps desktop OpenGL; ONAIR_GL=gles asks for OpenGL ES first. Returns the window to use (the old one, or the ES one).
+static GLFWwindow* preferGpuContext(GLFWwindow* window, const std::function<GLFWwindow*()>& makeEs) {
+    const char* want = getenv("ONAIR_GL");
+    const bool forceDesktop = want && !strcmp(want, "desktop"), forceEs = want && !strcmp(want, "gles");
+    if (forceDesktop) return window;
+    const std::string r = contextRenderer(window);
+    if (!forceEs && !rcaps::isSoftwareRenderer(r.c_str())) return window;
+    const std::vector<GpuNode> nodes = gpuNodes();
+    for (const char* e : {"LIBGL_ALWAYS_SOFTWARE", "GALLIUM_DRIVER", "MESA_LOADER_DRIVER_OVERRIDE"})
+        if (const char* v = getenv(e)) if (*v) fprintf(stderr, "renderer: %s=%s is set: it can keep Mesa on the processor\n", e, v);
+    if (nodes.empty() && !forceEs) {
+        fprintf(stderr, "renderer: desktop OpenGL is %s and there is no GPU render node (/dev/dri/renderD*): no GPU driver is loaded\n", r.c_str());
+        return window;
+    }
+    bool anyAccess = forceEs;
+    for (const GpuNode& n : nodes) {
+        fprintf(stderr, "renderer: GPU %s (%s)%s\n", n.path.c_str(), n.driver.empty() ? "driver unknown" : n.driver.c_str(),
+                n.access ? "" : ": no permission; add yourself to the render group (sudo usermod -aG render $USER) and log in again");
+        anyAccess = anyAccess || n.access;
+    }
+    if (!anyAccess) return window;
+    fprintf(stderr, "renderer: desktop OpenGL gave %s; trying OpenGL ES 3.0 through EGL for the GPU\n", r.empty() ? "no renderer name" : r.c_str());
+    GLFWwindow* es = makeEs();
+    if (!es) { fprintf(stderr, "renderer: no OpenGL ES 3.0 context through EGL; staying on %s\n", r.c_str()); return window; }
+    const std::string er = contextRenderer(es);
+    if (rcaps::isSoftwareRenderer(er.c_str()) && !forceEs) {
+        fprintf(stderr, "renderer: OpenGL ES is %s too; staying on desktop OpenGL (check that Mesa's driver for this GPU is installed: eglinfo -B)\n", er.c_str());
+        glfwDestroyWindow(es);
+        return window;
+    }
+    fprintf(stderr, "renderer: using OpenGL ES 3.0 through EGL on %s (ONAIR_GL=desktop goes back to desktop OpenGL)\n", er.c_str());
+    glfwDestroyWindow(window);
+    return es;
 }
 #endif
 
@@ -106,6 +185,25 @@ GLFWwindow* createMainWindow(int argc, char** argv) {
             "(over SSH or without a display there is no window; set DISPLAY or use a local session).").c_str());
         return nullptr;
     }
+#if defined(__linux__)
+    {   // #470: llvmpipe from desktop OpenGL while a GPU is there: OpenGL ES through EGL
+        const int keep = gfx::level();
+        GLFWwindow* chosen = preferGpuContext(window, [&]() -> GLFWwindow* {
+            gfx::setLevel(gfx::glesLevel());
+            glfwDefaultWindowHints();
+            gfx::windowHints();
+            glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+            if (hidden) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            int winW = 1500, winH = 900;
+            if (const char* ws = getenv("ONAIR_WINSIZE")) sscanf(ws, "%dx%d", &winW, &winH);
+            GLFWwindow* w = glfwCreateWindow(winW, winH, "OnAir", nullptr, nullptr);
+            glfwDefaultWindowHints();
+            return w;
+        });
+        if (chosen == window) gfx::setLevel(keep);
+        window = chosen;
+    }
+#endif
     if (gfx::level() > 0) fprintf(stderr, "graphics: %s\n", gfx::levelName());
     if (const char* sz = std::getenv("ONAIR_WINDOW_SIZE")) { int w = 0, h = 0; if (sscanf(sz, "%dx%d", &w, &h) == 2 && w >= 200 && h >= 200) glfwSetWindowSize(window, w, h); }   // dev: window size for screenshots, e.g. 700x800
 #ifndef __APPLE__
@@ -144,12 +242,16 @@ GLFWwindow* createMainWindow(int argc, char** argv) {
 // (ImGui 1.92: MergeMode always merges into the font added LAST, whatever ImFontConfig::DstFont says, so each base font gets its CJK fonts before the next base font is added;
 // merging into the first font after the second was added trips an assert in ImFontAtlasBuildSetupFontSpecialGlyphs in a Debug build, #104)
 static void mergeCjk(ImGuiIO& io, ImFont* dst) {
-    for (const auto& f : plat::cjkFontCandidates()) {
+    // the interface language puts its own CJK fonts first (cjk_order.h); loadFonts() runs again when the language changes
+    for (const auto& f : plat::cjkFontCandidates(i18n::current())) {
         if (access(f.c_str(), R_OK) != 0) continue;
         ImFontConfig mc;
         mc.MergeMode = true;
         mc.DstFont = dst;
-        io.Fonts->AddFontFromFileTTF(f.c_str(), 13.0f, &mc);
+        // Hiragino (macOS, "ヒラギノ" in the Japanese file name) fills its em box, so at 100% its kana and kanji look larger than the Latin
+        // text; 0.9 matches the bundled Chinese font (cjk_fonts.cpp). The other CJK fonts keep the size of dst.
+        const bool hiragino = f.find("Hiragino") != std::string::npos || f.find("\xE3\x83\x92\xE3\x83\xA9\xE3\x82\xAE\xE3\x83\x8E") != std::string::npos;
+        io.Fonts->AddFontFromFileTTF(f.c_str(), dst->Sources[0]->SizePixels * (hiragino ? 0.9f : 1.0f), &mc);
     }
 }
 
@@ -158,15 +260,27 @@ void loadFonts(App& app, ImGuiIO& io) {
         app.ui = typo::fonts().regular; app.mono = typo::fonts().mono;
         return;
     }
-    ImFont* ui = nullptr;
-    app.mono = nullptr;
-    for (const auto& f : plat::monoFontCandidates()) if (access(f.c_str(), R_OK) == 0 && (ui = io.Fonts->AddFontFromFileTTF(f.c_str(), 13.0f))) break; // the whole UI is monospaced
-    if (!ui) ui = typo::loadEmbeddedMono(io, 13.0f, [](ImGuiIO& i, ImFont* f) { mergeCjk(i, f); });   // no system font (NixOS): the embedded one
-    if (!ui) ui = io.Fonts->AddFontDefault();
-    // CJK (Korean/Japanese/Chinese): merge every system font that loads (Menlo has no Hangul; DRM Journaline needs it).
-    mergeCjk(io, ui);
-    for (const auto& f : plat::monoFontCandidates()) if (access(f.c_str(), R_OK) == 0 && (app.mono = io.Fonts->AddFontFromFileTTF(f.c_str(), 13.0f))) break;
-    if (app.mono) mergeCjk(io, app.mono);
+    auto systemMono = [&]() -> ImFont* {
+        ImFontConfig config;
+        cjk::configureBase(config);
+        for (const auto& path : plat::monoFontCandidates()) {
+            if (access(path.c_str(), R_OK) != 0) continue;
+            if (ImFont* f = io.Fonts->AddFontFromFileTTF(path.c_str(), 13.0f, &config)) {
+                cjk::merge(io, f);
+                mergeCjk(io, f);
+                return f;
+            }
+        }
+        return nullptr;
+    };
+    ImFont* ui = systemMono();
+    if (!ui) ui = typo::loadEmbeddedMono(io, 13.0f, mergeCjk);
+    if (!ui) {
+        ui = io.Fonts->AddFontDefault();
+        cjk::merge(io, ui);
+        mergeCjk(io, ui);
+    }
     app.ui = ui;
+    app.mono = systemMono();
     if (!app.mono) app.mono = ui;
 }

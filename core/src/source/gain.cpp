@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/source/gain.h"
 #include <algorithm>
 #include <atomic>
@@ -33,8 +36,16 @@ void setAdcBits(int bits) { gAdcBits = std::max(8, std::min(16, bits)); }
 int adcBits() { return gAdcBits.load(); }
 double adcLowDbfs() { return std::max(-46.0, -22.0 - 6.0 * (gAdcBits.load() - 8)); }
 
+static std::atomic<bool> gAdcComp{false};
+void setAdcLevelCompensated(bool on) { gAdcComp = on; }
+bool adcLevelCompensated() { return gAdcComp.load(); }
+
 AdcStatus classifyAdc(double rms, double peak, double clip) {
     if (clip > 0.002 || peak >= 0.99) return AdcStatus::Overload;
+    if (gAdcComp.load()) {   // the level is the radio's own (scaled in its firmware): only silence or a hot level mean anything
+        if (rms < -120) return AdcStatus::NoSignal;
+        return rms > -11 ? AdcStatus::High : AdcStatus::Good;
+    }
     if (rms < -50) return AdcStatus::NoSignal;
     if (rms < adcLowDbfs()) return AdcStatus::Low;
     if (rms > -11) return AdcStatus::High;

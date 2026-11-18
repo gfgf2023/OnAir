@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui
 
 import io.github.adswill.onair.Modes
@@ -124,6 +127,14 @@ class PrefsAndCreditsTest {
         assertEquals("Roof/top,x", back[0].name)
         assertEquals(l[1], back[1])
         assertTrue(NetworkRadio.decodeAll("0|x|h|1;;2|n|h|99999").isEmpty())   // test signal is not a network radio; bad port
+    }
+
+    @Test fun sdrppServerRadioRoundTrip() {
+        val r = NetworkRadio(SourceKind.NETWORK, "Attic", "10.0.0.5", 5259, "sdrpp")
+        assertEquals(r, NetworkRadio.decode(r.encode()))
+        assertTrue(r.id != NetworkRadio(SourceKind.NETWORK, "Attic", "10.0.0.5", 5259, "kiwisdr").id)
+        assertEquals(null, NetworkRadio.decode("5|n|h|5259"))        // a network-kind radio needs its type key
+        assertEquals(null, NetworkRadio.decode("2|n|h|1234|sdrpp"))  // rtl_tcp has none
     }
 
     @Test fun creditsParsers() {

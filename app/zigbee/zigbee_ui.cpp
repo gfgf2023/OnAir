@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Zigbee / IEEE 802.15.4 screens: the PAN list (PAN ID, extended PAN ID, channel, coordinator, devices, level, packets, last seen), the device list
 // (short and extended address, vendor from the OUI, role, level), the live frame log (time, channel, frame type, source > destination, length, FCS)
 // with a packets-per-second plot, the channel picker (11 - 26) and the channel scan.
@@ -5,9 +8,11 @@
 // sent in the clear are shown in full.
 #include "dect2/common/time_fmt.h"
 #include "app.h"
+#include "ui/topo_view.h"
 #include "dect2/zigbee/zigbee_proto.h"
 #include "dect2/zigbee/zigbee_rx.h"
 #include "dect2/zigbee/zigbee_tel.h"
+#include "dect2/zigbee/zigbee_health.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -28,6 +33,7 @@ struct State {
     char filter[64] = "";
     float minRssi = -120;
     std::string sel;                     // "pan/address" of the device clicked: the frame log shows only its frames
+    bool curThread = false;              // the screens being drawn are the Thread mode's
     int selPan = -1;                     // the PAN clicked in the network list: the device list and the log show only it
 };
 State S;
@@ -39,7 +45,9 @@ void loadState() {
     S.dwellSec = std::max(1, std::min(60, (int)plat::prefs().getI("zbDwell", 5)));
 }
 
-bool live(const App& a) { return a.rx.standard == 66; }   // the engine reports its standard code minus one
+bool isThread(const App& a) { return a.family == 244; }   // the Thread mode shares these screens (the same 802.15.4 receiver, frames read as Thread)
+const dect2::ZigbeeTelemetry& zt(const App& a) { return isThread(a) ? a.rx.thread : a.rx.zigbee; }
+bool live(const App& a) { return a.rx.standard == (isThread(a) ? 245 : 66); }   // the engine reports its standard code minus one
 
 std::string clock(int64_t t) {
     if (t <= 0) return "-";
@@ -72,6 +80,10 @@ void receiveNote() {
     ImGui::TextDisabled("Receive only: OnAir never transmits, joins or answers a network. Encrypted payloads are not decrypted (the network key is not obtainable here); "
                         "only frames sent in the clear are shown in full: beacons, MAC commands, headers and the few unencrypted messages. Needs a fast radio "
                         "(4 Msps or more, 2.4 GHz: not an RTL-SDR).");
+    if (S.curThread)
+        ImGui::TextDisabled("Thread: nearly all frames are AES-CCM encrypted at the link layer. For them the 802.15.4 header, the frame counter and the key index are shown "
+                            "and the content (6LoWPAN, IPv6, MLE, CoAP) is marked encrypted. Beacons (network name, extended PAN ID), Joiner scans (MLE Discovery) and other "
+                            "clear frames are decoded.");
     ImGui::PopTextWrapPos();
 }
 
@@ -100,16 +112,17 @@ void filters(App& a) {
 void networksView(App& a) {
     receiveNote();
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to see the networks around you"); return; }
-    const dect2::ZigbeeTelemetry& t = a.rx.zigbee;
+    const dect2::ZigbeeTelemetry& t = zt(a);
     if (t.ppsHist.size() >= 2) {
         ImGui::TextDisabled("Frames per second");
         ImGui::PlotLines("##zbpps", t.ppsHist.data(), (int)t.ppsHist.size(), 0, nullptr, 0, FLT_MAX, ImVec2(ImGui::GetContentRegionAvail().x, 44 * gUi));
     }
-    if (!ImGui::BeginTable("##zbpan", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollX,
+    const bool th = isThread(a);
+    if (!ImGui::BeginTable("##zbpan", th ? 9 : 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollX,
                            ImVec2(0, ImGui::GetContentRegionAvail().y)))
         return;
     ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("PAN ID"); ImGui::TableSetupColumn("Extended PAN ID"); ImGui::TableSetupColumn("Ch"); ImGui::TableSetupColumn("Coordinator");
+    ImGui::TableSetupColumn("PAN ID"); if (th) ImGui::TableSetupColumn("Network name"); ImGui::TableSetupColumn("Extended PAN ID"); ImGui::TableSetupColumn("Ch"); ImGui::TableSetupColumn("Coordinator");
     ImGui::TableSetupColumn("Devices"); ImGui::TableSetupColumn("Level"); ImGui::TableSetupColumn("Packets"); ImGui::TableSetupColumn("Last seen", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
     for (const auto& p : t.pans) {
@@ -121,10 +134,11 @@ void networksView(App& a) {
         if (ImGui::Selectable("##row", S.selPan == p.pan, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) S.selPan = S.selPan == p.pan ? -1 : p.pan;
         ImGui::SameLine(0, 0);
         ImGui::PushFont(a.mono, 0); ImGui::TextColored(c, "%s", panText(p.pan).c_str()); ImGui::PopFont();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s%s\nclick to show only this network's devices and frames", p.zigbee ? "Zigbee network" : "IEEE 802.15.4 network (no Zigbee header seen)",
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s%s\nclick to show only this network's devices and frames", th ? (p.zigbee ? "Thread network" : "IEEE 802.15.4 network (no Thread header seen)") : p.zigbee ? "Zigbee network" : "IEEE 802.15.4 network (no Zigbee header seen)",
                                                       p.stackProfile >= 0 ? (p.stackProfile == 2 ? ", stack profile 2 (Zigbee PRO)" : p.stackProfile == 1 ? ", stack profile 1" : "") : "", p.joinOpen ? "\njoining is open" : "");
+        if (th) { ImGui::TableNextColumn(); if (p.networkName.empty()) ImGui::TextDisabled("-"); else ImGui::TextUnformatted(p.networkName.c_str()); }
         ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::TextUnformatted(p.extPan.c_str()); ImGui::PopFont();
-        ImGui::TableNextColumn(); if (p.channel) ImGui::Text("%d", p.channel); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); if (p.channel) ImGui::TextUnformatted(dect2::zigbee::channelCodeName(p.channel).c_str()); else ImGui::TextDisabled("-");
         ImGui::TableNextColumn(); ImGui::TextUnformatted(p.coordinator.c_str());
         ImGui::TableNextColumn(); ImGui::Text("%d", p.devices);
         ImGui::TableNextColumn(); ImGui::Text("%.0f", p.rssi);
@@ -140,7 +154,7 @@ void devicesView(App& a) {
     receiveNote();
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to see the devices around you"); return; }
     filters(a);
-    const dect2::ZigbeeTelemetry& t = a.rx.zigbee;
+    const dect2::ZigbeeTelemetry& t = zt(a);
     if (!ImGui::BeginTable("##zbdev", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollX,
                            ImVec2(0, ImGui::GetContentRegionAvail().y)))
         return;
@@ -177,7 +191,7 @@ void devicesView(App& a) {
 
 void framesView(App& a) {
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to see the frames"); return; }
-    const dect2::ZigbeeTelemetry& t = a.rx.zigbee;
+    const dect2::ZigbeeTelemetry& t = zt(a);
     const auto& log = t.log;
     if (!S.sel.empty() || S.selPan >= 0) {
         ImGui::AlignTextToFramePadding();
@@ -201,7 +215,7 @@ void framesView(App& a) {
         for (size_t i : rows) {
             const auto& f = log[i];
             char b[600];
-            snprintf(b, sizeof b, "%s\t%d\t%s\t%s > %s\t%d\t%s\t%s\n", clock(f.wallTime).c_str(), f.channel, f.type.c_str(), f.src.c_str(), f.dst.c_str(), f.len, f.fcsOk ? "ok" : "bad", f.info.c_str());
+            snprintf(b, sizeof b, "%s\t%s\t%s\t%s > %s\t%d\t%s\t%s\n", clock(f.wallTime).c_str(), dect2::zigbee::channelCodeName(f.channel).c_str(), f.type.c_str(), f.src.c_str(), f.dst.c_str(), f.len, f.fcsOk ? "ok" : "bad", f.info.c_str());
             txt += b;
         }
         ImGui::SetClipboardText(txt.c_str());
@@ -222,7 +236,7 @@ void framesView(App& a) {
             const auto& f = log[rows[(size_t)i]];
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::TextUnformatted(clock(f.wallTime).c_str());
-            ImGui::TableNextColumn(); if (f.channel) ImGui::Text("%d", f.channel); else ImGui::TextDisabled("-");
+            ImGui::TableNextColumn(); if (f.channel) ImGui::TextUnformatted(dect2::zigbee::channelCodeName(f.channel).c_str()); else ImGui::TextDisabled("-");
             ImGui::TableNextColumn(); ImGui::TextUnformatted(f.type.c_str());
             ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::Text("%s > %s", f.src.c_str(), f.dst.c_str()); ImGui::PopFont();
             ImGui::TableNextColumn(); ImGui::Text("%d", f.len);
@@ -235,29 +249,69 @@ void framesView(App& a) {
 }
 
 void hopTo(App& a, int ch) {
-    const double mhz = dect2::zigbee::channelMhz(ch);
+    const double mhz = dect2::zigbee::channelCodeMhz(ch);
     a.freqMhz = mhz;
     a.tune.centerHz = mhz * 1e6;
     a.engine.retune(a.tune);   // no reset: the tables stay
+}
+
+// Home network health (3.9, docs/SMART5-iot-3.9.md item 14, wired for Zigbee / Thread in docs/SMART5-UI-3.9.md): for the one PAN the user picks
+// as theirs, per node: MAC retransmissions (the same sequence number again within 3 s), requested acknowledgements that never came, the level
+// trend and silence (dect2/zwave/homenet_health.h). An 802.15.4 acknowledgement carries only the sequence number, so it is matched to the
+// frame that asked for it with that number within the last second. Other networks are not followed.
+struct ZbHealth { dect2::ZigbeeHealthFeed feed; bool loaded = false; } H;   // dect2/zigbee/zigbee_health.h
+void healthFeed(const dect2::ZigbeeTelemetry& t) {
+    if (!H.loaded) { H.loaded = true; H.feed = dect2::ZigbeeHealthFeed((int)plat::prefs().getI("zbMyPan", -1)); }
+    if (H.feed.pan() >= 0) H.feed.addLog(t.log);
+}
+void healthView(App& a) {
+    { ImGui::PushTextWrapPos(0);
+      ImGui::TextDisabled("%s", tr("Pick your own network (PAN): its nodes get retransmissions, missing acknowledgements, signal trend and silence. Other networks are not followed. Encrypted networks work too: only the MAC header is used."));
+      ImGui::PopTextWrapPos(); }
+    if (live(a)) for (const auto& p : zt(a).pans) {
+        char b[24]; snprintf(b, sizeof b, "%04X", p.pan);
+        ImGui::SameLine();
+        if (ImGui::RadioButton(b, H.feed.pan() == (int)p.pan)) { H.feed = dect2::ZigbeeHealthFeed(p.pan); H.loaded = true; plat::prefs().setI("zbMyPan", p.pan); plat::prefs().flush(); }
+    }
+    if (H.feed.pan() < 0) { ImGui::TextDisabled("%s", tr("no network picked")); return; }
+    if (!ImGui::BeginTable("##zbh", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+    for (const char* c : {"Node", "Frames", "Retries", "No ack", "Level", "Every", "Note"}) ImGui::TableSetupColumn(tr(c));
+    ImGui::TableHeadersRow();
+    for (const auto& [id, n] : H.feed.health().nodes()) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(id.c_str());
+        ImGui::TableNextColumn(); ImGui::Text("%llu", (unsigned long long)n.frames);
+        ImGui::TableNextColumn(); ImGui::Text("%.0f %%", n.retryPct());
+        ImGui::TableNextColumn(); if (n.ackAsked) ImGui::Text("%.0f %%", n.missPct()); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); if (n.rssiNow > -199) ImGui::Text("%.0f (%+.0f)", n.rssiNow, n.rssiNow - n.rssiFirst); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); if (n.intervalSec > 0) ImGui::Text("%.0f s", n.intervalSec); else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn(); if (!n.text.empty()) ImGui::TextColored(pal::warnAmber(), "%s", n.text.c_str());
+    }
+    ImGui::EndTable();
 }
 
 // ---------------------------------------------------------------- hooks
 
 void tick(App& a) {
     loadState();
+    if (live(a)) healthFeed(zt(a));
     if (!a.engine.running() || !S.scan || a.devices[a.devIdx].kind == DeviceInfo::File) { S.lastHop = ImGui::GetTime(); return; }
     if (ImGui::GetTime() - S.lastHop < S.dwellSec) return;
     S.lastHop = ImGui::GetTime();
-    const int cur = dect2::zigbee::channelOf(a.freqMhz);
-    hopTo(a, cur >= dect2::zigbee::kLastChannel || cur < dect2::zigbee::kFirstChannel ? dect2::zigbee::kFirstChannel : cur + 1);
+    namespace zb = dect2::zigbee;
+    const int cur = zb::channelCodeOf(a.freqMhz);
+    int next = zb::kFirstChannel;   // 2.4 GHz: 11 ... 26, then 11 again; 868 / 915 MHz: 868 ch 0, 915 ch 1 ... 10, then 868 ch 0 again (each band scans itself)
+    if (zb::isSubGhzChannel(cur)) next = cur >= zb::kSubChannelBase + 10 ? zb::kSubChannelBase : cur + 1;
+    else if (cur >= zb::kFirstChannel && cur < zb::kLastChannel) next = cur + 1;
+    hopTo(a, next);
 }
 
 void tuner(App& a, bool& retune) {
     loadState();
     ImGui::TextDisabled("Channel");
-    const int cur = dect2::zigbee::channelOf(a.freqMhz);
-    char label[40];
-    if (cur) snprintf(label, sizeof label, "%d (%.0f MHz)", cur, dect2::zigbee::channelMhz(cur)); else snprintf(label, sizeof label, "other");
+    const int cur = dect2::zigbee::channelCodeOf(a.freqMhz);
+    char label[48];
+    if (cur) snprintf(label, sizeof label, "%s (%.1f MHz)", dect2::zigbee::channelCodeName(cur).c_str(), dect2::zigbee::channelCodeMhz(cur)); else snprintf(label, sizeof label, "other");
     ImGui::SameLine(0, 5 * gUi);
     ImGui::SetNextItemWidth(std::min(140 * gUi, ImGui::GetContentRegionAvail().x));
     if (ImGui::BeginCombo("##zbch", label)) {
@@ -266,10 +320,17 @@ void tuner(App& a, bool& retune) {
             snprintf(b, sizeof b, "%d  %.0f MHz", c, dect2::zigbee::channelMhz(c));
             if (ImGui::Selectable(b, c == cur)) { tuneFreq(a, dect2::zigbee::channelMhz(c)); retune = true; }
         }
+        if (!isThread(a)) ImGui::Separator();
+        for (int c = dect2::zigbee::kSubChannelBase; !isThread(a) && c <= dect2::zigbee::kSubChannelBase + 10; c++) {   // sub-GHz BPSK: Europe 868.3 MHz, North America / Australia 906 - 924 MHz
+            char b[64];
+            snprintf(b, sizeof b, "%s  %.1f MHz%s", dect2::zigbee::channelCodeName(c).c_str(), dect2::zigbee::channelCodeMhz(c), c == dect2::zigbee::kSubChannelBase ? "  (Europe, 20 kbit/s)" : "  (US / Australia, 40 kbit/s)");
+            if (ImGui::Selectable(b, c == cur)) { tuneFreq(a, dect2::zigbee::channelCodeMhz(c)); retune = true; }
+        }
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("802.15.4 channels 11 to 26, 2 MHz wide, 5 MHz apart from 2405 MHz. A radio takes in one channel at a time at 4 Msps;\n"
-                                                  "channels 15, 20, 25 and 26 are the ones Zigbee networks usually avoid Wi-Fi with. Single-channel mode listens to the one chosen.");
+                                                  "channels 15, 20, 25 and 26 are the ones Zigbee networks usually avoid Wi-Fi with. Single-channel mode listens to the one chosen.\n"
+                                                  "Below the line: the sub-GHz BPSK channels, 868.3 MHz (Europe) and 906 - 924 MHz in 2 MHz steps (US, Australia), at 20 and 40 kbit/s.");
     ImGui::SameLine(0, 8 * gUi);
     if (ImGui::Checkbox("scan", &S.scan)) { plat::prefs().setB("zbScan", S.scan); plat::prefs().flush(); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Step through channels 11 to 26, listening to each for the dwell time (a radio that takes in a single 2 MHz channel misses what is sent\n"
@@ -282,13 +343,15 @@ void tuner(App& a, bool& retune) {
 }
 
 void tab(App& a) {
-    subNav("zbv", S.view, {"Networks", "Devices", "Frames"});
-    if (S.view == 0) networksView(a); else if (S.view == 1) devicesView(a); else framesView(a);
+    S.curThread = isThread(a);
+    subNav("zbv", S.view, {"Networks", "Devices", "Frames", tr("Topology"), tr("Health")});
+    if (S.view == 0) networksView(a); else if (S.view == 1) devicesView(a); else if (S.view == 3) topoView(a, isThread(a) ? "th" : "zb", zt(a).topo); else if (S.view == 4) healthView(a); else framesView(a);
 }
 
 void list(App& a) {
+    S.curThread = isThread(a);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
-    const dect2::ZigbeeTelemetry& t = a.rx.zigbee;
+    const dect2::ZigbeeTelemetry& t = zt(a);
     if (!ImGui::BeginTable("##zbl", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
     ImGui::TableSetupColumn("Network / device", ImGuiTableColumnFlags_WidthStretch); ImGui::TableSetupColumn("Level");
     for (const auto& p : t.pans) {
@@ -299,7 +362,7 @@ void list(App& a) {
         if (ImGui::Selectable("##row", S.selPan == p.pan, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) S.selPan = S.selPan == p.pan ? -1 : p.pan;
         ImGui::SameLine(0, 0);
         ImGui::PushFont(a.mono, 0); ImGui::TextColored(recent ? pal::okGreen() : ImGui::GetStyleColorVec4(ImGuiCol_Text), "PAN %s", panText(p.pan).c_str()); ImGui::PopFont();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("channel %d, %d devices\n%s", p.channel, p.devices, p.extPan.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("channel %s, %d devices\n%s", dect2::zigbee::channelCodeName(p.channel).c_str(), p.devices, p.extPan.c_str());
         ImGui::TableNextColumn(); ImGui::TextDisabled("%.0f", p.rssi);
         ImGui::PopID();
     }
@@ -307,10 +370,11 @@ void list(App& a) {
 }
 
 void receiver(App& a) {
+    S.curThread = isThread(a);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
-    const dect2::ZigbeeTelemetry& t = a.rx.zigbee;
+    const dect2::ZigbeeTelemetry& t = zt(a);
     kvRow(a, "state", "%s", dect2::zigbeeSummary(t).c_str());
-    if (t.channel) kvRow(a, "channel", "%d (%.0f MHz)%s", t.channel, dect2::zigbee::channelMhz(t.channel), S.scan ? ", scanning" : "");
+    if (t.channel) kvRow(a, "channel", "%s (%.1f MHz)%s", dect2::zigbee::channelCodeName(t.channel).c_str(), dect2::zigbee::channelCodeMhz(t.channel), S.scan ? ", scanning" : "");
     kvRow(a, "signal", "chip SNR %.1f dB, offset %+.1f kHz", t.snrDb, t.cfoHz / 1e3);
     kvRow(a, "frames", "%llu good, %llu failed FCS, %llu preambles, %llu encrypted", (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad, (unsigned long long)t.preambles, (unsigned long long)t.encryptedFrames);
     kvRow(a, "by type", "beacon %llu, data %llu, ack %llu, command %llu", (unsigned long long)t.perType[0], (unsigned long long)t.perType[1], (unsigned long long)t.perType[2], (unsigned long long)t.perType[3]);
@@ -329,16 +393,16 @@ void status(App& a) {
     const AdcStatus adc = classifyAdc(st.rmsDbfs, st.peak, st.clipFraction);
     StatusPanel panel;
     lamp("IQ", run ? (adc == AdcStatus::Overload ? 3 : (adc == AdcStatus::Good ? 1 : 2)) : 0, (int)Ic::Wave); flowNext(12 * gUi);
-    lamp("Frames", !on ? 0 : a.rx.zigbee.state >= 1 ? 1 : 0); flowNext(10 * gUi);
+    lamp("Frames", !on ? 0 : zt(a).state >= 1 ? 1 : 0); flowNext(10 * gUi);
     ImGui::TextDisabled("|"); flowNext(10 * gUi);
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("State"); ImGui::SameLine(0, 5 * gUi);
-    ImGui::PushFont(a.mono, 0); ImGui::TextUnformatted(!on ? (run ? "starting" : "stopped") : dect2::zigbeeSummary(a.rx.zigbee).c_str()); ImGui::PopFont();
+    ImGui::PushFont(a.mono, 0); ImGui::TextUnformatted(!on ? (run ? "starting" : "stopped") : dect2::zigbeeSummary(zt(a)).c_str()); ImGui::PopFont();
 }
 
 void summary(const App& a, std::string& l1, std::string& l2) {
-    l1 = "Zigbee / 802.15.4";
-    if (live(a)) l2 = dect2::zigbeeSummary(a.rx.zigbee);
+    l1 = isThread(a) ? "Thread" : "Zigbee / 802.15.4";
+    if (live(a)) l2 = dect2::zigbeeSummary(zt(a));
 }
 
 } // namespace
@@ -347,6 +411,20 @@ extern const ModeUi kZigbeeUi;
 const ModeUi kZigbeeUi = {
     .sideTitle = "NETWORKS",
     .tabName = "Zigbee",
+    .tabIcon = Ic::Signal,
+    .tab = tab,
+    .receiver = receiver,
+    .list = list,
+    .status = status,
+    .summary = summary,
+    .tuner = tuner,
+    .tick = tick,
+};
+
+extern const ModeUi kThreadUi;
+const ModeUi kThreadUi = {
+    .sideTitle = "NETWORKS",
+    .tabName = "Thread",
     .tabIcon = Ic::Signal,
     .tab = tab,
     .receiver = receiver,

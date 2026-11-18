@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Ham keyboard modes: text to audio for PSK31 / PSK63, RTTY, CW and the hfdig keyboard families, the transmit limits and the macros.
 #include "dect2/ham/ham_kbd.h"
 #include "dect2/cw/cw_morse.h"
@@ -48,7 +51,7 @@ const std::vector<KbdPreset>& kbdPresets() {
         {"contestia-8-500","Contestia 8/500",KbdKind::Hfdig,0, 0,   KbdContestia,  8,  500,  0, "CONTESTI", "CONTESTI 8/500",  25, "contestia", 0, 1500},
         {"contestia-16-1000","Contestia 16/1000",KbdKind::Hfdig,0,0,KbdContestia,  16, 1000, 0, "CONTESTI", "CONTESTI 16/1000",25, "contestia", 0, 1500},
         {"contestia-32-1000","Contestia 32/1000",KbdKind::Hfdig,0,0,KbdContestia,  32, 1000, 0, "CONTESTI", "CONTESTI 32/1000",25, "contestia", 0, 1500},
-        // MFSK4 .. MFSK64 (kMfskNames order), THOR 4 .. THOR 100, DominoEX 4 .. 22, the Hell variants; submodes from the ADIF 3.1 list
+        // MFSK4 .. MFSK128 (kMfskNames order; the L modes are in the HF digital decoder only), THOR 4 .. THOR 100, DominoEX 4 .. 22, the Hell variants; submodes from the ADIF 3.1 list
         {"mfsk4", "MFSK4", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 0, "MFSK", "MFSK4", 25, "mfsk", 0, 1500},
         {"mfsk8", "MFSK8", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 1, "MFSK", "MFSK8", 25, "mfsk", 0, 1500},
         {"mfsk11", "MFSK11", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 2, "MFSK", "MFSK11", 25, "mfsk", 0, 1500},
@@ -57,6 +60,7 @@ const std::vector<KbdPreset>& kbdPresets() {
         {"mfsk31", "MFSK31", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 5, "MFSK", "MFSK31", 25, "mfsk", 0, 1500},
         {"mfsk32", "MFSK32", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 6, "MFSK", "MFSK32", 25, "mfsk", 0, 1500},
         {"mfsk64", "MFSK64", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 7, "MFSK", "MFSK64", 25, "mfsk", 0, 1500},
+        {"mfsk128", "MFSK128", KbdKind::Hfdig, 0, 0, KbdMfsk, 0, 0, 8, "MFSK", "MFSK128", 25, "mfsk", 0, 1500},
         {"thor4", "THOR 4", KbdKind::Hfdig, 0, 0, KbdThor, 0, 0, 0, "THOR", "THOR4", 25, "thor", 0, 1500},
         {"thor5", "THOR 5", KbdKind::Hfdig, 0, 0, KbdThor, 0, 0, 1, "THOR", "THOR5", 25, "thor", 0, 1500},
         {"thor8", "THOR 8", KbdKind::Hfdig, 0, 0, KbdThor, 0, 0, 2, "THOR", "THOR8", 25, "thor", 0, 1500},
@@ -155,13 +159,17 @@ std::vector<float> renderPsk(const KbdPreset& p, const std::string& text, double
     const auto d = psk::varicodeBits(t);
     bits.insert(bits.end(), d.begin(), d.end());
     bits.insert(bits.end(), (size_t)std::max(qpsk ? 48 : 16, idle / 2), 0);   // postamble (QPSK: longer than the receiver's 40 symbol Viterbi traceback)
-    std::vector<int> turns;                                     // quarter turns per symbol
-    if (qpsk) {
+    std::vector<int> turns;                                     // eighth turns per symbol
+    if (psk8psk(p.pskMode)) {
+        std::string u;
+        for (char c : text) u += c;                             // 8PSK: the MFSK varicode has all 256 codes
+        turns = psk::psk8Steps(u, idle, std::max(16, idle / 2));
+    } else if (qpsk) {
         psk::ConvEncoder enc;
         for (int k = 0; k < 8; k++) bits.push_back(0);          // flush the code
-        for (uint8_t b : bits) turns.push_back(psk::qpskTurns(enc.encode(b)));
+        for (uint8_t b : bits) turns.push_back(2 * psk::qpskTurns(enc.encode(b)));
     } else {
-        for (uint8_t b : bits) turns.push_back(b ? 0 : 2);
+        for (uint8_t b : bits) turns.push_back(b ? 0 : 4);
     }
     const double N = kKbdRate / baud;
     std::vector<float> a;
@@ -170,7 +178,7 @@ std::vector<float> renderPsk(const KbdPreset& p, const std::string& text, double
     const double w = 2 * kPi * hz / kKbdRate;
     double ph = 0, tEnd = 0;
     for (int tq : turns) {
-        const std::complex<double> cur = prev * std::polar(1.0, tq * kPi / 2);
+        const std::complex<double> cur = prev * std::polar(1.0, tq * kPi / 4);
         const size_t s0 = a.size();
         tEnd += N;
         const size_t n = (size_t)std::llround(tEnd) - s0;

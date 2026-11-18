@@ -2,6 +2,18 @@
 
 The user guides and notes that live in the repository. The same text is on the [wiki](https://github.com/adswill/OnAir/wiki) and at [on-air.dev/docs](https://on-air.dev/docs/). The main README is [../README.md](../README.md); radios are in [../DEVICES.md](../DEVICES.md); the code layout is in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
+
+**Start here (OnAir 4.1.0):**
+
+- Install and first run: [../README.md](../README.md) (assets: `OnAir-4.1.0-macos-arm64.dmg`, `-macos-x86_64.dmg`, `-windows-x64-setup.exe`, `-windows-x64.zip`, `onair_4.1.0_amd64.deb` / `_arm64.deb`, Linux portable `.tar.gz` and AppImage, the Android APK, `SHA256SUMS`).
+- Radios: [../DEVICES.md](../DEVICES.md), [NETWORK_RADIOS.md](NETWORK_RADIOS.md), [RASPBERRY_PI.md](RASPBERRY_PI.md). Every mode: [../MODES.md](../MODES.md).
+- Settings and keys: [SETTINGS.md](SETTINGS.md), [CONTROLS.md](CONTROLS.md), [SIMPLE-ADVANCED.md](SIMPLE-ADVANCED.md).
+- Voice codecs and optional libraries (you install them): [CODECS.md](CODECS.md), [OPTIONAL-LIBRARIES.md](OPTIONAL-LIBRARIES.md), [USERLIBS-3.8.md](USERLIBS-3.8.md).
+- Share, serve and automate: [HOST-A-RECEIVER.md](HOST-A-RECEIVER.md), [headless-server.md](headless-server.md), [REMOTE-API.md](REMOTE-API.md), [MCP.md](MCP.md), [INTEGRATIONS.md](INTEGRATIONS.md), [plugins.md](plugins.md).
+- What changed in each release: [CHANGELOG-4.1.md](CHANGELOG-4.1.md) (release notes: [RELEASE-NOTES-4.1.0.md](RELEASE-NOTES-4.1.0.md)), [CHANGELOG-4.0.md](CHANGELOG-4.0.md), [CHANGELOG-3.9.md](CHANGELOG-3.9.md), [CHANGELOG-3.8.md](CHANGELOG-3.8.md) and the older `CHANGELOG-*.md` files. Dated files such as `*-3.7.md`, `*-3.8.md`, `*-3.9.md`, `*-4.0.md`, `*-4.1.md`, `ISSUES-*` and `PATHWAY.md` describe the version in their name.
+
+The table below is the list of topic pages.
+
 | File | Topic | What it covers |
 |---|---|---|
 | [IPTV.md](IPTV.md) | Internet TV (IPTV) | Plays playlists (M3U) and single streams (HLS, MPEG-TS over HTTP, UDP, RTP) with a channel list, favourites and an XMLTV guide. Ships no channels, no DRM. How https works in the FFmpeg-free fetcher. |
@@ -34,7 +46,6 @@ The user guides and notes that live in the repository. The same text is on the [
 | [mt63.md](mt63.md) | MT63 | MT63 is the keyboard-to-keyboard mode of Pawel Jalocha (SP9VRC) that is built to survive fading, interference and a badly tuned dial: |
 | [multi-sdr.md](multi-sdr.md) | Several radios at once (multi-SDR) | Warning shown when a receiver is added: |
 | [noise-remover.md](noise-remover.md) | Neural noise remover (Listen) | Removes steady background noise from speech with RNNoise (Xiph.Org, BSD-3-Clause; vendored in |
-| [DIVERSITY.md](DIVERSITY.md) | Diversity pair (two radios, one better signal) | Two radios on one frequency combined by selection or maximal-ratio combining for weak narrowband signals; off until a pair is made; start-up alignment, delay / offset / drift tracking, tested SNR gains and limits. |
 | [nrsp-st.md](nrsp-st.md) | SDRplay nRSP-ST (network) | Source: |
 | [optimising-a-mode.md](optimising-a-mode.md) | Optimising a mode | The rule: |
 | [PACKS.md](PACKS.md) | Data packs (work without internet) | View > Data packs lists data you can download once and then use offline: |
@@ -72,6 +83,8 @@ The user guides and notes that live in the repository. The same text is on the [
 | [nrf24.md](nrf24.md) | nRF24L01 | Enhanced ShockBurst frames on one 2.4 GHz channel, 250 kbit/s / 1 / 2 Mbit/s, address sniffer (needs a 2.4 GHz SDR; needs a user test). |
 | [INMARSAT.md](INMARSAT.md) | Inmarsat (all carriers) | Every Aero P and Inmarsat-C carrier of one wide capture at once; C voice not decoded (needs a user test). |
 | [ebicab.md](ebicab.md) | EBICab / Eurobalise | Balise up-link telegrams per SUBSET-036 (needs a user test); EBICab formats not public. |
+| [rpr.md](rpr.md) | Robust Packet (RPR) | HF OFDM packet: carriers, bursts and speed level (physical layer only; the coding is not public; needs a recording). |
+| [fleetsync.md](fleetsync.md) | Kenwood FleetSync | FleetSync and FleetSync II ID bursts on FM carriers: fleet and unit number (receive only). |
 
 ## Added in 3.0 (not in the table above yet)
 
@@ -135,7 +148,10 @@ The user guides and notes that live in the repository. The same text is on the [
 | [goes-dcs.md](goes-dcs.md) | GOES / Meteosat DCS |
 | [ifkp.md](ifkp.md) | IFKP (Incremental Frequency Keying Plus) |
 | [marine-vhf.md](marine-vhf.md) | Marine VHF (channels 1 to 88, 156 to 162 MHz) |
+| [GK2A.md](GK2A.md) | GK-2A (Korea, 128.2 E) LRIT 1692.14 MHz BPSK and HRIT 1695.4 MHz QPSK: xRIT files, JPEG 2000 pictures, KMA DES keys, sensitivity |
+| [selcal.md](selcal.md) | SELCAL, the tone call of aircraft on HF and VHF voice channels |
 | [atis.md](atis.md) | ATIS, the transmitter identification of the European inland waterways (Rhine, Danube) |
+| [fy3.md](fy3.md) | FY-3 AHRPT and FY-3 MPT: the Fengyun-3 polar weather satellites (VIRR, MERSI pictures), what is decoded and how sensitive it is |
 | [modeac.md](modeac.md) | Mode A/C |
 | [propagation.md](propagation.md) | Propagation (Tools > Propagation) |
 | [qo100-auto.md](qo100-auto.md) | QO-100 narrowband: presets, auto decoder, conversation manager |
@@ -143,5 +159,114 @@ The user guides and notes that live in the repository. The same text is on the [
 | [satbeacon.md](satbeacon.md) | TV sat beacon decoder |
 | [sigfox.md](sigfox.md) | Sigfox |
 | [voice-inversion.md](voice-inversion.md) | Voice inversion |
+| [CONTROLS.md](CONTROLS.md) | Controls | Keys, mouse buttons and the wheel. |
+| [INTEGRATIONS.md](INTEGRATIONS.md) | Integrations | MQTT, Home Assistant, webhook, JSON lines. |
+| [MCP.md](MCP.md) | AI assistants (MCP) | The tools OnAir offers to an MCP client. |
+| [MULTI-VFO.md](MULTI-VFO.md) | Multi-VFO | Several channels on one capture. |
+| [RECORD-REPLAY.md](RECORD-REPLAY.md) | Record and replay | Recording IQ and audio and playing them back. |
+| [SETTINGS.md](SETTINGS.md) | Settings | Where each setting lives. |
+| [SIMPLE-ADVANCED.md](SIMPLE-ADVANCED.md) | Simple / Advanced view | Per-mode simple and advanced controls. |
+| [STREAM-OUT.md](STREAM-OUT.md) | Stream out | Sending the stream over the network (MPEG-TS). |
+| [WIDE-SESSION.md](WIDE-SESSION.md) | Wide decode | Several signals decoded from one wide capture. |
+| [HOST-A-RECEIVER.md](HOST-A-RECEIVER.md) | Host a receiver | Put your radio on the internet and list it on web.on-air.dev. |
+| [OPTIONAL-LIBRARIES.md](OPTIONAL-LIBRARIES.md) | Optional libraries | Codecs and libraries you install yourself. |
+| [PLUGIN-SDK.md](PLUGIN-SDK.md) | Plug-in SDK | What exists for plug-in authors. |
+
+## Added in 4.1
+
+| File | Topic |
+|---|---|
+| [ANDROID-PLAYER-4.1.md](ANDROID-PLAYER-4.1.md) | Android player: analogue TV, full screen, touch size |
+| [BUGS2-4.1.md](BUGS2-4.1.md) | Bug fixes 4.1: #496, #495, #491, #488, #470 |
+| [CPU-4.1.md](CPU-4.1.md) | CPU per second of signal, every mode |
+| [GSC-4.1.md](GSC-4.1.md) | Golay paging (GSC) |
+| [MODEBUILDER-PLOTS-4.1.md](MODEBUILDER-PLOTS-4.1.md) | Mode Builder Signal tab plots |
+| [MY-LOCATION-MAPS-4.1.md](MY-LOCATION-MAPS-4.1.md) | Your own position on every map |
+| [NATIVE-FIX-4.1.md](NATIVE-FIX-4.1.md) | Native driver test fix |
+| [OOK-SCATTER-4.1.md](OOK-SCATTER-4.1.md) | On / off-time scatter plot for OOK bursts |
+| [RX888-RATES-4.1.md](RX888-RATES-4.1.md) | RX888 MkII sample rates up to 130 Msps |
+| [SCADA-4.1.md](SCADA-4.1.md) | SCADA radio telemetry (Modbus RTU, DNP3) |
+| [SENSITIVITY-4.1.md](SENSITIVITY-4.1.md) | Sensitivity 4.1: data and voice gaps |
+| [SENSITIVITY-4.1-TV.md](SENSITIVITY-4.1-TV.md) | Sensitivity 4.1: TV and DRM |
+| [SENSITIVITY-4.1-ALL.md](SENSITIVITY-4.1-ALL.md) | Sensitivity of every mode |
+| [STL-4.1.md](STL-4.1.md) | STL link (studio-to-transmitter) |
+| [TOUCH-SIZE-4.1.md](TOUCH-SIZE-4.1.md) | Touch control size |
+
+## Added in 4.0
+
+| File | Topic |
+|---|---|
+| [GENERAL-4.0.md](GENERAL-4.0.md) | The General receiver screen |
+| [WORKSPACE-4.0.md](WORKSPACE-4.0.md) | Workspace layout: blocks on a blank canvas |
+| [LAYOUT-4.0.md](LAYOUT-4.0.md) | Panels sized to their content |
+| [HAM-4.0.md](HAM-4.0.md) | Ham station screen: spots, callbook, activation and log tools |
+| [TX-4.0.md](TX-4.0.md) | Transmit parameters and screens |
+| [PROPAGATION-4.0.md](PROPAGATION-4.0.md) | Propagation calculator on ITU-R models |
+| [TRACKER-4.0.md](TRACKER-4.0.md) | Satellite tracker with a world map |
+| [MODELIST-4.0.md](MODELIST-4.0.md) | Mode list tint |
+| [WATERFALL-4.0.md](WATERFALL-4.0.md) | Waterfall and spectrum resolution (zoom FFT) |
+| [SETTINGS-4.0.md](SETTINGS-4.0.md) | Settings 4.0, key editor, profiles |
+| [UI-PREVIEW-4.0.md](UI-PREVIEW-4.0.md) | Hover previews of the looks |
+| [MENUS-4.0.md](MENUS-4.0.md) | Menus 4.0 |
+| [STATUSBAR-4.0.md](STATUSBAR-4.0.md) | Status bar and top bar |
+| [PLUGIN-MARKETPLACE-4.0.md](PLUGIN-MARKETPLACE-4.0.md) | Community plugin marketplace (plugins.on-air.dev) |
+| [MAP-BADGES-4.0.md](MAP-BADGES-4.0.md) | Live map sign-in and badges |
+| [SONDE-PREDICT-4.0.md](SONDE-PREDICT-4.0.md) | Radiosonde landing predictor and its accuracy |
+| [SONDEHUB-4.0.md](SONDEHUB-4.0.md) | SondeHub upload, launch sites, radiosonde map |
+| [HFDL-STATIONS-4.0.md](HFDL-STATIONS-4.0.md) | HFDL nearby ground stations and band choice |
+| [PERF-4.0.md](PERF-4.0.md) | Sample-loss warnings, nRSP-ST, receiver thread |
+| [ATSC-4.0.md](ATSC-4.0.md) | ATSC 1.0 and 3.0 on real channels |
+| [ANDROID-4.0.md](ANDROID-4.0.md) | Android TV picture and sound, USB radios (untested on a phone) |
+| [RIVET-MODES-4.0.md](RIVET-MODES-4.0.md) | HF data modes from Rivet (XPA, XPA2, CROWD36, F01, F06, GW FSK) |
+| [DCR-4.0.md](DCR-4.0.md) | DCR, Japan's digital convenience radio |
+| [X40-4.0.md](X40-4.0.md) | Measurement and monitor modes (index; one page per mode follows it) |
+| [FAMILY-NUMBERS-4.0.md](FAMILY-NUMBERS-4.0.md) | Family numbers taken in 4.0 |
+| [SENSITIVITY-4.0-A.md](SENSITIVITY-4.0-A.md) | Sensitivity 4.0 (A2 to A4, B to B3, C1, X1 to X3 follow) |
+| [FEATURES-4.0-A.md](FEATURES-4.0-A.md) | Per-mode features (B to E follow; WIRING-4.0.md says what is on a screen) |
+| [QA-4.0.md](QA-4.0.md) | QA sweep 4.0 |
+
+## Added in 3.9
+
+| File | Topic |
+|---|---|
+| [WEB-3.9.md](WEB-3.9.md) | OnAir Web: the whole receiver in a browser (user guide); WEB-SCHEMA-3.9.md is the developer side |
+| [WINLINK-3.9.md](WINLINK-3.9.md) | Winlink email: packet, ARDOP, Telnet |
+| [HFMODEMS-3.9.md](HFMODEMS-3.9.md) | External ARDOP, VARA and Mercury modems for Winlink and peer to peer |
+| [ECHOLINK-3.9.md](ECHOLINK-3.9.md) | EchoLink client |
+| [TRUNK1-3.9.md](TRUNK1-3.9.md) | Single-radio trunking: control channel and several calls from one radio |
+| [ATMOS-3.9.md](ATMOS-3.9.md) | Dolby Atmos detection, 5.1 / 7.1 output and passthrough (experimental) |
+| [LIGHTNING-POSITION-3.9.md](LIGHTNING-POSITION-3.9.md) | Lightning position (network) |
+| [SONDE-UPLOAD-3.9.md](SONDE-UPLOAD-3.9.md) | Radiosonde upload to APRS-IS aggregators |
+| [SONDE-TRACK-3.9.md](SONDE-TRACK-3.9.md) | Radiosonde flight track as KML and GPX |
+| [SONDE-SITES-3.9.md](SONDE-SITES-3.9.md) | Radiosonde launch sites |
+| [TMC-PLAIN-3.9.md](TMC-PLAIN-3.9.md) | RDS-TMC in plain words and your own TMC files |
+| [HDMI-EMISSION-3.9.md](HDMI-EMISSION-3.9.md) | Display / HDMI emission finder |
+| [DABSITES-3.9.md](DABSITES-3.9.md) | DAB map: transmitter positions and zoom |
+| [PLUGIN-MARKETPLACE-3.9.md](PLUGIN-MARKETPLACE-3.9.md) | Plugin Store: signed registry design, client and tools |
+| [TXFEAT-3.9.md](TXFEAT-3.9.md) | DTMF keypad and DMR slot sync (transmit) |
+| [R4-PER-MODE-3.9.md](R4-PER-MODE-3.9.md) | Round 4 per-mode features (index of the pages below) |
+| [SMART5-LIST-3.9.md](SMART5-LIST-3.9.md) | Round 5 smart features (index; the SMART5-*-3.9.md pages follow it) |
+| [BCAST-3.9.md](BCAST-3.9.md) | ISDB-TSB |
+| [DVBSH-3.9.md](DVBSH-3.9.md) | DVB-SH |
+| [DVBC2-3.9.md](DVBC2-3.9.md) | DVB-C2 |
+| [AVIA-3.9.md](AVIA-3.9.md) | Military UHF air band, VDL Mode 3, FANS-1/A, TACAN, ILS markers |
+| [W1A-3.9.md](W1A-3.9.md) | HF packet 300 Bd, voice inversion, ELT 121.5 MHz |
+| [W1B-3.9.md](W1B-3.9.md) | Ham science event monitors |
+| [W1C-3.9.md](W1C-3.9.md) | CubeSat framings as own entries |
+| [MISC-3.9.md](MISC-3.9.md) | JT6M and other small modes |
+| [CP16-3.9.md](CP16-3.9.md) | CP16 |
+| [HF-MIL-3.9.md](HF-MIL-3.9.md) | HF military modes (STANAG 4539, 3G-ALE, Link 11 CLEW, STANAG 4481) |
+| [CIS-HF-3.9.md](CIS-HF-3.9.md) | CIS HF data modes |
+| [FBR-3.9.md](FBR-3.9.md) | Fleet Broadcast (UHF SATCOM) |
+| [CELL-3.9.md](CELL-3.9.md) | Cellular broadcast information (CDMA2000, TD-SCDMA, LTE-M, GSM) |
+| [IOTRC-3.9.md](IOTRC-3.9.md) | IoT and RC links (Futaba, Spektrum, Wize, ISM sensors) |
+| [CUBESAT-3.9.md](CUBESAT-3.9.md) | CubeSat framings and the satellite table |
+| [SAT-DCS-XRIT-3.9.md](SAT-DCS-XRIT-3.9.md) | Meteosat HRDCP, DCS channel plans, xRIT links |
+| [SENSITIVITY-3.9-A.md](SENSITIVITY-3.9-A.md) | Sensitivity 3.9: broadcast, TV, satellites (B to E follow: SENSITIVITY-3.9-B.md ... -E.md) |
+| [ATSC-PERF-3.9.md](ATSC-PERF-3.9.md) | ATSC CPU (ATSC-X86-3.9.md for x86) |
+| [QA-SWEEP-3.9.md](QA-SWEEP-3.9.md) | All-modes QA sweep and CPU per mode |
+| [FUZZ-3.9.md](FUZZ-3.9.md) | Fuzzing every decoder |
+| [WORKSBUT-A-3.9.md](WORKSBUT-A-3.9.md) | Issue follow-ups A (WORKSBUT-B-3.9.md: B) |
+| [FIXES-3.9.md](FIXES-3.9.md) | Fixes in 3.9 (FIXES2-3.9.md, SARSAT-CPU-3.9.md) |
 
 The release text is [CHANGELOG-3.0.md](CHANGELOG-3.0.md) (generated by `tools/release/gen_changelog.py`); the new strings for the translation pass are in [I18N-NEW-STRINGS-3.0.md](I18N-NEW-STRINGS-3.0.md).

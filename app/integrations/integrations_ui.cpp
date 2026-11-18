@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Integrations window (View > Integrations): decoded events out as MQTT messages (optionally with Home Assistant discovery), a webhook post and a
 // JSON-lines file. Everything is off until the user switches a sink on and types the broker / address; no server is ever contacted by default.
 // The password and token are written to integrations/integrations.json (owner-only) and never to a log or the status text. The work is in
 // core/src/integrations; this file is the window, the saved file and the web post.
 #include "../app.h"
+#include "dect2/common/diag.h"
 #include "dect2/automation/engine.h"
 #include "dect2/common/u8file.h"
 #include "dect2/integrations/integrations.h"
@@ -51,6 +55,7 @@ void save() {
     {
         std::ofstream o(dect2::u8file(path), std::ios::binary | std::ios::trunc);
         o << ig::toJson(S.set);
+        if (!o) DIAG(604326, "Writing the integrations file %s failed (the folder may be read-only or the disk full), so the latest settings were not saved.", path.c_str());
     }
     fs::permissions(fs::path(reinterpret_cast<const char8_t*>(path.c_str())), fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);   // the file holds the user's password and token
 }
@@ -63,7 +68,7 @@ void load() {
     std::string err;
     ig::Settings s;
     if (ig::fromJson(ss.str(), s, err)) S.set = s;
-    else S.note = std::string(tr("The integrations file could not be read:")) + " " + err;
+    else { DIAG(638118, "The integrations file could not be read (%s), so the integrations stay off until it is fixed.", err.c_str()); S.note = std::string(tr("The integrations file could not be read:")) + " " + err; }
 }
 
 void apply() {
@@ -90,6 +95,7 @@ const FamilyRow kFamilies[] = {
     {au::FAdsb, N_("Aircraft (ADS-B)")}, {au::FAcars, N_("ACARS")}, {au::FVdl2, N_("VDL Mode 2")}, {au::FHfdl, N_("HFDL")}, {au::FPager, N_("Pagers")},
     {au::FAis, N_("Ships (AIS)")}, {au::FDsc, N_("DSC")}, {au::FAprs, N_("APRS")}, {au::FSonde, N_("Radiosondes")}, {au::FGnss, N_("GNSS")}, {au::FLora, N_("LoRa and mesh")},
     {au::FBle, N_("Bluetooth")}, {au::FRid, N_("Drone Remote ID")}, {au::FSignal, N_("Signals (SARSAT, beacons, ...)")}, {au::FMsg, N_("Text messages (Inmarsat-C, Aero, NAVTEX ...)")}, {au::FVoice, N_("Digital voice calls (who called whom, never audio)")},
+    {au::FSensor, N_("Sub-GHz sensors (readings)")}, {au::FHam, N_("HF digital and CW decodes")}, {au::FBroadcast, N_("FM and DAB text (now playing)")}, {au::FImage, N_("Finished pictures")},
     {au::FPlugin, N_("Plug-in events")}, {au::FSession, N_("Finished sessions")}, {au::FSatellite, N_("Satellite passes")}, {au::FTime, N_("Time signals")}, {au::FReceiver, N_("Receiver status")},
 };
 

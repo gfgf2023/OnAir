@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B frame validation and the aircraft table: CRC and address checks, error correction, CPR position decoding, expiry.
 // No signal processing: the receiver hands in sliced bits, tests can hand in published messages.
 #pragma once
 #include "adsb_msg.h"
 #include "adsb_tel.h"
+#include "adsb_trust.h"
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -34,7 +38,7 @@ struct AdsbFrame {
 };
 
 struct AdsbOptions {
-    int fixBits = 1;             // error correction: 0 off, 1 one bit, 2 up to two bits (taken from the least certain bits only)
+    int fixBits = 1;             // error correction: 0 off, 1 one bit, 2 up to three of the least certain bits, 3 up to five of them for known aircraft whose altitude fits (Advanced)
     bool fixUnknown = false;     // also accept a repaired DF11 / 17 / 18 from an address that has not been heard cleanly
     double expirySec = 60;       // an aircraft that is silent for this long leaves the table
     double dropSec = 0;          // when set: this is the time to leave the table (the display option; expirySec still limits how long a fix is trusted)
@@ -131,6 +135,9 @@ private:
     double now_ = 0;
     double snrEma_ = 0, levelEma_ = 0; bool snrInit_ = false;
     bool touchedNew_ = false;
+    AdsbTrustModel trust_;
+    std::deque<AdsbRaEvent> raEvents_;
+    void noteRa(Rec& r, const AdsbFrame& f, const adsb::CommB& c);
 };
 
 std::string adsbDescribe(const adsb::Msg& m);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // track-book.js - the hub's live tracks, kept in memory. Pure (no Cloudflare APIs), covered by test/track-book.test.js.
 //
 // Why: every SQLite row the Durable Object writes is billed, and the old hub did a SELECT plus an UPSERT (and a second
@@ -61,7 +64,7 @@ const MAX_INGEST_AGE_SEC = {
   flarm: { default: 30 },
   drone: { default: 45 },
   aprs: { default: 120 },
-  ham: { default: 120 },
+  ham: { default: 3600 },   // a contact is an event, not a live position: WSPR is known only after its 2 min slot, a logged QSO can be older still
   sonde: { default: 900 },
   sat: { default: 180 },
   gnss: { default: 120 },
@@ -317,6 +320,9 @@ export class TrackBook {
     const row = prev || { id: t.id, ver: 0, json: null, w: null };
     for (const k of ["kind", "label", "sub", "lat", "lon", "alt", "heading", "speed", "extra", "t", "squawk", "cat", "vrate", "src", "age", "est", "dv", "path"]) row[k] = merged[k];
     row.by = merged.by || "";
+    const nbb = row.by && t.bb ? String(t.bb).slice(0, 64) : "";   // the sender's showcase badge ("id:tier"), only with a name; additive
+    if (nbb !== (row.bb || "")) visible = true;
+    row.bb = nbb;
     row.est = row.est ? 1 : 0;
     row.dv = row.dv ? 1 : 0;
     if (visible) { row.ver = ++this.version; row.json = null; if (row.kind === "doa") this.doaVersion = this.version; }
@@ -358,6 +364,7 @@ export class TrackBook {
       extra: row.extra, t: row.t, squawk: row.squawk, cat: row.cat, vrate: row.vrate,
       src: row.src, age: row.age, est: row.est ? 1 : 0, dv: row.dv ? 1 : 0,
       ...(row.by ? { by: row.by, heard_at: row.t } : {}),   // last writer wins: the sender of the newest report
+      ...(row.by && row.bb ? { bb: row.bb } : {}),          // that sender's badge (signed in, public profile, name linked)
     });
     return row.json;
   }

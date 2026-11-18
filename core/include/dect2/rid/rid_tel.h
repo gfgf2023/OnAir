@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Drone Remote ID telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -83,6 +86,7 @@ struct RidTelemetry {
     uint64_t blePackets = 0, wifiFrames = 0;   // all good packets / frames heard
     uint64_t bleRid = 0, wifiRid = 0;  // of them, with Remote ID
     uint64_t perType[16] = {};
+    float wifiFed = 1;                 // share of the samples the burst gate handed to the Wi-Fi demodulator over the last report (1: all)
     std::vector<RidDrone> drones;      // most recently heard first
     std::vector<RidMsgLog> log;        // newest first
 };

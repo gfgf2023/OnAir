@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Band plans in the interface: the plan picker with import / export / delete (scan tab), the TV channel selector is tvchan_ui.cpp (toolbar) and the scan
 // ranges taken from the active plan. The plans, their files and their validation are in core (dect2/bandplan/bandplan.h); the format is in docs/band-plans.md.
 #include "../app.h"
 #include "../platform/platform.h"
 #include "../ui/ui_common.h"
 #include "dect2/bandplan/bandplan.h"
+#include "../general/general_panels.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -22,6 +26,20 @@ const bp::Plan* activePlan(const App& a) {
     const std::string id = reg().defaultFor(a.uiLang.empty() ? plat::uiLanguage() : a.uiLang, bp::Registry::localeFromEnv());
     return id.empty() ? nullptr : reg().find(id);
 }
+}  // namespace
+
+// The General receiver's Auto demodulator (general/general_panels.h): the active plan's band at hz, the narrowest that holds it
+bool bandPlanServiceAt(const App& a, double hz, std::string& service, double& widthHz, std::string& bandName) {
+    const bp::Plan* p = activePlan(a);
+    if (!p) return false;
+    const bp::Band* best = nullptr;
+    for (const bp::Band& b : p->bands) if (b.contains(hz) && (!best || b.endHz - b.startHz < best->endHz - best->startHz)) best = &b;
+    if (!best) return false;
+    service = best->service; widthHz = best->bandwidthHz; bandName = best->name;
+    return true;
+}
+
+namespace {
 // the names the plans use for the standard the TV mode decodes
 std::vector<std::string> tvModes(const App& a) {
     if (a.family == 7) return {"DTMB"};

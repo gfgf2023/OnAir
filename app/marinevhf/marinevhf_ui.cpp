@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Marine VHF screens: pick a channel by number (with its name and use), up / down, the channel plan of a region (international, Europe, Baltic,
 // USA, Canada), a squelch, de-emphasis or flat audio, the whole-span activity list with a click to listen, a scan of chosen channels with a
 // priority watch on 16, the call log of every channel, recording of every transmission, and links to the DSC (channel 70) and AIS modes.
@@ -69,7 +72,7 @@ void load() {
     S.dwell = (float)d.getD("mvDwell", 0.4); S.hang = (float)d.getD("mvHang", 2.0);
     S.scanList = d.getS("mvScanList", "16,6,9,12,13,14,67,68,69,71,72,73,74,77");
     S.listen = d.getS("mvListen", "");
-    const std::string dir = d.getS("mvRecDir", plat::dataDir() + "/audio-recordings/marine-vhf");
+    const std::string dir = d.getS("mvRecDir", recordingsSub("audio-recordings") + "/marine-vhf");
     snprintf(S.recDir, sizeof S.recDir, "%s", dir.c_str());
 }
 
@@ -132,6 +135,7 @@ void pick(App& a, const mv::Channel& c) {
     if (c.voice()) {
         S.listen = c.label();
         if (live(a) && !covered(a.rx.marinevhf, listenMhz(c))) tuneDialTo(a, listenMhz(c));
+        else if (!a.engine.running()) tuneFreq(a, listenMhz(c));   // stopped: the channel sets the frequency too
     }
     save();
 }
@@ -242,6 +246,7 @@ void controls(App& a) {
     }
     flowNext(10 * gUi);
     if (ImGui::Checkbox("Record##mvrec", &S.rec)) save();
+    ImGui::SameLine(); kit::recordingsButton("mv", "audio-recordings/marine-vhf");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "One WAV file per transmission, for every channel of the span: time, channel and frequency in the name.");
     if (S.rec) {
         ImGui::SameLine(0, 5 * gUi);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DTMB receiver front end: the square-root raised cosine matched filter and the conversion from the radio's sample rate to the symbol rate of
 // 7.56 Msym/s, in one polyphase filter whose sampling instants can be moved and whose spacing can be trimmed (timing recovery).
 #pragma once
@@ -47,7 +50,7 @@ private:
     std::vector<float> re_, im_;    // buffered input
     size_t fill_ = 0;               // valid samples in re_ / im_
     double dc_re_ = 0, dc_im_ = 0;  // slow DC estimate removed from the input
-    long dcCount_ = 0;
+    uint64_t dcCount_ = 0;
     bool dcOn_ = true;
 };
 

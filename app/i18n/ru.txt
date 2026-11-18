@@ -3,48 +3,26 @@
 # Some entries are machine translations that no native speaker has reviewed yet: they are listed in unreviewed/ru.txt. Corrections are welcome.
 # Machine-quality translation, not reviewed by a native speaker.
 1 kHz test tone	Тестовый тон 1 kHz
-A P6 PPM is sent as the picture; any other or empty file uses the test picture. The callsign is stamped on it.	P6 PPM отправляется как изображение; любой другой или пустой файл использует тестовое изображение. На него наносится позывной.
-A SAME header. ZCZC- is added when missing.	Заголовок SAME. ZCZC- добавляется, если отсутствует.
-Aircraft registration	Регистрационный номер самолёта
-An RS41 with this serial. Empty: the demo sondes.	RS41 с этим серийным номером. Пусто: демонстрационные зонды.
 Are you sure? This clears all previous data and cannot be undone.	Вы уверены? Все прежние данные будут удалены, это нельзя отменить.
-ATSC 3.0 uses a ROUTE / fMP4 demo; a custom MPEG-TS is not the payload path.	ATSC 3.0 использует демо ROUTE / fMP4; произвольный MPEG-TS не является путём полезной нагрузки.
 Audio file	Аудиофайл
 Audio input	Аудиовход
-AX.25 UI frame. Empty: the demo CubeSat cycle.	Кадр AX.25 UI. Пусто: демонстрационный цикл CubeSat.
 Baud	Бод
 Browse…	Обзор…
-Callsign / my ID	Позывной / мой ID
-Capcode	Capcode
 Carrier tune	Подстройка несущей
 Clear all	Очистить всё
 Clears all previous data: the decoded lists of every mode (aircraft, ships, messages, pictures and so on), on every open receiver. The saved copy on disk is emptied too.	Удаляет все прежние данные: списки декодированного во всех режимах (самолёты, суда, сообщения, изображения и так далее) на каждом открытом приёмнике. Сохранённая копия на диске тоже очищается.
-Code rate / MODCOD index	Скорость кода / индекс MODCOD
-Colour code	Цветовой код
 Comment	Комментарий
 CQ	CQ
-D2-MAC test scene (custom video is not wired into this analogue generator).	Тестовая сцена D2-MAC (свой видеофайл в этот аналоговый генератор не подключён).
 DATV (DVB-S/S2 file)	DATV (файл DVB-S/S2)
 Default input	Вход по умолчанию
 Destination	Получатель
-Destination / ID	Получатель / ID
-Destination ID	ID получателя
 Device ID	ID устройства
 Dial frequency the decoder should assume (the sound card is not tuned)	Частота циферблата, которую должен принять декодер (звуковая карта не настраивается)
 DVB standard	Стандарт DVB
-Empty: the demo 802.15.4 scene.	Пусто: демонстрационная сцена 802.15.4.
-Empty: the demo FLARM scene. This ID is not packed into the unpublished newer protocol.	Пусто: демонстрационная сцена FLARM. Этот ID не упаковывается в неопубликованный новый протокол.
-Empty: the demo LoRa / mesh scene.	Пусто: демонстрационная сцена LoRa / mesh.
-Empty: the demo Mode S uplink scene.	Пусто: демонстрационная сцена восходящего канала Mode S.
-Empty: the demo VDES scene.	Пусто: демонстрационная сцена VDES.
 File	Файл
-File to send	Файл для отправки
 Free text	Свободный текст
 Gain controls apply to radios only (not to a recording, a sound card, or the synthetic signal)	Регуляторы усиления действуют только на радио (не на запись, звуковую карту или синтетический сигнал)
 I/Q stereo	I/Q стерео
-ICAO address	Адрес ICAO
-Image (PNG / PPM)	Изображение (PNG / PPM)
-Image (PPM)	Изображение (PPM)
 Input device	Устройство ввода
 Latitude	Широта
 libcodec2 is not loaded: live encode is off. A 1 kHz tone, silence or a WAV/MP3 can still be sent.	libcodec2 не загружена: живое кодирование отключено. Тон 1 kHz, тишину или WAV/MP3 всё же можно отправить.
@@ -56,56 +34,28 @@ LSB audio	LSB-звук
 Message	Сообщение
 Mic level	Уровень микрофона
 Microphone	Микрофон
-MMSI	MMSI
 Mode	Режим
-Morse identification, up to four letters.	Идентификация Морзе, до четырёх букв.
-NAVTEX sends the text (ZCZC / NNNN are added when missing). DSC (when that service is selected) uses the MMSI.	NAVTEX отправляет текст (ZCZC / NNNN добавляются, если отсутствуют). DSC (если выбран этот сервис) использует MMSI.
-PAN / short address	PAN / короткий адрес
 Path	Путь
-Payload text	Текст сообщения
-Power (dBm)	Мощность (dBm)
-Pre-emphasis	Предыскажение
-PSK variant	Вариант PSK
 QO-100 path	Путь QO-100
 Radio ID	ID радио
-Radio text (RT)	Радиотекст (RT)
-RDS PI	RDS PI
-Receiver-style options (demo signal)	Параметры в стиле приёмника (демо-сигнал)
 Report	Отчёт
-Reverse (mark is the upper tone)	Обратный (метка - верхний тон)
-RFPI	RFPI
-RFPI of the base station.	RFPI базовой станции.
 Roll-off	Roll-off
-Satellite standard	Спутниковый стандарт
 Send analog NFM of the audio instead of the digital test pattern	Отправлять аналоговый NFM звука вместо цифровой тестовой таблицы
 Send analog NFM of the microphone or a file instead of the test scene	Отправлять аналоговый NFM микрофона или файла вместо тестовой сцены
-Serial / ID	Серийный номер / ID
 Shift	Сдвиг
 Sideband	Боковая полоса
 Silence	Тишина
 sound card	звуковая карта
 SSB (microphone)	SSB (микрофон)
-SSTV mode	Режим SSTV
-Station name (PS)	Название станции (PS)
-Symbol rate (Hz)	Символьная скорость (Hz)
 Talkgroup	Talkgroup
-test DJI DroneID scene (custom serial is not packed)	тестовая сцена DJI DroneID (свой серийный номер не упаковывается)
-test downlink scene (this generator does not take a custom message)	тестовая сцена нисходящего канала (этот генератор не принимает своё сообщение)
-test LRPT/HRIT scene (custom image not wired)	тестовая сцена LRPT/HRIT (своё изображение не подключено)
-test NCDXF-style beacon scene	тестовая сцена маяка в стиле NCDXF
-test weather-fax chart (custom image not wired)	тестовая карта метеофакса (своё изображение не подключено)
 TETRA ACELP is not encoded here. Colour code and IDs are shown; the downlink test pattern is sent. A 1 kHz tone, silence or a WAV/MP3 can be sent as analog NFM instead.	TETRA ACELP здесь не кодируется. Показаны цветовой код и ID; отправляется тестовая таблица нисходящего канала. Вместо этого можно отправить тон 1 kHz, тишину или WAV/MP3 как аналоговый NFM.
 Text	Текст
 The capture rate of the sound card. The engine runs at this rate; there is no radio to tune.	Частота захвата звуковой карты. Движок работает с этой частотой; радио настраивать нечего.
-The file bytes go out as a HamDRM object with this callsign. Empty file: the test picture.	Байты файла уходят в эфир как объект HamDRM с этим позывным. Пустой файл: тестовое изображение.
 The microphone starts only when you press START TRANSMITTING.	Микрофон включается только после нажатия START TRANSMITTING.
-The registration and free-text go on the air as an H1 / ACARS downlink. Empty: the demo traffic.	Регистрационный номер и свободный текст уходят в эфир как нисходящий канал H1 / ACARS. Пусто: демонстрационный трафик.
 this mode has no transmit generator	у этого режима нет генератора передачи
 This vocoder cannot encode: OnAir loads mbelib for decode only (AMBE/IMBE). Destination ID / talkgroup / colour code still go on the air; voice bits are the test pattern. A 1 kHz tone, silence or a WAV/MP3 can be sent as analog NFM instead.	Этот вокодер не умеет кодировать: OnAir загружает mbelib только для декодирования (AMBE/IMBE). ID получателя / talkgroup / цветовой код всё равно уходят в эфир; биты голоса - тестовая таблица. Вместо этого можно отправить тон 1 kHz, тишину или WAV/MP3 как аналоговый NFM.
-Timeslot	Тайм-слот
 To	To
 USB audio	USB-звук
-Vessel name	Название судна
 View	Вид
 Help	Справка
 Language	Язык
@@ -146,8 +96,6 @@ State	Состояние
 Channel	Канал
 Delay	Задержка
 dropped	потеряно
-level %.1f dBFS	уровень %.1f dBFS
-load %.0f%%	нагрузка %.0f%%
 FM: no station	FM: нет станции
 %s  SNR %.0f dB  %d services	%s  SNR %.0f dB  служб: %d
 OK	OK
@@ -440,7 +388,6 @@ The width of the signal is measured in the spectrum and the receiver switches be
 The receiver's channel filter. Narrower keeps a strong neighbour out (150 kHz copes with one 10 dB stronger 150 kHz away); below about 180 kHz loud passages distort a little and RDS suffers first.	Канальный фильтр приёмника. Уже - лучше отсекает сильного соседа (150 kHz справляется с соседом на 10 dB сильнее на расстоянии 150 kHz); ниже примерно 180 kHz громкие места немного искажаются, и первым страдает RDS.
 The width is measured in the spectrum, and 6, 8 and 7 MHz are tried in turn while nothing locks.	Ширина измеряется в спектре, а 6, 8 и 7 MHz пробуются по очереди, пока нет захвата.
 6 MHz in Japan and the Americas, 8 MHz in the Maldives (ISDB-T International). The signal is the same, scaled in time by the width.	6 MHz в Японии и Америке, 8 MHz на Мальдивах (ISDB-T International). Сигнал тот же, масштабированный по времени в зависимости от ширины.
-Set by the country: there is nothing to measure it from. A receiver set to the wrong width finds nothing.	Задаётся страной: измерить её не по чему. Приёмник с неверной шириной ничего не находит.
 Follows the symbol rate: symbol rate x (1 + roll-off).	Следует за символьной скоростью: символьная скорость x (1 + roll-off).
 Choose automatic or a manual symbol rate in the tuner to change it.	Чтобы изменить, выберите в тюнере автоматическую или ручную символьную скорость.
 This mode	Этот режим
@@ -457,7 +404,6 @@ Radio settings (%d changed)	Настройки радио (изменено: %d)
 %s: frequency correction and the other settings of this radio	%s: поправка частоты и остальные настройки этого радио
 The driver's own settings show up here\nonce this radio has been started.	Собственные настройки драйвера появятся здесь\nпосле запуска этого радио.
 0 = libiio's default	0 = значение libiio по умолчанию
-Weather (137 MHz)	Погода (137 MHz)
 Amateur	Любительская связь
 Amateur satellites	Любительские спутники
 downloading...	загрузка...
@@ -474,8 +420,6 @@ No TLE for:	Нет TLE для:
 no valid TLE in the pasted text (two lines per satellite, checksums must match)	во вставленном тексте нет корректных TLE (две строки на спутник, контрольные суммы должны совпадать)
 pasted TLEs added:	вставленные TLE добавлены:
 No TLEs yet: download them or paste some.	TLE пока нет: загрузите их или вставьте.
-No TLEs: open TLE data above.	Нет TLE: откройте данные TLE выше.
-No passes in the next 24 hours.	В ближайшие 24 часа пролётов нет.
 TLE data	Данные TLE
 %d TLEs, %d satellites listed	TLE: %d, спутников в списке: %d
 the oldest is %.0f days old: download again	самому старому %.0f дн.: загрузите снова
@@ -484,23 +428,13 @@ Receiver position	Положение приёмника
 The same position as the ADS-B antenna position	То же положение, что у антенны ADS-B
 not set: the times are for a placeholder position	не задано: время указано для условного положения
 Satellite	Спутник
-AOS	AOS
-LOS	LOS
 Max el	Макс. угол
 Duration	Длительность
 Frequency	Частота
-AOS in %d:%02d:%02d	AOS через %d:%02d:%02d
 %s - %s, max %.0f deg	%s - %s, макс. %.0f град.
-no pass	нет пролёта
-az %.0f  el %.0f  %.0f km\nDoppler %+.0f Hz	аз %.0f  угол %.0f  %.0f км\nДоплер %+.0f Hz
 Track	Сопровождение
-Track (choose a pass)	Сопровождение (выберите пролёт)
-During each pass of this satellite, retune about once a second for the Doppler shift	Во время каждого пролёта этого спутника подстраивать частоту примерно раз в секунду на доплеровский сдвиг
 Auto start at AOS, stop at LOS	Автозапуск на AOS, остановка на LOS
-Switches to the satellite's mode and starts the receiver at AOS (when it is stopped), and stops it at LOS	Переключается на режим спутника и запускает приёмник на AOS (если он остановлен), а на LOS останавливает его
 Auto record IQ	Автозапись IQ
-Records the radio's IQ during the pass, as Record IQ does (format from the Record IQ setting), into %s/recordings	Записывает IQ радио во время пролёта, как «Запись IQ» (формат из настройки «Запись IQ»), в %s/recordings
-OnAir has no decoder for this: auto start opens the Spectrum explorer, and Auto record keeps the IQ	В OnAir нет декодера для этого: автозапуск открывает анализатор спектра, а автозапись сохраняет IQ
 tracking%s	сопровождение%s
 , recording	, идёт запись
 Sends decoded data to other programs while the mode runs. Every feed is off until you turn it on.	Отправляет декодированные данные другим программам, пока работает режим. Каждый поток выключен, пока вы его не включите.
@@ -599,7 +533,6 @@ Checking and preparing the new version…	Проверка и подготовк
 Downloaded and checked. It is installed when you close OnAir.	Загружено и проверено. Будет установлено при закрытии OnAir.
 Restart now and update	Перезапустить и обновить
 Windows asks for permission to run the installer.	Windows запросит разрешение на запуск установщика.
-The system asks for your password to install the package.	Система запросит ваш пароль для установки пакета.
 This copy of OnAir cannot replace itself.	Эта копия OnAir не может заменить сама себя.
 The update to v%s did not install (setup exit code %d).	Обновление до v%s не установилось (код завершения установщика %d).
 Only github.com is contacted. Downloads are checked against the SHA-256 GitHub lists for the file.	Соединение только с github.com. Загрузки проверяются по SHA-256, указанному на GitHub для файла.
@@ -865,7 +798,7 @@ Weather pictures, 1.7 GHz	Погодные снимки, 1.7 GHz
 What to add to a level in dBFS to get dBm for this radio (its calibration: a known signal into the antenna port shows it). Also in the radio's settings.	Что прибавить к уровню в dBFS, чтобы получить dBm для этого радио (его калибровка: её показывает известный сигнал на антенном порту). Также в настройках радио.
 Your callsign	Ваш позывной
 Your locator	Ваш локатор
-Zoom: mouse wheel (both axes), Ctrl+wheel (frequency), Shift+wheel (level).\nCtrl+PageUp / PageDown: step the view by one screen in frequency. Double click: reset.	Масштаб: колесо мыши (обе оси), Ctrl+колесо (частота), Shift+колесо (уровень).\nCtrl+PageUp / PageDown: сдвиг вида на один экран по частоте. Двойной щелчок: сброс.
+Zoom: mouse wheel (both axes), Ctrl+wheel (frequency), Shift+wheel (level).\nCtrl+PageUp / PageDown: step the view by one screen in frequency. Double click: tune. Home: show the whole band.	Масштаб: колесо мыши (обе оси), Ctrl+колесо (частота), Shift+колесо (уровень).\nCtrl+PageUp / PageDown: сдвиг вида на один экран по частоте. Двойной щелчок: настроиться. Home: показать весь диапазон.
 antenna %.6g MHz -> %s LO %.6g -> radio %.6g MHz%s	антенна %.6g MHz -> %s LO %.6g -> радио %.6g MHz%s
 channel scan has the radio	радио занято сканированием каналов
 dBm offset	Смещение dBm
@@ -912,7 +845,6 @@ WSJT, 14.078 MHz	WSJT, 14.078 MHz
 WSJT, 14.080 MHz	WSJT, 14.080 MHz
 WSJT, 14.084 MHz	WSJT, 14.084 MHz
 WSJT, 14.100 MHz	WSJT, 14.100 MHz
-%.0f deg	%.0f град.
 %s, %llu spots sent in %llu packets, %llu duplicates skipped	%s, отправлено спотов: %llu в %llu пакетах, пропущено дубликатов: %llu
 offset %+.3f %+.3f	смещение %+.3f %+.3f
 sigma %.3f per axis (%.0f%% of the half-distance to a neighbour)	сигма %.3f по оси (%.0f%% половины расстояния до соседа)
@@ -927,11 +859,8 @@ High contrast (black, white, yellow)	Высокий контраст (чёрны
 Look for Red Pitaya boards on this computer's networks again	Снова искать платы Red Pitaya в сетях этого компьютера
 No Red Pitaya answered on this computer's networks (is its SDR transceiver app running?): type its address.	Ни одна Red Pitaya не ответила в сетях этого компьютера (запущено ли её SDR-приложение трансивера?): введите её адрес.
 searching for Red Pitaya boards…	поиск плат Red Pitaya…
-A line at the top of the window and a log entry before the tracked pass rises (0: off)	Строка вверху окна и запись в журнале перед началом отслеживаемого пролёта (0: выкл)
 All time	За всё время
-Arms this pass only: at AOS the receiver starts in the satellite's mode and frequency (when it is stopped), Doppler is followed and the IQ is recorded; at LOS it stops and tracking switches off again	Включает только этот пролёт: на AOS приёмник запускается в режиме и на частоте спутника (если он остановлен), отслеживается доплеровский сдвиг и записывается IQ; на LOS он останавливается, и сопровождение снова отключается
 Automatic update	Автоматическое обновление
-Cancel recording this pass	Отменить запись этого пролёта
 Download SDDC_FX3.img from the Releases page of the SDDC_Driver project (button below).	Скачайте SDDC_FX3.img со страницы Releases проекта SDDC_Driver (кнопка ниже).
 Downloads the TLEs again once a day, only while this window is open or a pass is tracked. Without a network the saved lists are used.	Снова загружает TLE раз в сутки, только пока это окно открыто или отслеживается пролёт. Без сети используются сохранённые списки.
 Downloads when you click, and by itself once a day. Fetches:	Загружает по щелчку и сам раз в сутки. Берёт:
@@ -939,12 +868,10 @@ Last 24 hours	Последние 24 часа
 Last hour	Последний час
 Longest range: %.0f %s at %.0f deg (%llu reports)	Максимальная дальность: %.0f %s при %.0f град. (отчётов: %llu)
 Nothing heard yet: the plot fills in as positions arrive.	Пока ничего не принято: график заполняется по мере поступления позиций.
-Pass of %s in %d:%02d (max %.0f deg)	Пролёт %s через %d:%02d (макс. %.0f град.)
 Pass of %s in %d:%02d (max %.0f deg): the receiver starts by itself	Пролёт %s через %d:%02d (макс. %.0f град.): приёмник запустится сам
 Plug the radio into a USB 3 port directly on the computer, not through a USB 2 hub.	Подключите радио к порту USB 3 прямо на компьютере, а не через хаб USB 2.
 Put the file in OnAir's codecs folder (button below).	Положите файл в папку кодеков OnAir (кнопка ниже).
 Range	Дальность
-Record this pass	Записать этот пролёт
 Rolling window: a sector's furthest position counts only for this long	Скользящее окно: самая дальняя позиция сектора учитывается только в течение этого времени
 Save CSV...	Сохранить CSV...
 Save PNG...	Сохранить PNG...
@@ -954,7 +881,6 @@ The RX888 is on a USB 2 port	RX888 подключён к порту USB 2
 The RX888 needs its firmware file	RX888 нужен файл прошивки
 The RX888 MkII has no program of its own in its USB chip: OnAir loads SDDC_FX3.img into RAM when the radio is in boot-loader mode (nothing is flashed to the radio). Official OnAir packages include this file; a copy built by hand may not.	В USB-чипе RX888 MkII нет собственной программы: OnAir загружает SDDC_FX3.img в RAM в режиме загрузчика (в радио ничего не прошивается). Официальные пакеты OnAir включают этот файл; в собранной вручную копии его может не быть.
 Use a USB 3 cable (the one that came with the radio).	Используйте кабель USB 3 (тот, что шёл с радио).
-armed: %s at %s	готово: %s в %s
 last downloaded %s	последняя загрузка %s
 remind %.0f min before	напомнить за %.0f мин
 saved	сохранено
@@ -995,7 +921,6 @@ Frequency (MHz)	Частота (МГц)
 +14 dB amplifier	Усилитель +14 дБ
 Repeat until stopped	Повторять до остановки
 seconds	секунд
-START TRANSMITTING	НАЧАТЬ ПЕРЕДАЧУ
 This radio has no transmit driver in OnAir.	У этого радио нет драйвера передачи в OnAir.
 Before you transmit	Перед передачей
 Transmitting needs a licence or permission where you are. You are responsible for what you emit and for not interfering with others (including services that people rely on for safety). Connect an antenna, an attenuator or a dummy load to the radio before you start. OnAir does not limit the frequency or the power: the radio's own limits are the only ones.	Для передачи нужна лицензия или разрешение там, где вы находитесь. Вы отвечаете за то, что излучаете, и за то, чтобы не мешать другим (включая службы, на которые люди полагаются ради безопасности). Перед началом подключите к радио антенну, аттенюатор или эквивалент нагрузки. OnAir не ограничивает ни частоту, ни мощность: действуют только пределы самого радио.
@@ -1150,10 +1075,8 @@ Sample rate	Частота дискретизации
 Search signals...	Поиск сигналов...
 Settings	Настройки
 Signal	Сигнал
-Space = start / stop     Esc = stop	Пробел = старт / стоп     Esc = стоп
 Stops the transmission or test, the carrier and any pending start, and gives the radio back.	Останавливает передачу или тест, несущую и ожидающий запуск и освобождает радио.
 TEST - NO RF	ТЕСТ - БЕЗ ВЧ
-Test (dry run, no RF)	Тест (холостой, без ВЧ)
 Test (no RF)	Тест (без ВЧ)
 Test: the IQ the radio would get	Тест: IQ, которые получило бы радио
 The IQ going to the radio	IQ, идущие в радио
@@ -1162,8 +1085,6 @@ The transmit panel is in its own window.	Панель передачи нахо�
 This is added to the frequency sent to the radio, for a radio that radiates off frequency.	Прибавляется к частоте, передаваемой в радио, для радио, излучающего со сдвигом.
 TX channel	Канал TX
 Transmit	Передача
-Transmitting	Передача
-Unmodulated carrier at this frequency and level, for adjusting the transmission (drive, filter, SWR, dummy-load level), not a message. Hold the button. Stop still applies. Not saved as transmitting.	Немодулированная несущая на этой частоте и уровне для настройки передачи (раскачка, фильтр, КСВ, уровень на эквиваленте нагрузки), не сообщение. Удерживайте кнопку. Стоп по-прежнему действует. Не сохраняется как передача.
 What will be sent (preview)	Что будет передано (просмотр)
 at full scale: the limiter will round the peaks	полная шкала: ограничитель сгладит пики
 making the preview...	создаётся просмотр...
@@ -2410,13 +2331,10 @@ Room title	Название комнаты
 Also show decoded ACARS text in the room (public)	Показывать в комнате и декодированный текст ACARS (публично)
 Needs Server > Send data to map server and Also share interesting ACARS messages.	Требуется Сервер > Отправлять данные на сервер карты и Делиться также интересными сообщениями ACARS.
 Go live	Начать трансляцию
-Schedule passes by itself	Планировать пролёты автоматически
-Takes the passes of the ticked groups one at a time, highest priority first, and starts, tunes and records each one without you. Overlapping passes are trimmed or skipped; a receiver you started yourself is left alone.	Берёт пролёты отмеченных групп по одному, сначала с высшим приоритетом, и сама запускает, настраивает и записывает каждый. Пересекающиеся пролёты укорачиваются или пропускаются; приёмник, запущенный вами, не трогается.
 Priority (higher wins)	Приоритет (больший побеждает)
 Keep the SDR free every day	Освобождать SDR каждый день
 from %d:00	с %d:00
 to %d:00	до %d:00
-Nothing planned.	Ничего не запланировано.
 planned	запланирован
 trimmed	укорочен
 skipped: SDR reserved	пропущен: SDR зарезервирован
@@ -2758,122 +2676,38 @@ decoder locked: gain frozen	декодер захватил сигнал: уси
 at the end of the gain range	край диапазона усиления
 holding the level	уровень удерживается
 # transmit panel: top bar, Basic / Advanced, per-signal parameters
-0 is the normal suppressed carrier. A little carrier helps a receiver lock on; the top of the range is as strong as the loudest audio.	0 — обычная подавленная несущая. Немного несущей помогает приёмнику захватить сигнал; верх диапазона так же силён, как самый громкий звук.
-A second tone added to the first (0 = off). Two tones make a two-tone linearity test.	Второй тон, добавляемый к первому (0 = выкл.). Два тона дают двухтональный тест линейности.
-AM (carrier and sidebands)	AM (несущая и боковые полосы)
-AM sends the carrier and both sidebands. Double sideband with suppressed carrier sends only the sidebands.	AM передаёт несущую и обе боковые полосы. Двухполосная с подавленной несущей передаёт только боковые полосы.
-Audio above this level is turned down.	Звук выше этого уровня приглушается.
-Audio frequency	Звуковая частота
-Boosts the high notes before sending (0 = off).	Усиливает высокие частоты перед передачей (0 = выкл.).
-Boosts the high notes before sending. 50 µs in Europe and most of the world, 75 µs in the Americas.	Усиливает высокие частоты перед передачей. 50 мкс в Европе и большинстве стран мира, 75 мкс в Америке.
 CTCSS tone	Тон CTCSS
-Carrier injection	Добавление несущей
-Carrier level	Уровень несущей
-Choose a radio below, or switch on the test (no RF).	Выберите радио ниже или включите тест (без ВЧ).
 Choose a signal in the list.	Выберите сигнал в списке.
-Cuts the audio above this pitch, which sets how wide the signal is (0 = off).	Обрезает звук выше этой частоты, что задаёт ширину сигнала (0 = выкл.).
-DSB (suppressed carrier)	DSB (подавленная несущая)
 Default: %s	По умолчанию: %s
 Deviation	Девиация
-Esc = stop	Esc = стоп
-Evens out loud and quiet speech so the signal stays strong without over-modulating.	Выравнивает громкую и тихую речь, чтобы сигнал оставался сильным без перемодуляции.
 Every setting of this signal: modulation, audio, filters, output and timing. The defaults are sensible; open this only to change them.	Все настройки этого сигнала: модуляция, звук, фильтры, выход и тайминг. Значения по умолчанию разумны; открывайте это, только чтобы их изменить.
-Filters	Фильтры
 Follow the receiver	Следовать за приёмником
 Frequency offset	Смещение частоты
-Gain added after the compressor.	Усиление, добавляемое после компрессора.
-Gain applied to the whole signal just before the radio. Lower it when the meter shows clipping; the radio's own gain is set above.	Усиление всего сигнала непосредственно перед радио. Уменьшите его, если индикатор показывает ограничение; собственное усиление радио задаётся выше.
 HOLD TO TRANSMIT	УДЕРЖИВАЙТЕ ДЛЯ ПЕРЕДАЧИ
-High-pass (low cut)	ФВЧ (срез низких)
-How far the RDS subcarrier deviates the carrier.	Насколько поднесущая RDS отклоняет несущую.
-How far the audio swings the frequency. 2.5 kHz is a 12.5 kHz channel, 5 kHz a 25 kHz channel.	Насколько звук отклоняет частоту. 2,5 кГц — для канала 12,5 кГц, 5 кГц — для канала 25 кГц.
-How far the audio swings the frequency. Broadcast FM uses 75 kHz.	Насколько звук отклоняет частоту. Вещательное FM использует 75 кГц.
-How far the audio swings the signal. Full modulation is at 100 percent; more than that over-modulates and distorts.	Насколько звук модулирует сигнал. Полная модуляция — 100 процентов; больше — перемодуляция и искажения.
-How fast the compressor lets go after a loud passage.	Как быстро компрессор отпускает после громкого фрагмента.
-How long the VOX stays open after the sound stops.	Как долго VOX остаётся открытым после окончания звука.
-How loud the audio must be to open the VOX.	Насколько громким должен быть звук, чтобы открыть VOX.
-How loud the test tone is, as a share of full audio.	Громкость тестового тона как доля полного уровня звука.
-How strongly audio above the threshold is turned down; 20 is close to a hard limiter.	Насколько сильно приглушается звук выше порога; 20 близко к жёсткому ограничителю.
-Key-up fade-in	Плавное нарастание при включении
-Left level	Уровень слева
-Left test tone	Тестовый тон слева
-Low-pass (audio bandwidth)	ФНЧ (полоса звука)
-Lower sideband (LSB)	Нижняя боковая полоса (LSB)
-Make-up gain	Компенсирующее усиление
-Mirror the spectrum	Зеркально отразить спектр
-Modulation depth	Глубина модуляции
 Music (not speech)	Музыка (не речь)
 Name for a new preset	Имя нового пресета
 No presets saved for this signal yet.	Для этого сигнала пока нет сохранённых пресетов.
 Output	Выход
 Output level	Выходной уровень
-Output trim	Подстройка выхода
-Peak level	Пиковый уровень
-Pilot level	Уровень пилот-тона
-Pitch	Тон
 Presets	Пресеты
 Preview	Предпросмотр
-Programme type	Тип программы
 Push to talk (hold the button)	Push-to-talk (удерживайте кнопку)
-Puts every setting below back to its default.	Возвращает все настройки ниже к значениям по умолчанию.
-RDS	RDS
-RDS level	Уровень RDS
-RF level	Уровень ВЧ
 RX %.6f MHz	RX %.6f МГц
-Ratio	Коэффициент
-Release	Восстановление
-Removes rumble and hum below this pitch (0 = off).	Убирает гул и фон ниже этой частоты (0 = выкл.).
 Reset to default	Сбросить по умолчанию
-Right level	Уровень справа
-Right test tone	Тестовый тон справа
-Runs the signal generator at the radio's sample rate into nothing: no radio is opened and nothing is sent. The spectrum and levels show what would go out.	Запускает генератор сигнала на частоте дискретизации радио в никуда: радио не открывается и ничего не передаётся. Спектр и уровни показывают, что было бы передано.
 Save preset	Сохранить пресет
 Saves the settings below, the frequency and the level under this name.	Сохраняет настройки ниже, частоту и уровень под этим именем.
-Second test tone	Второй тестовый тон
-Sends the 19 kHz pilot and the stereo difference signal.	Передаёт пилот-тон 19 кГц и разностный стереосигнал.
-Sends the station name, radio text and programme type on a 57 kHz subcarrier.	Передаёт название станции, радиотекст и тип программы на поднесущей 57 кГц.
-Speech compressor	Компрессор речи
 Start transmitting	Начать передачу
 Stereo	Стерео
 Stop transmitting	Остановить передачу
-Swaps I and Q so the signal is turned over: an upper sideband becomes a lower one. For a radio or mixer that inverts.	Меняет местами I и Q, переворачивая сигнал: верхняя боковая полоса становится нижней. Для радио или смесителя, который инвертирует.
 TRANSMITTING (release to stop)	ПЕРЕДАЧА (отпустите, чтобы остановить)
 TX = RX	TX = RX
 TX independent	TX независим
-Test tone	Тестовый тон
-Test tone level	Уровень тестового тона
-The 19 kHz stereo pilot, as a share of the full deviation.	Стереопилот 19 кГц как доля полной девиации.
-The RDS flag for a station that carries traffic announcements.	Флаг RDS для станции, передающей дорожные сообщения.
-The RDS flag for music instead of speech.	Флаг RDS: музыка вместо речи.
-The RDS flag that a traffic announcement is on the air.	Флаг RDS: в эфире дорожное сообщение.
-The RDS programme type code (0 to 31; 10 is pop music).	Код типа программы RDS (от 0 до 31; 10 — поп-музыка).
-The largest signal as a share of full scale.	Наибольший сигнал как доля полной шкалы.
-The left test tone, as a share of full audio.	Левый тестовый тон как доля полного уровня звука.
-The pitch of the Morse tone, as an offset above the dial frequency.	Высота тона Морзе как смещение выше частоты настройки.
-The pitch of the test tone, used when the audio input is the test tone.	Высота тестового тона, используется, когда источник звука — тестовый тон.
-The pitch on the left channel, used when the audio input is the test tone.	Высота тона в левом канале, используется, когда источник звука — тестовый тон.
-The pitch on the right channel (0 = three times the left).	Высота тона в правом канале (0 = втрое выше левого).
 The radio's output level. Start low.	Выходной уровень радио. Начинайте с низкого.
-The right test tone, as a share of full audio.	Правый тестовый тон как доля полного уровня звука.
-The signal fades in over this time after Start, so the key-up does not click.	После старта сигнал плавно нарастает в течение этого времени, чтобы включение не щёлкало.
-The signal goes out only while there is sound on the audio input.	Сигнал передаётся только пока на звуковом входе есть звук.
-The signal goes out only while you hold the button down.	Сигнал передаётся только пока вы удерживаете кнопку.
-The size of the carrier as a share of full scale. At a depth of 85 percent the peaks reach about full scale.	Размер несущей как доля полной шкалы. При глубине 85 процентов пики достигают почти полной шкалы.
-The size of the signal as a share of full scale.	Размер сигнала как доля полной шкалы.
 The transmit frequency follows the receiver's. Typing a different one here unlinks them. Click to unlink.	Частота передачи следует за частотой приёмника. Ввод другой здесь разрывает связь. Нажмите, чтобы разорвать.
 The transmit frequency is its own. The receiver is on %.6f MHz. Click to make the transmitter follow it.	Частота передачи независима. Приёмник настроен на %.6f МГц. Нажмите, чтобы передатчик следовал за ним.
 Threshold	Порог
 Timing	Тайминг
-Traffic announcement now	Дорожное сообщение сейчас
-Traffic programme	Дорожная программа
-Upper sideband (USB)	Верхняя боковая полоса (USB)
-VOX (transmit on voice)	VOX (передача по голосу)
-VOX hang time	Время удержания VOX
-VOX threshold	Порог VOX
 Well-known frequencies of this signal: pick one to set the transmit frequency	Известные частоты этого сигнала: выберите одну, чтобы задать частоту передачи
-Where the middle of the signal sits in the audio passband, as an offset above the dial frequency.	Где в звуковой полосе находится середина сигнала — смещение выше частоты настройки.
-Where the signal sits in the audio passband, as an offset above the dial frequency.	Где в звуковой полосе находится сигнал — смещение выше частоты настройки.
-Which sideband is sent.	Какая боковая полоса передаётся.
 follows the receiver	следует за приёмником
 on	вкл.
 # full screen on every map
@@ -3454,3 +3288,355 @@ Next tab	Next tab
 Previous tab	Previous tab
 The radio runs this many times faster than the mode asks, and OnAir filters the samples down to the mode's rate itself.\nFor radios that are poor at low sample rates (images, a weak anti-alias filter). Costs CPU and USB bandwidth;\nthe radio's highest rate still applies. Off: the radio runs at the mode's rate.	The radio runs this many times faster than the mode asks, and OnAir filters the samples down to the mode's rate itself.\nFor radios that are poor at low sample rates (images, a weak anti-alias filter). Costs CPU and USB bandwidth;\nthe radio's highest rate still applies. Off: the radio runs at the mode's rate.
 At a set speed each row is the highest level of the frames in between, so a short burst is never missed.\nAverage: the mean level instead, which calms the noise and shows steady weak signals better.	At a set speed each row is the highest level of the frames in between, so a short burst is never missed.\nAverage: the mean level instead, which calms the noise and shows steady weak signals better.
+Export results CSV...	Экспорт результатов в CSV...
+Nothing to export: no row matches the search.	Нечего экспортировать: ни одна строка не соответствует поиску.
+Saves the rows now in the table (with the search and the filters applied, built-in and yours) as a CSV file. Import and the Memory panel read it back.	Сохраняет строки таблицы (с учётом поиска и фильтров, встроенные и ваши) в файл CSV. Импорт и панель «Память» читают его обратно.
+Clean the input: DC spike, IQ imbalance and the radio's own spurs	Очистить вход: пик постоянной составляющей, дисбаланс IQ и собственные помехи приёмника
+Measured from the signal itself, never the wanted channel: the DC spike and the IQ mirror image are skipped in the modes they would harm, and a spur inside the channel is cut only when it stays at the same place of the baseband after a retune (a real signal moves with the tuner).	Измеряется по самому сигналу и никогда не затрагивает нужный канал: пик постоянной составляющей и зеркальное изображение IQ пропускаются в режимах, которым они навредили бы, а помеха внутри канала вырезается, только если после перестройки остаётся на том же месте полосы (настоящий сигнал движется вместе с тюнером).
+%d spur(s) cut	Вырезано помех: %d
+working	работает
+installed	установлен
+wrong processor	не тот процессор
+missing	отсутствует
+Copy build command	Копировать команду сборки
+How to install (this computer):	Как установить (этот компьютер):
+rtl_tcp: an RTL-SDR shared by another computer over the network.	rtl_tcp: RTL-SDR, который другой компьютер предоставляет по сети.
+Airspy HF+: a very sensitive receiver for long, medium and short wave and FM, up to 260 MHz.	Airspy HF+: очень чувствительный приёмник для длинных, средних и коротких волн и FM, до 260 МГц.
+Fobos SDR: a wideband receiver, 100 kHz to 6 GHz. Needs the radio's own library, see the ? in Radio settings.	Fobos SDR: широкополосный приёмник, от 100 кГц до 6 ГГц. Нужна собственная библиотека радио, см. значок ? в настройках радио.
+RFNM: a wideband radio board with one or two daughter boards, on USB or the network.	RFNM: широкополосная радиоплата с одной или двумя дочерними платами, по USB или сети.
+SDRplay nRSP-ST: a network radio, used through SDRconnect running on a computer.	SDRplay nRSP-ST: сетевое радио, используется через SDRconnect на компьютере.
+TCI: a radio of the ExpertSDR family (SunSDR and others) on the network. Receive only.	TCI: радио семейства ExpertSDR (SunSDR и другие) в сети. Только приём.
+SDR++ server: a radio shared by another computer running SDR++.	Сервер SDR++: радио, которое предоставляет другой компьютер с SDR++.
+A sound card or a web radio used as the input.	Звуковая карта или веб-радио в качестве входа.
+Run setup again...	Запустить настройку заново...
+Easy mode	Простой режим
+European Union (generic)	Европейский союз (общий)
+Lithuania	Литва
+United Kingdom	Великобритания
+Germany	Германия
+Poland	Польша
+United States	США
+Canada	Канада
+Australia	Австралия
+Quick pick: a region preset sets the band plan, the TV channels, the FM band, the default frequencies and the units	Быстрый выбор: пресет региона задаёт план диапазонов, каналы ТВ, диапазон FM, частоты по умолчанию и единицы
+Or search for a city or country	Или найдите город или страну
+imperial (miles, feet)	имперские (мили, футы)
+metric (km, metres)	метрические (км, метры)
+Defaults: FM %.1f MHz, APRS %.3f MHz, units %s.	По умолчанию: FM %.1f МГц, APRS %.3f МГц, единицы: %s.
+A preset has no exact position: type a city or coordinates above if you want the aircraft map and satellite passes centred on you.	У пресета нет точной позиции: введите выше город или координаты, если хотите, чтобы карта самолётов и пролёты спутников были центрированы на вас.
+Units	Единицы
+Follow the region	Как в регионе
+Metric	Метрические
+Imperial	Имперские
+Which antenna will you use? It matters more than the radio. OnAir uses the answer for hints only; nothing is changed in the radio.	Какую антенну вы будете использовать? Она важнее радио. OnAir использует ответ только для подсказок; в радио ничего не меняется.
+What this means for you	Что это значит для вас
+Digital voice (DMR, P25, NXDN, dPMR, D-STAR, Yaesu, TETRA) is silent until you install its codec plug-in. The calls, IDs and data work without it.	Цифровой голос (DMR, P25, NXDN, dPMR, D-STAR, Yaesu, TETRA) молчит, пока вы не установите плагин кодека. Вызовы, ID и данные работают и без него.
+Only digital voice modes need a codec. You can skip this screen and come back from Help > Voice codecs.	Кодек нужен только цифровым голосовым режимам. Этот экран можно пропустить и вернуться через Справка > Голосовые кодеки.
+OnAir does not include or download these codecs (they are patented). You build or install them on your own computer; whether you may use them is your own responsibility. FreeDV, M17, DAB, DRM and TV need nothing.	OnAir не включает и не скачивает эти кодеки (они запатентованы). Вы собираете или устанавливаете их на своём компьютере; можно ли их использовать, решаете вы сами. FreeDV, M17, DAB, DRM и ТВ ничего не требуют.
+Antenna: %s	Антенна: %s
+Easy mode (recommended)	Простой режим (рекомендуется)
+Every mode opens its Simple view: the spectrum and one screen with a Start button and the key controls. The detailed tabs are one click away (Simple | Advanced above them).	Каждый режим открывается в простом виде: спектр и один экран с кнопкой Старт и основными элементами управления. Подробные вкладки доступны одним щелчком (Простой | Расширенный над ними).
+Change any of this at any time: Help > Setup and lessons > Run setup again, Mode > Modes shown, View > Language, Settings > Appearance > Font look.	Всё это можно изменить в любое время: Справка > Настройка и уроки > Запустить настройку заново, Режим > Показываемые режимы, Вид > Язык, Настройки > Внешний вид > Вид шрифта.
+The setup has six short screens and every one can be skipped. Nothing is forced.\n\nRadio: OnAir looks for radios on USB and on the network and picks one. "?" beside a radio opens its help page. Without a radio, the test signal lets you try OnAir.\n\nLocation: one click on a region preset (Lithuania, the EU, ...) or a city, a locator or coordinates give your country, the band plan, the TV channels, the FM band and step, the default frequencies and the units.\n\nAntenna: hints for what you can hear with the antenna you have.\n\nInterests: decide which modes are starred and listed first, where OnAir starts and a few starter presets. Everything stays available.\n\nCodecs: digital voice needs a codec plug-in that you install yourself; Look again checks the folder.\n\nEasy mode on the last screen opens every mode in its Simple view. Run the setup again any time from Help > Setup and lessons > Run setup again, or from Settings.	В настройке шесть коротких экранов, любой можно пропустить. Ничего не навязывается.\n\nРадио: OnAir ищет радио по USB и в сети и выбирает одно. Значок «?» рядом с радио открывает его страницу справки. Без радио тестовый сигнал позволяет попробовать OnAir.\n\nМесто: один щелчок по пресету региона (Литва, ЕС, ...) или город, локатор или координаты задают страну, план диапазонов, каналы ТВ, диапазон и шаг FM, частоты по умолчанию и единицы.\n\nАнтенна: подсказки, что можно услышать с вашей антенной.\n\nИнтересы: определяют, какие режимы отмечены и идут первыми, где стартует OnAir и несколько стартовых пресетов. Всё остаётся доступным.\n\nКодеки: цифровому голосу нужен плагин кодека, который вы устанавливаете сами; Искать снова проверяет папку.\n\nПростой режим на последнем экране открывает каждый режим в простом виде. Запустить настройку заново можно в любое время: Справка > Настройка и уроки > Запустить настройку заново или из Настроек.
+Interests	Интересы
+Codecs	Кодеки
+Done	Готово
+Region preset	Пресет региона
+First-run setup	Первая настройка
+Every mode opens its Simple view: the spectrum and one screen with a Start button and the key controls. Off: the detailed tabs.	Каждый режим открывается в простом виде: спектр и один экран с кнопкой Старт и основными элементами управления. Выключено: подробные вкладки.
+One click sets the band plan, TV channels, FM band and step, default frequencies and units for a region (Lithuania, EU, ...).	Один щелчок задаёт план диапазонов, каналы ТВ, диапазон и шаг FM, частоты по умолчанию и единицы региона (Литва, ЕС, ...).
+Open the setup again: radio, region, antenna, interests, voice codecs.	Открыть настройку заново: радио, регион, антенна, интересы, голосовые кодеки.
+Why	Почему
+no signal at the channel: check the tuning, the antenna and the gain	в канале нет сигнала: проверьте настройку, антенну и усиление
+signal, but no frame sync found: check the tuning (offset, polarity), the bandwidth and the signal-to-noise ratio	сигнал есть, но кадровая синхронизация не найдена: проверьте настройку (смещение, полярность), полосу и отношение сигнал/шум
+frame syncs found, but their identity (NID, LICH, slot type) is unreadable: the signal is too noisy or distorted	кадровая синхронизация найдена, но идентификатор кадра (NID, LICH, тип слота) не читается: сигнал слишком шумный или искажённый
+frame syncs found, but the payload fails its FEC / CRC: weak signal, fading or a sample clock error	кадровая синхронизация найдена, но данные не проходят FEC / CRC: слабый сигнал, замирания или ошибка частоты дискретизации
+decoding, but over a third of the blocks are lost: a stronger signal or a better antenna would help	декодирует, но потеряно более трети блоков: поможет более сильный сигнал или лучшая антенна
+decoding well	декодирует хорошо
+Base stations	Базовые станции
+Calls	Вызовы
+Channel options	Параметры канала
+Chat	Чат
+Devices	Устройства
+Ground stations	Наземные станции
+Neighbours	Соседние
+Nodes	Узлы
+On air	В эфире
+Selected	Выбрано
+Site	Площадка
+Table	Таблица
+Trunking	Транкинг
+Vessels	Суда
+some stations are hidden	некоторые станции скрыты
+File...	Файл...
+Auto-save to file	Автосохранение в файл
+Activity	Активность
+#  AI assistant (MCP), docs/MCP.md
+AI assistant (MCP)	ИИ-ассистент (MCP)
+Let an AI assistant control this receiver (MCP)	Разрешить ИИ-ассистенту управлять этим приёмником (MCP)
+An AI assistant (Claude, ChatGPT-style clients, a local model) that you connect can tune, scan bands, identify signals and start decoders for you, and read what was decoded. It cannot read files, run programs, change settings or decrypt anything, and it cannot transmit unless you allow that below. Every action is listed in the log.	Подключённый вами ИИ-ассистент (Claude, клиенты в стиле ChatGPT, локальная модель) может настраивать частоту, сканировать диапазоны, определять сигналы, запускать декодеры и читать результат декодирования. Он не может читать файлы, запускать программы, менять настройки или что-либо расшифровывать, и не может передавать, пока вы не разрешите это ниже. Каждое действие записывается в журнал.
+Programs on this computer need the token too	Программам на этом компьютере тоже нужен токен
+Allow the AI to transmit (off by default; this is your decision, it is forgotten at restart)	Разрешить ИИ передачу (по умолчанию выключено; это ваше решение, при перезапуске сбрасывается)
+The AI can now start transmissions. You are responsible for the law where you are and for your hardware.	ИИ теперь может запускать передачу. Вы отвечаете за законы своей страны и за своё оборудование.
+listening on %s port %d, %d requests, %d refused	слушает на %s, порт %d, запросов: %d, отклонено: %d
+An AI is connected: %s	ИИ подключён: %s
+No AI has connected yet.	ИИ пока не подключался.
+How to connect your AI	Как подключить ИИ
+Other client	Другой клиент
+Claude Desktop: put this in its config file (Settings > Developer > Edit config) and restart it; it needs Node.js for the bridge. Claude Code: run the command in a terminal. Other clients: use the address (streamable HTTP) or start onair-server --mcp-stdio. Then ask, for example: there is some DRM around 15 MHz, find it and decode it.	Claude Desktop: вставьте это в его файл конфигурации (Настройки > Разработчик > Изменить конфигурацию) и перезапустите; для моста нужен Node.js. Claude Code: выполните команду в терминале. Другие клиенты: используйте адрес (потоковый HTTP) или запустите onair-server --mcp-stdio. Затем попросите, например: около 15 МГц есть DRM, найди и декодируй.
+What the AI did	Что сделал ИИ
+Clear log	Очистить журнал
+Nothing yet.	Пока ничего.
+# Everything in view (wide multi-signal decode)
+identifying	определяется
+running	работает
+no decoder	нет декодера
+paused (CPU)	пауза (ЦП)
+CPU	ЦП
+CPU limit %	Лимит ЦП %
+What	Что
+dB	дБ
+Pin	Закр.
+Everything in view	Всё в обзоре
+Everything in view: on	Всё в обзоре: вкл
+Decode everything in view	Декодировать всё
+Add as	Добавить как
+Identify automatically	Определять автоматически
+Add selected region	Добавить выделение
+Add tuned signal	Добавить сигнал настройки
+Looking for signals...	Поиск сигналов...
+Start the receiver to begin.	Запустите приёмник, чтобы начать.
+The decoders' share of one processor core, against the limit. Above the limit the lowest ranked signals are paused.	Доля одного ядра процессора, занятая декодерами, относительно лимита. Выше лимита сигналы с низшим рангом ставятся на паузу.
+Find every signal in the whole capture (digital voice, TETRA, pagers, packet radio, air band, Inmarsat, TV) and decode all of them at once.	Находит все сигналы во всей записи (цифровая речь, TETRA, пейджеры, пакетное радио, авиадиапазон, Inmarsat, ТВ) и декодирует их одновременно.
+One capture, every signal in it. OnAir finds the signals, says what each one is and starts the right decoder for it. Switch one off, pin the ones that must never be paused, or give an unknown signal its mode by hand.	Одна запись, все сигналы в ней. OnAir находит сигналы, определяет, что это, и запускает нужный декодер. Отключите лишний, закрепите те, что нельзя ставить на паузу, или задайте режим неизвестного сигнала вручную.
+When the decoders take longer than this share of one core, the lowest ranked signal is paused (never a pinned one or the one you listen to) and comes back when there is room. 0: no limit.	Если декодеры занимают больше этой доли ядра, сигнал с низшим рангом ставится на паузу (никогда закреплённый или тот, что вы слушаете) и возвращается, когда есть запас. 0: без лимита.
+This computer cannot keep up: %d signals are paused to save CPU. Pin the ones you need, or raise the limit.	Компьютер не справляется: %d сигналов на паузе для экономии ЦП. Закрепите нужные или повысьте лимит.
+TV channels in the capture: %.0f MHz wide	ТВ-каналы в записи: ширина %.0f МГц
+Turn the Identify tool on (key I) and drag across a signal on the spectrum, then add it here.	Включите инструмент «Определить» (клавиша I), протяните по сигналу на спектре и добавьте его здесь.
+Add the signal at the tuner marker (12.5 kHz wide).	Добавляет сигнал у маркера настройки (ширина 12,5 кГц).
+Off. Press the button to decode everything in the capture.	Выключено. Нажмите кнопку, чтобы декодировать всё в записи.
+%+.1f kHz from the capture centre, %.1f kHz wide	%+.1f кГц от центра записи, ширина %.1f кГц
+Pinned: never paused by the CPU limit	Закреплён: лимит ЦП его не приостанавливает
+Follow this signal's sound; it is never paused by the CPU limit	Следить за звуком этого сигнала; лимит ЦП его не приостанавливает
+Remove: a signal you added is taken away, a found one is switched off	Удалить: добавленный сигнал убирается, найденный отключается
+# Share on web: relay, listeners, server settings
+Connecting to the relay ...	Подключение к ретранслятору ...
+Anyone with the link	Все, у кого есть ссылка
+Invite links only	Только пригласительные ссылки
+Antenna (shown to listeners, optional)	Антенна (видна слушателям, необязательно)
+Listener limits	Ограничения слушателей
+While sharing	Во время трансляции
+Listeners and invites	Слушатели и приглашения
+Nobody is listening right now.	Сейчас никто не слушает.
+Kick##wsKick	Отключить##wsKick
+Block 24 h##wsBlock	Блок на 24 ч##wsBlock
+Allow again##wsUnban	Разрешить снова##wsUnban
+Make an invite link	Создать пригласительную ссылку
+Copy invite link	Копировать пригласительную ссылку
+Server settings	Настройки сервера
+Connected to the OnAir relay.	Подключено к ретранслятору OnAir.
+Connecting to the OnAir relay ...	Подключение к ретранслятору OnAir ...
+The relay link dropped (%s). Trying again in %d s.	Связь с ретранслятором прервалась (%s). Повтор через %d с.
+The OnAir relay refuses or cannot be reached: %s	Ретранслятор OnAir отказывает или недоступен: %s
+Blocked: %s (%d min left)	Заблокирован: %s (осталось %d мин)
+Processor %.0f%% of the %.0f%% limit	Процессор %.0f%% из лимита %.0f%%
+Upload %.0f of %.0f kbit/s	Отдача %.0f из %.0f кбит/с
+Port on this computer (0 = the first free one from 8073)	Порт на этом компьютере (0 = первый свободный от 8073)
+Listeners from one address at once	Слушателей с одного адреса одновременно
+Longest session of one listener in minutes (0 = no limit)	Самый долгий сеанс слушателя в минутах (0 = без ограничения)
+Most spectrum rows per second (0 = the default)	Макс. строк спектра в секунду (0 = по умолчанию)
+Key file for that certificate	Файл ключа этого сертификата
+A certificate needs both files.	Для сертификата нужны оба файла.
+Relay service address (only if you run your own relay)	Адрес ретранслятора (только для собственного)
+Free Cloudflare tunnel (needs a small helper program, downloaded once)	Бесплатный туннель Cloudflare (нужна небольшая программа, скачивается один раз)
+Only my network (a phone on the same Wi-Fi)	Только моя сеть (телефон в том же Wi-Fi)
+Password (8 characters or more)	Пароль (8 символов или больше)
+Apply changes	Применить изменения
+What to do:	Что делать:
+Will share: %s, %s MHz, up to %d listeners, %s, %s.	Будет доступно: %s, %s МГц, до %d слушателей, %s, %s.
+through the OnAir relay (no router settings needed)	через ретранслятор OnAir (без настройки роутера)
+through a Cloudflare tunnel	через туннель Cloudflare
+at your own address	по вашему собственному адресу
+on this network only	только в этой сети
+invite links only	только по пригласительным ссылкам
+open to anyone with the link	открыто для всех, у кого есть ссылка
+with a password	с паролем
+no radio found	радио не найдено
+Join the OnAir Discord	Присоединиться к Discord OnAir
+
+# Multi-radio trunking (trunk pool)
+tuning	настройка
+hold	удержание
+ended	окончен
+control	управление
+voice	голос
+lost	потерян
+Role	Роль
+TG	TG
+not followed	не ведётся
+Hang time (s)	Время удержания (с)
+Retune wait (s)	Ожидание настройки (с)
+Priority talkgroups take a radio	Приоритетные группы забирают радио
+Keep a record of every call	Записывать каждый вызов
+Follow talkgroups that are not listed	Вести группы, которых нет в списке
+Calls are saved in the recordings folder, trunk. Sound needs the vocoder add-on.	Вызовы сохраняются в папке записей trunk. Для звука нужен вокодер-дополнение.
+Talkgroup and radio rules	Правила групп и радиостанций
+Deny	Запретить
+Import rules	Импорт правил
+rules read	правил прочитано
+skipped	пропущено
+Import plan	Импорт плана
+rows read	строк прочитано
+Identifiers	Идентификаторы
+Call log	Журнал вызовов
+Channel plan	План каналов
+Export log	Экспорт журнала
+Multi-radio trunking	Транкинг на нескольких радио
+Follow calls with several radios	Вести вызовы несколькими радио
+Auto-assign devices	Назначить устройства
+One radio listens to the control channel of a trunked system. When it announces a call, another radio is tuned to the voice channel, and the call is logged. With one radio, calls inside its capture are followed and the rest are not.	Одно радио слушает канал управления транкинговой системы. Когда объявлен вызов, другое радио настраивается на голосовой канал, вызов записывается в журнал. С одним радио ведутся только вызовы внутри его полосы.
+The radio on the control channel stays there; every other open receiver becomes a voice radio. Open more receivers with + at the bottom.	Радио на канале управления остаётся там; каждый другой открытый приёмник становится голосовым. Новые приёмники открываются кнопкой + внизу.
+Start a P25 receiver on the control channel, then press Auto-assign devices.	Запустите приёмник P25 на канале управления и нажмите «Назначить устройства».
+Calls %llu, followed %llu, retune %.2f s (max %.2f s)	Вызовов %llu, ведётся %llu, настройка %.2f с (макс. %.2f с)
+Priority 1 (highest) to 10, 0 none. A higher priority talkgroup takes a radio from a lower one.	Приоритет от 1 (высший) до 10, 0 нет. Группа с более высоким приоритетом забирает радио у низшей.
+From, to (the same number for one), action, priority	От, до (одно число для одной), действие, приоритет
+System, identifier table (iden_up) and channel numbers from a CSV file	Система, таблица идентификаторов (iden_up) и номера каналов из CSV
+EMERGENCY	АВАРИЯ
+encrypted	зашифровано
+Follow talkgroups, radio IDs or callsigns. Alerts and recording are off until you tick them for an entry. Encrypted calls are listed but never recorded.	Отслеживайте группы разговоров, радио-ID или позывные. Уведомления и запись выключены, пока вы не отметите их для записи. Зашифрованные вызовы показываются в списке, но никогда не записываются.
+TG 91, 3120123, 100-199, LY1ABC, LY*	TG 91, 3120123, 100-199, LY1ABC, LY*
+Name (optional)	Название (необязательно)
+All voice modes	Все голосовые режимы
+Nothing watched yet.	Пока ничего не отслеживается.
+Watching	Отслеживается
+Notify	Уведомлять
+Beep	Сигнал
+A desktop notification when a call starts (off by default)	Уведомление на рабочем столе при начале вызова (по умолчанию выключено)
+Save the audio of its calls to the recordings folder through the auto-record rules (this also switches auto-record on). Encrypted calls are never recorded. You are responsible for the law of your country.	Сохраняет звук вызовов в папку записей по правилам автозаписи (также включает автозапись). Зашифрованные вызовы никогда не записываются. За законы своей страны вы отвечаете сами.
+Copy as CSV	Копировать как CSV
+No calls of the watched entries heard yet.	Вызовы отслеживаемых записей пока не слышны.
+Sec	Сек
+Flags	Флаги
+EMERG	АВАР
+ENC	ШИФР
+Keywords on: no match yet	Ключевые слова включены: совпадений пока нет
+Keywords	Ключевые слова
+One keyword per line, any case. It is looked for in the message text and in the capcode name. Start a line with re: for a regular expression, for example re:structure fire|MVA. Matching pages are highlighted in Messages and shown in the ticker.	Одно ключевое слово в строке, регистр не важен. Ищется в тексте сообщения и в имени капкода. Начните строку с re: для регулярного выражения, например re:structure fire|MVA. Подходящие страницы подсвечиваются в Сообщениях и показываются в ленте.
+Notify on a keyword match	Уведомлять о ключевом слове
+A desktop notification for each matching new page (off by default)	Уведомление на рабочем столе о каждой новой подходящей странице (по умолчанию выключено)
+lines are not valid and were skipped	строк недопустимы и пропущены
+Pager keyword	Ключевое слово пейджера
+more matching pages	ещё подходящих страниц
+No GPS position heard yet (needs LRRP data)	GPS-позиция пока не слышна (нужны данные LRRP)
+Last position	Последняя позиция
+just now	только что
+min ago	мин назад
+Show on map	Показать на карте
+# custom bandwidth chip and reset (3.6)
+custom	своя
+default	по умолчанию
+How much spectrum the radio captures. Default is the mode's own width; click to set any width you like.	Какую часть спектра захватывает приёмник. По умолчанию это собственная ширина режима; нажмите, чтобы задать любую ширину.
+Back to this mode's own bandwidth and sample rate. Your custom values stay saved for the next time you tick Custom.	Возврат к собственной полосе и частоте дискретизации этого режима. Ваши значения сохраняются до следующего включения «Своя».
+16-bit	16-bit
+Share##rec	Share##rec
+Opens the folder with this recording and copies its path. Send the file (for SigMF the .sigmf-meta and the .sigmf-data together): it replays with its own frequency, rate and mode.	Opens the folder with this recording and copies its path. Send the file (for SigMF the .sigmf-meta and the .sigmf-data together): it replays with its own frequency, rate and mode.
+Tones (Hz)	Тоны (Гц)
+Frequency (kHz)	Частота (кГц)
+no calls yet	вызовов пока нет
+no codes yet	кодов пока нет
+calls	вызовы
+strongest tone	самый сильный тон
+Play the channel audio; decoding is the same either way	Воспроизводить звук канала; декодирование то же
+Copy CSV	Копировать CSV
+copied	скопировано
+rows	строк
+Copy the table as CSV to the clipboard (positions included)	Скопировать таблицу как CSV в буфер обмена (с позициями)
+Copy the table as CSV to the clipboard	Скопировать таблицу как CSV в буфер обмена
+# MFSK pictures (Shortwave Radiogram)
+Save PNG	Сохранить PNG
+Save every picture	Сохранять каждое изображение
+Clear pictures	Очистить изображения
+grey	серый
+Pictures sent inside the MFSK stream (Shortwave Radiogram) appear here as they arrive.	Изображения, переданные в потоке MFSK (Shortwave Radiogram), появляются здесь по мере приёма.
+Open recordings folder	Открыть папку записей
+Where recordings are saved. Change it in Settings > Files.	Здесь сохраняются записи. Изменить: Настройки > Файлы.
+Free disk space:	Свободно на диске:
+Default (inside the data folder)	По умолчанию (внутри папки данных)
+Choose...	Выбрать...
+Use typed path	Использовать введённый путь
+That folder cannot be written: the default is used.	В эту папку нельзя писать: используется папка по умолчанию.
+# Smart CubeSat (docs/CUBESAT-SMART.md)
+Tuned for	Настроено на
+No satellite is expected soon: scanning this span for any carrier.	Спутников в ближайшее время не ожидается: ищу любые несущие в этой полосе.
+Nothing was uploaded.	Ничего не загружено.
+carrier found	несущая найдена
+decoding	декодирование
+carrier only	только несущая
+no known signal	нет известного сигнала
+Next passes	Ближайшие пролёты
+working out the passes ...	расчёт пролётов ...
+no pass of a satellite in the table in the next hours (set your location, refresh the orbits)	в ближайшие часы нет пролётов спутников из таблицы (задайте местоположение, обновите орбиты)
+In	Через
+Carriers	Несущие
+none yet	пока нет
+Tried on	Проверено на
+valid	верных
+failed their checks	не прошли проверку
+satellite	спутник
+framing	кадрирование
+validated by	подтверждено
+byte errors put right	ошибок байтов исправлено
+received	принято
+telemetry	телеметрия
+Field	Поле
+Decoded packets	Декодированные пакеты
+Framing	Кадрирование
+Follow satellites from the table (passes and Doppler)	Следить за спутниками из таблицы (пролёты и Доплер)
+Look for carriers the table does not explain	Искать несущие, которых нет в таблице
+Minimum SNR (dB)	Минимальное ОСШ (дБ)
+Carriers followed at once	Одновременно отслеживаемые несущие
+Lowest elevation (deg)	Минимальный угол места (град.)
+Search window around the predicted carrier (Hz)	Окно поиска вокруг ожидаемой несущей (Гц)
+Modulation of unknown carriers	Модуляция неизвестных несущих
+Baud rate (0: automatic, any value)	Скорость в бодах (0: авто, любое значение)
+Channel width (Hz, 0: automatic, any value)	Ширина канала (Гц, 0: авто, любое значение)
+Scan resolution (Hz, 0: automatic)	Разрешение сканирования (Гц, 0: авто)
+Add a transmitter to the table	Добавить передатчик в таблицу
+NORAD number	Номер NORAD
+Baud rate	Скорость в бодах
+orbits for %zu satellites, %zu table entries	орбиты %zu спутников, %zu записей в таблице
+Auto decode: on (click to stop)	Автодекодирование: вкл. (нажмите, чтобы остановить)
+Auto decode cubesats	Автодекодирование кубсатов
+Tunes a span that holds the satellites about to pass, follows their Doppler shift, finds every narrow carrier, works out its modulation and baud rate, and decodes it with every framing that fits. Nothing to set up.	Настраивается на полосу со спутниками, которые скоро пролетят, следует за их доплеровским сдвигом, находит каждую узкую несущую, определяет модуляцию и скорость и декодирует всеми подходящими форматами кадров. Ничего настраивать не нужно.
+Refresh orbits	Обновить орбиты
+Downloading orbits from CelesTrak (the built-in set is used meanwhile).	Загрузка орбит с CelesTrak (пока используется встроенный набор).
+Writes the packets as a SatNOGS-ready file (one telemetry record per line), a CSV and a KISS file to the data folder. Nothing is uploaded.	Записывает пакеты в папку данных как файл для SatNOGS (одна запись телеметрии в строке), CSV и файл KISS. Ничего не загружается.
+Press the button: it does the rest.	Нажмите кнопку – остальное выполнится само.
+BPSK	BPSK
+A country file (cty.dat, wl_cty.dat) from country-files.com gives every DXCC entity with its CQ and ITU zone. Thanks to Jim Reisert AD1C and the country-files.com team. OnAir does not bundle it: load one you have, or press Download (only on your click).	Файл стран (cty.dat, wl_cty.dat) с country-files.com содержит каждую территорию DXCC с зонами CQ и ITU. Спасибо Jim Reisert AD1C и команде country-files.com. OnAir его не включает: загрузите свой файл или нажмите «Скачать» (только по вашему клику).
+Show country and zone in decoded messages	Показывать страну и зону в декодированных сообщениях
+Load file...	Загрузить файл...
+Download from country-files.com	Скачать с country-files.com
+Reset to built-in	Вернуть встроенную таблицу
+Remove after: VDL2	Удалять через: VDL2
+Remove after: ACARS	Удалять через: ACARS
+Remove after: HFDL	Удалять через: HFDL
+Remove after: ADS-B	Удалять через: ADS-B
+Remove after: AIS	Удалять через: AIS
+Remove after: UAT	Удалять через: UAT
+Remove after: Inmarsat	Удалять через: Inmarsat
+How long after it was last heard an entry stays in the list and on the map. Default is the rule of the mode; Never keeps everything.	Как долго запись остаётся в списке и на карте после последнего приёма. По умолчанию — правило режима; Никогда сохраняет всё.
+Custom remove-after time (minutes)	Своё время удаления (минуты)
+Used by every Remove after row set to Custom.	Используется каждой строкой «Удалять через» со значением «Своё».
+Default	По умолчанию
+Custom	Своё
+Join the Discord to get access to built codecs	Присоединяйтесь к Discord, чтобы получить готовые кодеки
+Opens the OnAir Discord in your browser. OnAir itself never downloads or includes a codec.	Открывает Discord OnAir в браузере. Сам OnAir никогда не скачивает и не содержит кодеков.
+Unknown language	Unknown language
+Teletext subtitles	Teletext subtitles
+DVB subtitles	DVB subtitles
+hearing impaired	hearing impaired
+Teletext subtitles (page 888)	Teletext subtitles (page 888)
+subtitles##subson	subtitles##subson
+Subtitles over the picture (S in the pop-out window)	Subtitles over the picture (S in the pop-out window)
+Subtitle language, or Off (L in the pop-out window)	Subtitle language, or Off (L in the pop-out window)

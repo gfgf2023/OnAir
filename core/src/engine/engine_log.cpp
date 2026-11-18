@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The engine's log: the line buffer behind log()/logSnapshot() and the per-standard event loggers that turn receiver telemetry
 // changes (lock, parameters, ensembles, services) into log lines.
 #include "dect2/engine/engine.h"
@@ -132,7 +135,7 @@ void Engine::logIsdbtEvents(const RxTelemetry& t) {
 void Engine::logDvbtEvents(const RxTelemetry& t) {
     char b[200];
     if (t.fftN && (t.fftN != logTMode_ || t.giIdx != logTGi_)) {
-        snprintf(b, sizeof b, "DVB-T found: %s, guard interval %s, CFO %+.1f Hz", t.fftN == 8192 ? "8K" : "2K", dvbt::guardName(t.giIdx), t.cfoHz);
+        snprintf(b, sizeof b, "DVB-T found: %s, guard interval %s, CFO %+.1f Hz", t.fftN == 8192 ? "8K" : t.fftN == 4096 ? "4K" : "2K", dvbt::guardName(t.giIdx), t.cfoHz);
         log(b);
         logTMode_ = t.fftN; logTGi_ = t.giIdx;
     }

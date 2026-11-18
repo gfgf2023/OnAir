@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRM signalling and message formats: FAC, SDC data entities, text message, AAC audio super frame.
 #include "dect2/drm/drm_msg.h"
 #include "dect2/drm/drm_fec.h"
 #include "dect2/drm/drm_proto.h"
+#include "dect2/common/diag.h"
 #include <mutex>
 #include <set>
 #include <algorithm>
@@ -139,7 +143,38 @@ std::vector<uint8_t> sdcEntityTime(const SdcTime& t) {
     return b;
 }
 
-int sdcParse(const uint8_t* d, int bytes, SdcInfo& out) { return drmp::sdcParse(d, bytes, out); }
+void sdcParseExtra(const uint8_t* d, int bytes, SdcExtra& out) {
+    int pos = 0;
+    auto bitsAt = [](const uint8_t* b, int off, int n) { int v = 0; for (int i = 0; i < n; i++) v = v << 1 | ((b[(off + i) / 8] >> (7 - (off + i) % 8)) & 1); return v; };
+    while (pos + 2 <= bytes) {
+        const int len = d[pos] >> 1, ver = d[pos] & 1, typ = d[pos + 1] >> 4, nib = d[pos + 1] & 15;
+        if (len == 0 && d[pos + 1] == 0) break;
+        if (pos + 2 + len > bytes) break;
+        const uint8_t* b = d + pos + 2;
+        if (ver == 0) {
+            if (typ == 2 && len >= 1) { SdcCa c; c.shortId = (nib >> 2) & 3; c.audio = nib & 2; c.data = nib & 1; c.info.assign(b, b + len); out.ca.push_back(c); }
+            else if (typ == 3) {
+                SdcAltFreq a; a.synchronous = (nib >> 3) & 1;
+                const bool restr = (nib >> 1) & 1, rs = nib & 1;
+                int i = 0;
+                if (restr && i < len) { a.shortFlags = b[i] >> 4; i++; }
+                if (rs && i < len) { a.region = (b[i] >> 4) & 15; a.schedule = b[i] & 15; i++; }
+                for (; i + 1 < len; i += 2) a.freqKhz.push_back(((b[i] & 0x7F) << 8) | b[i + 1]);
+                out.altFreq.push_back(a);
+            }
+            else if (typ == 4 && len >= 4) { for (int i = 0; i + 4 <= len; i += 4) { SdcSchedule s; s.id = nib; s.dayCode = bitsAt(b + i, 0, 7); s.startMin = bitsAt(b + i, 7, 11); s.durationMin = bitsAt(b + i, 18, 14); out.schedules.push_back(s); } }
+            else if (typ == 6 && len >= 3) { SdcAnnounce a; a.shortFlags = nib; a.otherService = (b[0] >> 7) & 1; a.shortOrAnn = (b[0] >> 5) & 3; a.support = ((b[0] & 15) << 6) | (b[1] >> 2); a.switching = ((b[1] & 3) << 8) | b[2]; out.announcements.push_back(a); }
+            else if (typ == 7 && len >= 4) {
+                SdcRegion r; r.id = nib; int lat = b[0]; if (lat > 127) lat -= 256; r.latDeg = lat; int lon = (b[1] << 1) | (b[2] >> 7); if (lon > 255) lon -= 512; r.lonDeg = lon;
+                r.latExt = b[2] & 0x7F; r.lonExt = b[3]; for (int i = 4; i < len; i++) r.ciraf.push_back(b[i]); out.regions.push_back(r);
+            }
+            else if (typ == 14 && len >= 3) { SdcPacketFec f; f.streamId = (nib >> 2) & 3; f.r = b[0]; f.c = b[1]; f.packetLen = b[2]; out.packetFec.push_back(f); }
+        }
+        pos += 2 + len;
+    }
+}
+
+int sdcParse(const uint8_t* d, int bytes, SdcInfo& out) { const int n = drmp::sdcParse(d, bytes, out); SdcExtra e; sdcParseExtra(d, bytes, e); if (!e.schedules.empty() || !e.regions.empty() || !e.announcements.empty() || !e.altFreq.empty() || !e.ca.empty() || !e.packetFec.empty()) out.extra = std::move(e); return n; }
 
 void sdcBuildBits(int afsIndex, const std::vector<uint8_t>& field, int fieldBytes, std::vector<uint8_t>& bits) {
     bits.clear();
@@ -208,7 +243,7 @@ std::string cleanTextMessage(const std::string& in) {
 void TextDecoder::finishSegment() {
     const drmp::TextSeg s = drmp::textSegment(seg_.data(), seg_.size(), need_);   // the CRC-16 and the header fields
     const int n = need_ - 4;
-    if (!s.crcOk) { bad_++; return; }
+    if (!s.crcOk) { DIAG_DEBUG_EVERY(548356, 10, "A DRM text message segment failed its CRC-16, so it is dropped and the text waits for the next repeat."); bad_++; return; }
     ok_++;
     const bool toggle = s.toggle, last = s.last, command = s.command;
     if (command) {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NFC / RFID (13.56 MHz) in the engine: the demodulator of nfc_rx.h and the protocol layer of nfc_proto.h behind the engine's
 // interface. Engine stdMode 150, active standard 149 (family 148, "NFC / RFID 13.56 MHz"). RECEIVE ONLY in Phase 1; nothing is
 // transmitted and nothing is cloned. The active reader (Phase 2) lives in nfc_tx.h and only runs through the existing TX gate.
@@ -79,6 +82,8 @@ public:
     void feed(const std::complex<float>* x, size_t n);
     bool telemetry(NfcTelemetry& out, uint64_t lastSeq);
     void setLogCallback(std::function<void(const std::string&)> cb);
+    // 4.0: a view onto one protocol: bit k of the mask = NfcLogEntry::proto k (0 Type A, 1 Type B, 2 ISO 15693); only its frames, tags and NDEF records are reported (telemetry()), 0 = every protocol.
+    void setProtoMask(uint32_t mask);
 
 private:
     struct Impl;

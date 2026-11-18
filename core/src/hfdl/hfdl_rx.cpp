@@ -1,6 +1,8 @@
 // HFDL receiver (hfdl_rx.h)
+#include "dect2/limits.h"
 #include "dect2/session/mode_adapters.h"
 #include "dect2/hfdl/hfdl_rx.h"
+#include "dect2/hfdl/hfdl_learn.h"
 #include "dect2/dsp/rrc.h"
 #include "dect2/dsp/fftutil.h"
 #include "dect2/automation/engine.h"
@@ -492,7 +494,7 @@ struct HfdlReceiver::Impl {
         if (std::fabs(df) < 6) bf += df;
         const cf32 Call = corrAt(y, bf, 0, kSearchSyms);
         const cf32 h = Call / (float)kSearchSyms;
-        { double se = 0; for (const auto& v : y) se += std::norm(v); if (std::norm(Call) < 0.3 * kSearchSyms * se || std::norm(h) < 1e-12) { k.searchAt = std::max(k.searchAt, s0) + 2; return 0; } }   // not A1 + A2 coherently
+        { double se = 0; for (const auto& v : y) se += std::norm(v); if (std::norm(Call) < 0.3 * kSearchSyms * se || std::norm(h) < 1e-12) { k.searchAt = std::max(k.searchAt, s0) + 2; k.pend.push_back([this] { tel.whyPreambleRejected++; }); return 0; } }   // not A1 + A2 coherently
         // M1
         const cf32 rot = std::polar(1.f, (float)(-2 * M_PI * bf / kHfdlBaud));
         auto sym = [&](int i) { return cubicAt(k.x, t0 + i * kSps - (double)k.xBase) * std::polar(1.f, (float)(-2 * M_PI * bf * i / kHfdlBaud)); };
@@ -509,7 +511,7 @@ struct HfdlReceiver::Impl {
         lastBurst = nowSec();
         double me = 0; for (const auto& v : ms) me += std::norm(v);
         const double score = bs / std::sqrt(kHfdlM1Len * me + 1e-30);
-        if (score < 0.3) { k.searchAt = std::max(k.searchAt + 2, s0 + kSearchSyms * kSps); k.info.bursts--; return 0; }   // not a preamble after all
+        if (score < 0.3) { k.searchAt = std::max(k.searchAt + 2, s0 + kSearchSyms * kSps); k.info.bursts--; k.pend.push_back([this] { tel.whyPreambleRejected++; }); return 0; }   // not a preamble after all
         const int nsym = hfdlBurstSyms(m1);
         if ((int64_t)std::ceil(t0) + (int64_t)(nsym + kL + 8) * kSps >= end) { k.info.bursts--; k.waitUntil = (int64_t)std::ceil(t0) + (int64_t)(nsym + kL + 8) * kSps + 1; return -1; }
         // half-symbol samples, derotated
@@ -530,6 +532,7 @@ struct HfdlReceiver::Impl {
         hfdlScramblerSigns(R.blocks * kHfdlDataLen, scr);
         // equaliser; a burst the equaliser cannot decode (weak signal: 25 taps adapt to the noise) is tried again with the gain and phase tracker alone
         std::vector<HfdlMessage> msgs;
+        std::vector<uint8_t> pduLast;   // the octets of the last attempt, for the "why bad" counters
         bool ok = false;
         double sig2 = 1, preErr = 0;
         for (int mode = 0; mode < 3 && !ok; mode++) {   // 0: equaliser, 1: gain / phase tracker with decisions, no equaliser, 2: known symbols only (weak signals)
@@ -663,6 +666,7 @@ struct HfdlReceiver::Impl {
             hfdlSoftBits(R.bitsPerSym, dataSym[s], (float)(1.0 / e), &soft[s * (size_t)R.bitsPerSym]);
         }
         const std::vector<uint8_t> pdu = hfdlDecodeSoft(m1, soft);
+        pduLast = pdu;
         msgs.clear();
         ok = hfdlParsePdu(pdu.data(), pdu.size(), msgs);
         }
@@ -671,6 +675,17 @@ struct HfdlReceiver::Impl {
         const float lvl = (float)(10 * std::log10(pw + 1e-20));
         k.searchAt = (int64_t)t0 + (int64_t)(nsym - 40) * kSps;
         k.info.levelDb = lvl; k.info.snrDb = snr; k.info.lastCfoHz = (float)bf;
+        // why a burst failed, for the Receiver tab: the decoded octets are too few, the SPDU check failed, or the MPDU header check failed
+        const int why = !ok ? (pduLast.size() < 4 ? 1 : (pduLast[0] & 1) == 0 ? 2 : 3) : 0;
+        int lpduBad = 0, lpduUnknown = 0;
+        for (const auto& m : msgs) {
+            if (m.summary.rfind("LPDU with a bad check", 0) == 0) lpduBad++;
+            else if (m.kind == "LPDU" && m.summary.rfind("LPDU type 0x", 0) == 0) lpduUnknown++;
+        }
+        k.pend.push_back([this, why, lpduBad, lpduUnknown] {
+            tel.whyShort += why == 1; tel.whySpduFcs += why == 2; tel.whyMpduFcs += why == 3;
+            tel.whyLpduFcs += (uint64_t)lpduBad; tel.whyUnknownLpdu += (uint64_t)lpduUnknown;
+        });
         if (!ok) { k.info.bad++; k.pend.push_back([this] { tel.blocksBad++; }); k.searchAt = s0 + kSearchSyms * kSps; return 0; }
         k.info.good++; k.info.lastHeardSec = nowSec(); k.info.lastBps = R.bps;
         // the shared lists change in feed(), under mu, one channel after the other: the same order as a sequential run
@@ -709,11 +724,18 @@ struct HfdlReceiver::Impl {
         return tel.stations.front();
     }
 
+    // aircraft not heard for the user's "remove after" time leave the table (most recently heard first); the memory is given back. mu held.
+    void expire(double now) {
+        const double lim = limits::staleSec(limits::Family::Hfdl, limits::kAeroStaleSec);
+        while (!tel.aircraft.empty() && now - tel.aircraft.back().lastHeardSec > lim) tel.aircraft.pop_back();
+        if (tel.aircraft.capacity() > 4 * tel.aircraft.size() + 256) tel.aircraft.shrink_to_fit();
+    }
     void note(double dial, HfdlMessage& m) {
         const double now = nowSec();
         if (m.squitter) {
             tel.squitters++;
             HfdlGroundStation& g = station(m.gsId);
+            { const int dk = (int)std::lround(dial / 1e3); HfdlFreqLearner::global().squitter(m.gsId, dk, m.systable, m.activeKhz, (double)std::time(nullptr)); }   // the frequency plan follows what is heard (hfdl_learn.h)
             g.squitters++; g.freqHz = dial; g.lastHeardSec = now; g.levelDb = m.levelDb; g.utcSync = m.utcSync; g.frameIndex = m.frameIndex; g.activeKhz = m.activeKhz; g.heardDirect = true;
             if (!logged[m.gsId]) {
                 logged[m.gsId] = true;
@@ -733,6 +755,7 @@ struct HfdlReceiver::Impl {
         for (auto& x : tel.aircraft) if (x.key == key) { a = &x; break; }
         if (!a && m.icao) for (auto& x : tel.aircraft) if (x.key == (0x1000000u | slot)) { x.key = key; a = &x; break; }
         if (!a) { tel.aircraft.push_back(HfdlAircraft()); a = &tel.aircraft.back(); a->key = key; }
+        HfdlAircraft* const touched = a;
         a->icao = m.icao ? m.icao : a->icao;
         if (m.acId > 0) a->acId = m.acId;
         a->gsId = m.gsId;
@@ -749,8 +772,10 @@ struct HfdlReceiver::Impl {
             a->track.push_back({m.lat, m.lon, now});
             if (a->track.size() > 24) a->track.erase(a->track.begin());
         }
-        std::stable_sort(tel.aircraft.begin(), tel.aircraft.end(), [](const HfdlAircraft& x, const HfdlAircraft& y) { return x.lastHeardSec > y.lastHeardSec; });
-        if (tel.aircraft.size() > 200) tel.aircraft.resize(200);
+        // most recently heard first: the heard one moves to the front (the rest keeps its order), the oldest expire by age, then by the large safety cap
+        std::rotate(tel.aircraft.begin(), tel.aircraft.begin() + (touched - tel.aircraft.data()), tel.aircraft.begin() + (touched - tel.aircraft.data()) + 1);
+        while (tel.aircraft.size() > limits::kAircraft) tel.aircraft.pop_back();
+        expire(now);
         (void)hex6;
     }
 };
@@ -809,9 +834,15 @@ void HfdlReceiver::feed(const cf32* x, size_t n) {
         for (Impl::Chan* k : act) { for (auto& f : k->pend) f(); k->pend.clear(); }
     }
     I.nIn += n;
+    {   // the frequencies this capture covers, for the learner's "listened long enough" rule
+        std::vector<int> khz;
+        for (Impl::Chan* k : act) khz.push_back((int)std::lround(k->dial / 1e3));
+        HfdlFreqLearner::global().listen(khz, I.rate > 0 ? (double)n / I.rate : 0);
+    }
     std::lock_guard<std::mutex> lk(I.mu);
     const double now = I.nowSec();
     I.tel.nowSec = now;
+    I.expire(now);
     I.tel.channels.clear();
     for (auto& k : I.ch) { k.info.active = k.info.lastHeardSec > 0 && now - k.info.lastHeardSec < 40; I.tel.channels.push_back(k.info); }
     I.tel.state = now - I.lastGood < 120 ? 2 : now - I.lastBurst < 60 ? 1 : 0;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Ionospheric sounders through the engine (setStandard(54)): the synthetic source plays the two-sounder test scene in real time at
 // 1 Msps around 0.5 MHz; the 100 kHz/s sweep that starts at 2 s comes back through latestRx() as standard 53 with its ionogram.
 #include "dect2/iono/iono_dsp.h"
@@ -45,7 +48,12 @@ int main() {
     e.iono().clearResults();
     RxTelemetry after;
     bool got = false;
-    for (int i = 0; i < 50 && !got; i++) { got = e.latestRx(after, seq); if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
+    // (a telemetry frame assembled just before the clear can still arrive once: skip frames until one is newer than the clear)
+    for (int i = 0; i < 150; i++) {
+        const bool g = e.latestRx(after, seq);
+        if (g) { got = true; if (after.iono.sounders.empty()) break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
     CHECK(got, "no telemetry after Clear");
     CHECK(after.iono.sounders.empty() && after.iono.sel == -1, "after Clear: %zu sounders, sel %d", after.iono.sounders.size(), after.iono.sel);
     e.stop();

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HTTP Live Streaming of one service, in memory. See hls.h.
 //
 // Input: transport stream bytes through a read callback. Output: the FFmpeg "hls" muxer, whose files (playlist and segments) are captured
@@ -16,6 +19,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include "dect2/common/diag.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -60,6 +64,7 @@ struct HlsPipeline::Impl {
     Impl(Reader r, std::string t) : reader(std::move(r)), token(std::move(t)) {}
 
     void fail(const std::string& m) {
+        DIAG_ERROR(442348, "The HLS stream stopped with an error: %s.", m.c_str());
         std::lock_guard<std::mutex> lk(mu);
         if (err.empty()) err = m;
     }

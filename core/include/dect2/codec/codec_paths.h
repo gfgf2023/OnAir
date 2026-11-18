@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Where OnAir looks for the codec plug-ins and libraries the user installs (docs/CODECS.md). One list for every loader.
 // The list itself is a pure function of a few strings (codecSearchDirs), so it is unit-tested with made-up Windows, macOS and Linux paths.
 // Order, first wins: the user folder, the extra folder set in Voice codecs, ONAIR_CODEC_DIR, then the folders next to the program.
@@ -44,6 +47,10 @@ std::vector<std::string> libraryPaths(const std::vector<CodecDir>& dirs, const s
 // The extra folder the user set in Voice codecs (the app keeps it in its prefs and hands it here at start and when it changes).
 void setExtraCodecDir(const std::string& dir);
 std::string extraCodecDir();
+// The folder with an FFmpeg of the user's own (libavcodec, libavutil ...; Settings > Advanced > FFmpeg libraries > external folder). Empty: the FFmpeg
+// inside OnAir (the default). The loaders of the optional FFmpeg add-ons (AC-4, AVS+) look here first; nothing is ever shipped or downloaded (docs/CODECS.md).
+void setExternalFfmpegDir(const std::string& dir);
+std::string externalFfmpegDir();
 // The folder the running program is in; empty if the OS will not say.
 std::string programDir();
 // The per-user codecs folder: DECT2_DATA_DIR/codecs, else %LOCALAPPDATA%\OnAir\codecs, ~/Library/Application Support/OnAir/codecs,

@@ -1,7 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // COSPAS-SARSAT 406 MHz screens: the beacon messages that were decoded (15 hex ID, type, country, protocol, identification, position, 121.5 MHz homing flag,
 // the two BCH checks), a map of the ones that carry a position, and the raw bits. Receive only: a real beacon means somebody may be in danger.
 #include "dect2/common/time_fmt.h"
+#include "dect2/common/timecompat.h"
 #include "app.h"
+#include "../d40/d40_ui.h"
+#include "state/results_export.h"
 #include "../adsb/adsb_map.h"
 #include "dect2/sarsat/sarsat_rx.h"
 #include "dect2/sarsat/sarsat_tel.h"
@@ -92,6 +98,42 @@ void helpButton() {
     }
 }
 
+std::string isoUtc(int64_t wall) { return dect2::utcIsoText(wall); }
+
+std::string checkText(const sarsat::Beacon& b) {
+    if (b.second) return tr("BCH(250,202) good");
+    if (!b.bch2Present) return tr("first good, second not present (short message)");
+    return b.bch2Ok ? tr("both good") : tr("first good, second failed");
+}
+
+std::string fixedText(const sarsat::Beacon& b) {
+    std::string s;
+    for (int n : b.fixedBits) { if (!s.empty()) s += ' '; s += std::to_string(n); }
+    return s;
+}
+
+// The whole decoding of one reception as text: frame bits as received and as repaired (hex, bit 1 first, padded with zeros on the right to a whole hex digit)
+std::string reportText(const dect2::SarsatEntry& e) {
+    const sarsat::Beacon& b = e.b;
+    char line[200];
+    std::string r;
+    snprintf(line, sizeof line, "time: %s\n", isoUtc(e.wallTime).c_str()); r += line;
+    snprintf(line, sizeof line, "signal: %.1f dB, %+.0f Hz, %.0f dBFS\n", e.snrDb, e.cfoHz, e.levelDb); r += line;
+    r += "protocol: " + b.protoName + (b.selfTest ? " (self-test burst)" : "") + "\n";
+    r += "hex id: " + b.hexId + "\n";
+    r += std::string("message: ") + (b.second ? "second generation, 250 bits" : b.longMsg ? "long, 144 bits" : "short, 112 bits") + "\n";
+    r += "frame as received: " + (b.rxHex.empty() ? b.rawHex : b.rxHex) + "\n";
+    r += "frame after repair: " + b.rawHex + "\n";
+    r += "bits repaired: " + std::to_string(b.corrected) + (b.fixedBits.empty() ? "" : " (bit numbers " + fixedText(b) + ")") + "\n";
+    if (e.combined) r += "decoded from " + std::to_string(e.combined) + " bursts of this beacon added together (none decoded alone)\n";
+    r += "checks: " + checkText(b) + "\n";
+    r += "country: " + b.country + " (MID " + std::to_string(b.mid) + ")\n";
+    r += "identification: " + b.idText + "\n";
+    r += "position: " + posText(b) + "\n";
+    r += std::string("homing 121.5 MHz: ") + (b.homing ? "yes" : "no") + "\n";
+    return r;
+}
+
 void details(App& a, const dect2::SarsatEntry& e) {
     const sarsat::Beacon& b = e.b;
     kvRow(a, tr("Hex ID"), "%s", b.hexId.c_str());
@@ -107,15 +149,43 @@ void details(App& a, const dect2::SarsatEntry& e) {
     kvRow(a, tr("Check bits"), "%s%s", b.second ? tr("BCH(250,202) good") : b.bch2Present ? (b.bch2Ok ? tr("both good") : tr("first good, second failed")) : tr("first good"),
           b.corrected ? (std::string(", ") + std::to_string(b.corrected) + " " + tr("bits repaired")).c_str() : "");
     kvRow(a, tr("Signal"), "%.1f dB, %+.0f Hz, %.0f dBFS", e.snrDb, e.cfoHz, e.levelDb);
+    if (e.combined) kvRow(a, tr("Decoded from"), "%d %s", e.combined, tr("bursts added together (none decoded alone)"));
+    if (!b.rawHex.empty()) {
+        ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Frame as received"));
+        ImGui::TextUnformatted((b.rxHex.empty() ? b.rawHex : b.rxHex).c_str());
+        if (b.corrected) { ImGui::TextDisabled("%s", tr("Frame after repair")); ImGui::TextUnformatted(b.rawHex.c_str()); }
+        ImGui::PopTextWrapPos(); ImGui::PopFont();
+        if (!b.fixedBits.empty()) kvRow(a, tr("Repaired bit numbers"), "%s", fixedText(b).c_str());
+        if (ImGui::SmallButton(tr("Copy frame (hex)##sarcf"))) ImGui::SetClipboardText(b.rawHex.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Bit 1 first, the sync bits included, zero-padded on the right to a whole hex digit. The repaired frame; the received one is shown above."));
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Copy received frame (hex)##sarcr"))) ImGui::SetClipboardText((b.rxHex.empty() ? b.rawHex : b.rxHex).c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Copy report##sarcp"))) ImGui::SetClipboardText(reportText(e).c_str());
+    }
 }
 
 void beaconsView(App& a) {
     const dect2::SarsatTelemetry& t = a.rx.sarsat;
+    d40SarsatIncidentsCard();   // 4.0: incidents grouped by beacon (app/d40)
     if (t.log.empty()) {
         ImGui::TextDisabled("%s", tr("no beacon decoded yet; a beacon sends a burst about every 50 seconds"));
         return;
     }
     S.sel = std::max(0, std::min((int)t.log.size() - 1, S.sel));
+    {   // every reception of the log with its full frames, as CSV / JSON
+        static std::string note;
+        resexp::Table x; x.cols = {"time_utc", "hex_id", "protocol", "self_test", "message_bits", "frame_received_hex", "frame_repaired_hex", "bits_repaired", "repaired_bit_numbers", "checks", "snr_db", "cfo_hz", "level_dbfs", "lat", "lon"};
+        for (const auto& e : t.log) {
+            const sarsat::Beacon& b = e.b;
+            x.add({isoUtc(e.wallTime), b.hexId, b.protoName, b.selfTest ? "1" : "0", b.second ? "250" : b.longMsg ? "144" : "112", b.rxHex.empty() ? b.rawHex : b.rxHex, b.rawHex,
+                   std::to_string(b.corrected), fixedText(b), checkText(b), resexp::num(e.snrDb, 1), resexp::num(e.cfoHz, 0), resexp::num(e.levelDb, 0),
+                   b.hasPos ? resexp::num(b.lat, 5) : "", b.hasPos ? resexp::num(b.lon, 5) : ""}, (double)e.wallTime);
+        }
+        resexp::saveButton(x, "sarsat", note, "svsar");
+        if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
+    }
     const float tableH = std::max(110.f * gUi, ImGui::GetContentRegionAvail().y * 0.5f);
     if (ImGui::BeginTable("##sarlog", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit, ImVec2(0, tableH))) {
         ImGui::TableSetupScrollFreeze(0, 1);
@@ -167,9 +237,9 @@ void mapView(App& a, ImVec2 size) {
         const double span = std::max(8.0, std::max(lo1 - lo0, (la1 - la0) * 1.4));
         S.map.zoom = std::max(2, std::min(9, (int)std::floor(std::log2(0.7 * size.x * 360.0 / (256.0 * span)))));
     }
-    const double lat0 = S.map.lat, lon0 = S.map.lon;
+    const double lat0 = S.map.lat, lon0 = S.map.lon; const int zoom0 = S.map.zoom;
     adsbmap::draw(S.map, size);
-    if (S.map.lat != lat0 || S.map.lon != lon0) S.mapFollow = false;
+    if (S.map.lat != lat0 || S.map.lon != lon0 || S.map.zoom != zoom0) S.mapFollow = false;   // panned or zoomed (the wheel at the centre moves nothing)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), true);
     ImVec2 click; const bool clicked = adsbmap::clickedAt(click);
@@ -181,7 +251,7 @@ void mapView(App& a, ImVec2 size) {
         const bool cur = (int)m.idx == S.sel;
         dl->AddCircleFilled(q, r, (m.col & 0x00FFFFFF) | ((cur ? 170u : 80u) << 24));
         dl->AddCircle(q, r, m.col, 24, cur ? 2.5f : 1.f);
-        dl->AddText(ImVec2(q.x + r + 2 * gUi, q.y - ImGui::GetTextLineHeight() * 0.5f), IM_COL32(235, 238, 240, 255), m.label.c_str());
+        if (adsbmap::labelsAt(S.map.zoom, cur)) dl->AddText(ImVec2(q.x + r + 2 * gUi, q.y - ImGui::GetTextLineHeight() * 0.5f), IM_COL32(235, 238, 240, 255), m.label.c_str());
         const float d = std::hypot(q.x - click.x, q.y - click.y);
         if (clicked && d < best) { best = d; S.sel = (int)m.idx; }
     }
@@ -316,18 +386,19 @@ void synth(App&, bool&) {
 }
 
 // the whole-capture search: on by itself on the L-band downlink (each satellite somewhere in 1544 - 1545 MHz), or by hand
-bool gWideSet = false, gWideLoaded = false;
+bool gWideSet = false, gWideLoaded = false, gExportSet = false;
+int gWideCh = 0;   // 0 = every 90 kHz finder the sample rate holds; fewer = less CPU on an old computer (#223)
 bool wideWanted(const App& a) { return gWideSet || (a.freqMhz > 1543.5 && a.freqMhz < 1546.0); }
 
 void tick(App& a) {
-    if (!gWideLoaded) { gWideLoaded = true; gWideSet = plat::prefs().getB("sarsatWide", false); }
-    if (a.engine.running()) a.engine.sarsat().setWideSearch(wideWanted(a));
+    if (!gWideLoaded) { gWideLoaded = true; gWideSet = plat::prefs().getB("sarsatWide", false); gWideCh = plat::prefs().getI("sarsatWideCh", 0); gExportSet = plat::prefs().getB("sarsatExport", false); }
+    if (a.engine.running()) { a.engine.sarsat().setWideMaxChannels(gWideCh); a.engine.sarsat().setWideSearch(wideWanted(a)); a.engine.sarsat().setBurstExport(gExportSet ? plat::dataDir() + "/sarsat" : std::string()); }
 }
 
 // issue #214: the satellites repeat the 406.0 - 406.1 MHz band on their L-band downlink (each one at its own place in 1544 - 1545 MHz)
 void tuner(App& a, bool& retune) {
     struct P { const char* label; double mhz; };
-    static const P kP[] = {{"406.028 MHz (beacons)", sarsat::kDefaultMhz}, {"1544.500 MHz (satellite downlink)", 1544.5}};
+    static const P kP[] = {{"406.028 MHz (beacons)", sarsat::kDefaultMhz}, {"1544.500 MHz (MEOSAR relay, satellite downlink)", 1544.5}};
     ImGui::TextDisabled("%s", tr("Frequency"));
     sameLineIf(90 * gUi, 5 * gUi);
     char cur[32]; snprintf(cur, sizeof cur, "%.3f MHz", a.freqMhz);
@@ -346,8 +417,27 @@ void tuner(App& a, bool& retune) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", tr("Look for beacon bursts across the whole sample rate (up to 1.1 MHz) instead of 100 kHz around the dial. On by itself on the 1544 - 1545 MHz downlink. Set the radio to 2 Msps to cover the whole downlink band."));
     if (automatic) { flowNext(4 * gUi); ImGui::TextDisabled("%s", tr("(on by itself for the downlink)")); }
+    if (w) {
+        flowNext(6 * gUi);
+        static const int kCh[] = {0, 1, 2, 4, 8};
+        static const char* const kLb[] = {"all channels", "1 channel (90 kHz)", "2 channels (180 kHz)", "4 channels (360 kHz)", "8 channels (720 kHz)"};
+        int sel = 0;
+        for (int i = 0; i < 5; i++) if (kCh[i] == gWideCh) sel = i;
+        ImGui::SetNextItemWidth(std::min(190 * gUi, ImGui::GetContentRegionAvail().x));
+        if (ImGui::BeginCombo("##sarwch", tr(kLb[sel]))) {
+            for (int i = 0; i < 5; i++) if (ImGui::Selectable(tr(kLb[i]), i == sel)) { gWideCh = kCh[i]; plat::prefs().setI("sarsatWideCh", gWideCh); }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("How wide the search is. Each 90 kHz channel costs CPU time: on a slow computer that lags, choose fewer channels (centred on the dial)."));
+    }
     if (live(a) && a.rx.sarsat.wideSpanHz > 0) { flowNext(6 * gUi); ImGui::TextDisabled(tr("%.0f kHz searched"), a.rx.sarsat.wideSpanHz / 1e3); }
     flowEnd();
+    // issue #214: the burst's baseband as a WAV file (I/Q, 32 kHz, carrier at zero), to study the signal elsewhere
+    const std::string dir = plat::dataDir() + "/sarsat";
+    bool ex = gExportSet;
+    if (ImGui::Checkbox(tr("Save every burst as a baseband file##sarexp"), &ex)) { gExportSet = ex; plat::prefs().setB("sarsatExport", ex); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(tr("Each burst that looks like a beacon, decoded or not, is saved as a WAV file (I and Q, 32 kHz, the carrier at zero, 400 bit/s phase modulation) in %s"), dir.c_str());
+    if (live(a) && a.rx.sarsat.exportedBursts > 0) { ImGui::SameLine(); ImGui::TextDisabled(tr("%llu saved, last: %s"), (unsigned long long)a.rx.sarsat.exportedBursts, a.rx.sarsat.lastExport.c_str()); }
 }
 
 } // namespace

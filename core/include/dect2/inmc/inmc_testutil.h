@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Helpers of the Inmarsat-C tests: play the test signal into the receiver with the impairments the tests need.
 #pragma once
 #include "inmc_gen.h"
@@ -72,9 +75,11 @@ inline InmcRunResult runInmc(const InmcRunOpts& o) {
             buf[k] = v;
         }
         if (o.resetAt >= 0 && !didReset && (double)done / o.gen.rate >= o.resetAt) { rx.reset(); didReset = true; }
-        const uint64_t t0 = cpu::processNs();      // CPU time, so that other programs on the machine do not distort it (std::clock() is wall time on Windows)
+        // CPU time of this thread (the receiver has no threads of its own): neither other programs nor other threads of the test process
+        // (a library's idle workers) distort it; std::clock() is wall time on Windows
+        const uint64_t t0 = cpu::threadNs();
         rx.feed(buf.data(), n);
-        wall += (double)(cpu::processNs() - t0) * 1e-9;
+        wall += (double)(cpu::threadNs() - t0) * 1e-9;
         done += n;
         if (res.firstSyncSec < 0 && rx.telemetry(t, seq)) {
             seq = t.seq;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The screens of FSQ and IFKP (one template, two traits): the dial-frequency presets, the speed (automatic or one of them), Listen, the waterfall of the
 // audio passband with the band of the 33 tones marked on it, how often each tone position was the strongest, and the text in big letters beside
 // the chat log (IFKP) or the table of messages with sender, addressee and command (FSQ). Callsigns are highlighted.
@@ -13,6 +16,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "../ui/font_size.h"
 
 namespace kbd33ui {
 
@@ -277,7 +281,7 @@ struct Ui {
         }
         char cid[32]; snprintf(cid, sizeof cid, "##%sbig", Tr::key());
         if (ImGui::BeginChild(cid, ImVec2(0, 0), ImGuiChildFlags_Borders)) {
-            ImGui::PushFont(a.mono, ImGui::GetFontSize() * 1.6f);
+            ImGui::PushFont(a.mono, fontBase() * 1.6f);
             richText(t.text, ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x);
             if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.0f);
             ImGui::PopFont();

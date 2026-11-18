@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV picture decoder: sync detection, the line phase-locked loop and the per-line processing.
 #include "atv_video_impl.h"
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -235,7 +239,7 @@ void AtvVideo::Impl::weakBlock(int g, int pre, int post, int len) {
     } else {
         weakLock = false;
         syncQ *= 0.6f;
-        if (++weakLow >= 8) { weakLow = 0; loseLock(); }
+        if (++weakLow >= 8) { weakLow = 0; DIAG_DEBUG(726414, "The analog TV matched-filter line tracker lost lock after 8 weak lines, so line sync is searched for again."); loseLock(); }
     }
 }
 
@@ -591,6 +595,7 @@ void AtvVideo::Impl::processLines() {
         if (!weakMode && vsyncMiss >= 2 && levelsValid && noiseVar > 0 && (Tr - Br) < 1.6 * std::sqrt(noiseVar)) {
             weakMode = true; weakMidPending = false; weakQ = 0.6f; weakLow = 0; weakN = 0; weakLock = true; weakStrong = 0;
             pState = 0; bCount = 0; goodRun = std::max(goodRun, 8);
+            DIAG_DEBUG(353057, "Analog TV field syncs were missed %d times in a noisy signal, so the receiver switches to matched filters for line and field sync.", vsyncMiss);
             doLog("analog TV: noisy signal, line and field sync by matched filters");
         }
         if (vsyncMiss > 12) haveVsync = false;
@@ -700,6 +705,31 @@ void AtvVideo::Impl::processLine(const LineRec& r) {
         double x = std::fmod((tL - vsyncT) / P, half);
         if (x < 0) x += half;
         inVbi = x < 10.5 || x > half - 5.0;
+    }
+    // the data lines: after the post-equalising pulses up to the first picture line (625: line 23 carries WSS in its first half; 525: line 21
+    // captions, the last blanking line). Wider than the burst-blanking window above, which ends near line 11.
+    bool inData = false;
+    if (haveVsync && (F.lines == 625 || F.lines == 525)) {
+        double x = std::fmod((tL - vsyncT) / P, F.lines / 2.0);
+        if (x < 0) x += F.lines / 2.0;
+        const double last = (F.firstLine[0] - 1) - F.broadStart[0] / 2.0 + (F.lines == 625 ? 0.6 : -0.4);
+        inData = x > 4.5 && x < last;
+    }
+    if (inData && r.hadPulse && gainValid) {   // teletext, WSS, captions
+        const double g = lineGain();
+        if (g > 0) {
+            const auto level = [&](double us) -> float {
+                const double t = tL + us * spu;
+                const int64_t i0 = (int64_t)std::floor(t);
+                const double fr = t - (double)i0;
+                return (float)((Bline - (rvAt((uint64_t)i0) * (1 - fr) + rvAt((uint64_t)i0 + 1) * fr)) / g);
+            };
+            const bool data = F.lines == 625 ? vbi.line625(level) : vbi.line525(level);
+            const double xl = std::fmod((tL - vsyncT) / P, (double)F.lines / 2);
+            if (!data && xl > 5.0 && xl < 10.4) ghostLine(tL);   // after the equalising pulses, before the picture
+            else if (!data && xl >= 10.4 && xl < 21.5)   // the insertion test signals (VITS) sit on these lines, up to line 22 (line 23 carries WSS and picture)
+                vitsLine(tL, (int)std::lround(xl) + 1 + (vsyncField ? (F.lines + 1) / 2 : 0));
+        }
     }
     secamLineOk = false;
     if ((F.lines == 625 || F.lines == 525) && wantColour && r.hadPulse && gainValid && haveVsync && (colourKind < 0 || colourKind == kAtvSecam)) secamLine(tL, havePicture);

@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DMR receiver: front end (decimation, DC removal, carrier offset correction, channel filter, discriminator, matched filter) and the glue to the link layer.
 #include "dect2/dmr/dmr_rx.h"
+#include "dect2/dmr/dmr_slot_sync.h"
 #include "dect2/dsp/up6.h"
 #include "dect2/results/results_io.h"
 #include "dect2/dmr/dmr_dsp.h"
@@ -99,6 +103,12 @@ struct StreamFir {
 
 } // namespace
 
+// the group delay of the receiver chain at 48 kHz (resampler, channel filter, matched filter) from a burst on the input to its centre on the link
+// clock, measured with tests/dmr/test_dmr_slot_sync.cpp against the generator (the decimation stages are added in configure()); the exact
+// resampler, when the decimated rate is not 48 kHz, adds kRxDelayRsSec (measured at 2, 8 and 10 Msps)
+constexpr double kRxDelay48Sec = 2.0829e-3;
+constexpr double kRxDelayRsSec = 0.4505e-3;
+
 struct DmrReceiver::Impl {
     double inRate = 0;
     bool ready = false;
@@ -155,6 +165,12 @@ struct DmrReceiver::Impl {
     std::mutex cbMu;
     std::function<void(const float*, const float*, size_t)> tap;
     std::function<void(int, int, const uint8_t*)> voiceCb;
+    // burst timing for the transmitter's slot sync (dmr_slot_sync.h): events of this feed() in link seconds, mapped to input time at its end
+    struct TimingEv { double linkSec; int family, slot, at; };
+    std::vector<TimingEv> timingEv;
+    uint64_t inCount = 0;
+    double rxDelay = 0;     // group delay of the decimation, channel and matched filters (configure())
+    std::function<void(double, int, int, int)> timingCb;
     std::function<void(const std::string&)> logCb;
 
     // Voice: one vocoder state per time slot; only one slot is played at a time (the one whose voice came first, until it has been quiet for a while).
@@ -203,11 +219,16 @@ struct DmrReceiver::Impl {
             if (audioSlot < 0) audioSlot = s;
             if (audioSlot != s) return;
         }
-        if (!ambeOk) { ambeOk = dmrAmbeAvailable(&ambePath); if (!ambeOk) return; }
+        if (!ambeOk) { ambeOk = dmrAmbeAvailable(&ambePath); if (!ambeOk) return; }   // (the monitor already said NoCodec)
         if (!ambe[s] || !ambe[s]->ok()) ambe[s] = std::make_unique<DmrAmbe>();   // again after a codec plug-in was installed while running
-        if (!ambe[s]->ok()) return;
+        if (!ambe[s]->ok()) { if (mon) mon->noteSound(voice::Monitor::Sound::CodecUnavailable); return; }
         int16_t pcm[480];
-        ambe[s]->decodeBurst(vs, pcm);
+        ambe[s]->decodeBurstSoft(vs, link.voiceReliability(), pcm);
+        if (mon) {   // "No audio: why" (voice_silence.h): a codec that only returns zeros
+            bool any = false;
+            for (int16_t v : pcm) if (v) { any = true; break; }
+            mon->noteSound(any ? voice::Monitor::Sound::Decoded : voice::Monitor::Sound::DecodedSilent);
+        }
         for (int16_t v : pcm) aud8.push_back(v / 32768.f);
         voiceDecoded++;
     }
@@ -241,6 +262,7 @@ struct DmrReceiver::Impl {
         specBuf.reserve(kSpecN);
         chan.design(lowpassTaps(kChanPass, kChanStop, kWorkRate, 55, 31));
         mf.design(rrcTaps(kSps, 6));
+        link.onBurstTiming = [this](double sec, int family, int slot, int at) { if (timingEv.size() < 4096) timingEv.push_back({sec, family, slot, at}); };
         link.onVoiceBurst = [this](int slot, int pos, const Bits& vs) {
             voiceBurstAudio(slot, vs);
             std::function<void(int, int, const uint8_t*)> cb;
@@ -258,11 +280,12 @@ struct DmrReceiver::Impl {
         reset();
     }
 
-    void configure(double fs) {
+    void configure(double fs, bool channel = false) {
         inRate = fs;
+        inCount = 0;
         ready = false;
         stages.clear();
-        if (fs < dmrTuning().minSampleRate - 1) return;
+        if (fs < (channel ? kWorkRate : dmrTuning().minSampleRate) - 1) return;
         const int d = pickDecimation(fs);
         const std::vector<int> f = splitFactors(d);
         double r = fs;
@@ -276,6 +299,12 @@ struct DmrReceiver::Impl {
         const double fi = fs / d;
         rsPass = std::fabs(fi - kWorkRate) < 0.01;
         if (!rsPass && !rs.configure(fi, kWorkRate)) return;
+        // linear-phase filters: half their length each; the 48 kHz part (channel filter, matched filter) is in kRxDelay48
+        rxDelay = kRxDelay48Sec + (rsPass ? 0.0 : kRxDelayRsSec);
+        {
+            double rr = fs;
+            for (const auto& st : stages) { rxDelay += 0.5 * (double)(st.taps() - 1) / rr; rr /= st.decim(); }
+        }
         ready = true;
         reset();
     }
@@ -369,6 +398,23 @@ struct DmrReceiver::Impl {
         }
         for (size_t i = 0; i < cn; i++) sample48(cur[i]);
         flushAudio();
+        inCount += n;
+        reportTiming();
+    }
+
+    // The burst times of this block on the input clock (the time of the input sample at the burst centre, the filter delay removed) and on the
+    // steady clock, taking the end of this block as now: the outbound ones go to DmrSlotClock::global() for the transmitter.
+    void reportTiming() {
+        if (timingEv.empty()) return;
+        const double inEnd = (double)inCount / inRate, linkEnd = link.nowSec(), wallEnd = dmrSteadySec();
+        std::function<void(double, int, int, int)> cb;
+        { std::lock_guard<std::mutex> lk(cbMu); cb = timingCb; }
+        for (const TimingEv& e : timingEv) {
+            const double inSec = inEnd - (linkEnd - e.linkSec) - rxDelay;
+            if (cb) cb(inSec, e.family, e.slot, e.at);
+            if (e.family == 0) DmrSlotClock::global().observe(wallEnd - (inEnd - inSec), e.slot, e.at);
+        }
+        timingEv.clear();
     }
 
     // The last 0.3 s of the signal after the DC removal, kept so that a carrier found late (the coarse offset search needs 64 ms or more) is replayed
@@ -589,6 +635,7 @@ DmrReceiver::DmrReceiver() : p_(std::make_unique<Impl>()) {}
 DmrReceiver::~DmrReceiver() = default;
 
 void DmrReceiver::configure(double inputRateHz) { p_->configure(inputRateHz); }
+void DmrReceiver::configureChannel(double inputRateHz) { p_->configure(inputRateHz, true); }
 bool DmrReceiver::ready() const { return p_->ready; }
 void DmrReceiver::reset() { if (p_->ready) p_->reset(); }
 void DmrReceiver::feed(const cf32* x, size_t n) { p_->feed(x, n); }
@@ -631,6 +678,7 @@ void DmrReceiver::setVoiceMonitor(voice::Monitor* m) { p_->monSet = m; }
 void DmrReceiver::setListenSlot(int s) { p_->listenSlot = s == 1 || s == 2 ? s : 0; }
 uint64_t DmrReceiver::encryptedBurstsSkipped() const { return p_->encryptedSkipped; }
 void DmrReceiver::setAudioTap(std::function<void(const float*, const float*, size_t)> cb) { std::lock_guard<std::mutex> lk(p_->cbMu); p_->tap = std::move(cb); }
+void DmrReceiver::setBurstTimingCallback(std::function<void(double, int, int, int)> cb) { std::lock_guard<std::mutex> lk(p_->cbMu); p_->timingCb = std::move(cb); }
 void DmrReceiver::setVoiceCallback(std::function<void(int, int, const uint8_t*)> cb) { std::lock_guard<std::mutex> lk(p_->cbMu); p_->voiceCb = std::move(cb); }
 
 ModeTuning dmrTuning() {

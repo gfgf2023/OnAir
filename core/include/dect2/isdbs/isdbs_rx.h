@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ISDB-S receiver (BS satellite television, L-band IF after the LNB), written to the engine's contract: configure() once the sample rate is
 // known, feed() from the analysis thread, telemetry() and the setters from the interface thread.
 // Input: complex baseband with the transponder (34.5 MHz wide, 28.86 Msymbol/s) near the centre, at least 39 Msample/s.
@@ -58,6 +61,7 @@ public:
     void reset();
     void feed(const std::complex<float>* x, size_t n);
     bool telemetry(IsdbsTelemetry& out, uint64_t lastSeq);
+    uint64_t idleInputSamples() const;   // input samples let go by unprocessed while there was no signal (the no-signal pre-check; tests)
     void setLogCallback(std::function<void(const std::string&)> cb);
     // The decoded transport stream: whole 188 byte packets, `secs` of signal time since the previous call. Runs on the receiver thread.
     void setPacketCallback(std::function<void(const uint8_t* packets, size_t nPackets, double secs)> cb);

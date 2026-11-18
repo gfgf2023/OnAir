@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the mesh packet layer (rust/onair_mesh behind dect2::), part 1: the protobuf reader, the Meshtastic name / key helpers and the Meshtastic
 // packet decoder on random and structured protobuf, every port payload (text, position, node info, telemetry, routing, traceroute, neighbours) encrypted with the
 // default key and with a user key, mutated and truncated packets, headers of every length. ONAIR_DIFF_ITERS (default 100000, 200000 verified) per family. Part 2 is
@@ -194,5 +197,6 @@ int main() {
     // recorded again after the decoder kept battery level 101 ("powered") and cut the text detail on a whole UTF-8 character
 
     // recorded again for 3.0: the APRS message number stops at a '}' (APRS 1.1 reply-ack, fix-packet-030, rust/onair_ax25/src/aprs.rs)
-    return golden::checkDual("mesh_proto_rs", dig, 0x06855ab108a90207ull, 0xa47f503349624973ull, !getenv("ONAIR_DIFF_ITERS"));
+    // recorded again 2026-11-10: Meshtastic waypoints, air quality, power telemetry, alert, range test, paxcounter, store and forward and map report ports are now read (was 0x06855ab108a90207, 0xa47f503349624973)
+    return golden::checkDual("mesh_proto_rs", dig, 0x62843d8cbcf9a988ull, 0xc098570f38c0b568ull, !getenv("ONAIR_DIFF_ITERS"));
 }

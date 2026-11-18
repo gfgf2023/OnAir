@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Diversity pair source: two fake radios (the same narrowband signal, independent noise, one started 18 ms after the other, a frequency offset
 // between them) are combined into one stream. Checks the start-up alignment, the in-band SNR gain against radio A alone, the single-radio
 // fall-back when one member fails, the saved-pair string format (old strings still load) and the radio-list entry.
@@ -158,7 +161,9 @@ int main() {
         std::vector<cf32> out;
         DiversitySourceStatus st;
         bool combining = false;
-        for (int i = 0; i < 120 && !combining; i++) {   // up to 12 s
+        // wait for the alignment itself and for the offset estimate to settle, not just for the first "combining" state:
+        // on a slow computer (shared runners) the pair starts combining before the delay and offset are found
+        for (int i = 0; i < 300 && !(combining && st.aligned && std::fabs(std::fabs(st.dsp.cfoHz) - 2100.0) < 100); i++) {   // up to 30 s
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             drain(ring, out);
             st = src.status();
@@ -194,7 +199,7 @@ int main() {
         CHECK(src.start(ts, ring, err), "starts with one radio");
         CHECK(err.find("only one radio") != std::string::npos, "says so: %s", err.c_str());
         std::vector<cf32> out;
-        for (int i = 0; i < 10; i++) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); drain(ring, out); }
+        for (int i = 0; i < 300 && (i < 10 || out.size() <= 100000); i++) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); drain(ring, out); }   // until enough arrived, not a fixed second
         CHECK(out.size() > 100000, "radio A passes through (%zu samples)", out.size());
         double e = 0; size_t n = std::min<size_t>(out.size(), 50000);
         // samples are A's exactly (sigma 0, no CFO): signal index 1000 + i, less the DC removal (a slow mean)

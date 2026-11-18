@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // KAAL streaming voice receiver. Port of kaal_rx.py (batch) to a chunked pipeline; see kaal_rx.h for the overview.
 #include "dect2/kaal/kaal_rx.h"
 #include "dect2/dsp/fftutil.h"
@@ -6,6 +9,7 @@
 #include "dect2/kaal/kaal_fec.h"
 #include "dect2/kaal/kaal_phy.h"
 #include "dect2/kaal/kaal_sweepid.h"
+#include "dect2/common/diag.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -656,6 +660,7 @@ struct VoiceRx::Impl {
                     if (shortTry && !shortLockOk()) {
                         // the replay of the buffer itself shows a bad seed: undo, and go on with the longer buffers (nothing was heard)
                         say("KAAL: short-buffer lock rejected on the replay");
+                        DIAG_DEBUG(757215, "The KAAL lock found on a short buffer was bad on its own replay, so the receiver drops it and tries longer buffers.");
                         const uint64_t keepGood = probKeepGood, keepBad = probKeepBad, keepIn = st.samplesIn;
                         out.clear(); dec.reset(); primed = false;
                         minTry = kAcqN - 1;
@@ -685,6 +690,7 @@ struct VoiceRx::Impl {
                     probation = false;
                     if (tot - good >= 2) {
                         say("KAAL: short-buffer lock rejected, re-acquiring on a longer buffer");
+                        DIAG_DEBUG(147978, "The KAAL lock found on a short buffer lost %d of its first %d frames, so the receiver drops it and acquires again on a longer buffer.", (int)(tot - good), (int)tot);
                         const uint64_t keepGood = st.framesGood, keepBad = st.framesBad, keepIn = st.samplesIn;
                         minTry = kAcqN - 1;
                         out.clear();
@@ -706,7 +712,10 @@ struct VoiceRx::Impl {
         for (cd& v : x) v -= mean;
         s.dc = mean;
         SweepSeed sd;
-        if (!sweepSearch(x, sd)) return false;
+        if (!sweepSearch(x, sd)) {
+            DIAG_DEBUG_EVERY(638351, 10.0, "No KAAL sweep was found in the %zu acquisition samples, so the receiver keeps listening and tries again.", x.size());
+            return false;
+        }
         double ratio = 0;
         {   // first pass: the sweep out of the acquisition buffer with the offset found by the joint search
             std::vector<cd> xc;
@@ -928,6 +937,7 @@ struct VoiceRx::Impl {
                 fstart = fstart + kRtFrameSymbols;
                 if (weak >= kMaxPendingWeak) {
                     say("KAAL: sync lost");
+                    DIAG_DEBUG_EVERY(669202, 5.0, "The KAAL receiver lost frame sync after %d weak frames in a row, so it searches for the sweep again.", (int)weak);
                     minTry = kAcqN - 1;   // a lock that was lost is not trusted to a short buffer again: the full 3 s acquisition, as before
                     const uint64_t keepGood = st.framesGood, keepBad = st.framesBad, keepIn = st.samplesIn;
                     const float snr = st.snrDb;

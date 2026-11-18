@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The source side of the top bar: starting the receiver, the sample-rate control, the DVB bandwidth,
 // the ADC-bits table and the options of the selected source (test signal, IQ file, sound card, Hamlib rig).
 // Split from toolbar.cpp; shared declarations are in app.h and toolbar_internal.h.
@@ -10,6 +13,10 @@
 #include "dect2/hdr/hdr_rx.h"
 #include "dect2/source/hamlib_link.h"
 #include "dect2/source/iq_file.h"
+#include "dect2/source/synth_media.h"
+#include "dect2/ssdv/ssdv_audio.h"
+#include <filesystem>
+#include <cstring>
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -22,7 +29,7 @@
 // 14 bits to 6.048 MHz, 12 to 8.064, 10 to 9.216, 8 above). Unknown radios, files and the test signal count as 8 bits (as before).
 int adcBitsFor(const DeviceInfo& d, double rateHz) {
     if (d.kind != DeviceInfo::Native) return 8;
-    if (d.board == "sdrplay") return rateHz <= 6.048e6 ? 14 : rateHz <= 8.064e6 ? 12 : rateHz <= 9.216e6 ? 10 : 8;
+    if (d.board == "sdrplay" || d.board == "mirics") return rateHz <= 6.048e6 ? 14 : rateHz <= 8.064e6 ? 12 : rateHz <= 9.216e6 ? 10 : 8;   // (mirics: the same MSi2500 formats, own driver)
     if (d.board == "airspy" || d.board == "lime" || d.board == "pluto" || d.board == "bladerf" || d.board == "usrp" || d.board == "rfnm") return 12;
     if (d.board == "airspyhf") return 16;
     if (d.board == "fobos") return 14;   // (the driver scales its samples to full scale 1.0)
@@ -38,11 +45,34 @@ int adcBitsFor(const DeviceInfo& d, double rateHz) {
 static void applyIqFileInfo(App& a, const std::string& path) {
     a.file.offsetBytes = 0; a.file.endBytes = 0; a.file.bigEndian = false; a.file.centreHz = 0;
     IqFileInfo info; std::string err;
-    if (!probeIqFile(path, info, err)) { if (!err.empty()) { a.engine.log(err); a.file.path.clear(); } return; }
+    if (!probeIqFile(path, info, err)) {
+        // SSDV from a sound recording: a WAV of the radio's audio (any rate, mono or stereo, 8 - 32 bit PCM or float) is turned back into a
+        // frequency-modulated carrier and played as an IQ file (ssdv_audio.h)
+        const ModeTuning* mt = modeTuning(engineStd(a));
+        std::string low = path;
+        for (char& c : low) c = (char)tolower((unsigned char)c);
+        if (mt && !strcmp(mt->id, "ssdv") && low.size() > 4 && low.compare(low.size() - 4, 4, ".wav") == 0) {
+            const std::string dir = iqPrivateTempDir();
+            double outRate = 0; std::string cerr;
+            if (!dir.empty()) {
+                const std::string out = (std::filesystem::path(dir) / "onair-ssdv-audio.cf32").string();
+                if (ssdvWavToCf32File(path, out, outRate, cerr)) {
+                    a.file.path = out; a.file.format = FileFormat::CF32; a.file.bigEndian = false; a.file.offsetBytes = 0; a.file.endBytes = 0;
+                    a.file.sampleRate = outRate;
+                    a.engine.log("SSDV: audio recording " + path + " converted for the receiver (the audio is the FSK waveform of an FM receiver)");
+                    return;
+                }
+                err = cerr;
+            }
+        }
+        if (!err.empty()) { a.engine.log(err); a.file.path.clear(); }
+        return;
+    }
     a.file.path = info.dataPath; a.file.format = info.format; a.file.bigEndian = info.bigEndian;
     a.file.offsetBytes = info.offsetBytes; a.file.endBytes = info.endBytes;
     if (info.sampleRate > 0) a.file.sampleRate = info.sampleRate;
     const double nameCentre = info.centerHz > 0 ? 0.0 : filevfo::guessCentreHz(path);   // a header without a frequency: the name may carry it
+    restoreRecordingMode(a, info.description, path);   // the mode it was made in (before the centre: a mode change resets the frequency)
     if (info.centerHz > 0) a.freqMhz = info.centerHz / 1e6;
     else if (nameCentre > 0) a.freqMhz = nameCentre / 1e6;
     a.engine.log("IQ file: " + std::to_string(info.sampleRate / 1e6) + " Msps, " + std::to_string(info.centerHz / 1e6) + " MHz" + (info.description.empty() ? "" : ", " + info.description));
@@ -72,6 +102,7 @@ std::string rateWarning(const App& a) {
 
 void startReceiver(App& a) {
     if (std::string why; receiverModeBusy(a, &why)) { a.engine.log(why); return; }   // two receivers in one mode share screen state (docs/multi-sdr.md)
+    stationAutoPick(a, true);   // My station: another free radio when this one is held by a different receiver
     // a running scan has the radio: the receiver opening it too would take it away from the scan (SDRplay) or fail
     if (a.scanner.progress().running && a.devices[a.devIdx].isRadio()) { a.engine.log("a scan is using the radio: stop the scan first"); return; }
     const bool isFile = a.devices[a.devIdx].kind == DeviceInfo::File;
@@ -82,10 +113,12 @@ void startReceiver(App& a) {
     if (isFile && a.file.path.empty()) a.engine.log("choose an IQ file first");
     else {
         if (a.devices[a.devIdx].isAudio() || a.devices[a.devIdx].kind == DeviceInfo::Hamlib) applyAudioSettings(a);
-        a.engine.setComputeMode(a.computeMode); a.engine.setStandard(engineStd(a));
+        dect2::Engine::setRxThreadMode((int)plat::prefs().getD("rxThread", 0));   // Settings > Advanced: the receiver on its own thread (4.0)
+        applyGpuPolicy(a); a.engine.setComputeMode(a.computeMode); a.engine.setStandard(engineStd(a));
         a.engine.start(a.devices[a.devIdx], a.tune, a.file);
         savePrefs(a);
         a.smooth.clear(); a.peak.clear(); a.lastSeq = 0;
+        firstStartAfterStart(a);
     }
 }
 
@@ -97,7 +130,7 @@ static void bandwidthNow(App& a) {
     applyBandwidth(a);
     a.engine.setBandwidthAuto(false);
     if (a.devices[a.devIdx].isRadio() && a.tune.sampleRate != oldRate) startReceiver(a);   // 8 vs 10 Msps: the radio is opened again
-    else a.engine.setBandwidth(a.tune.bandwidthMhz);
+    else a.engine.setBandwidth(a.tune.channelBwMhz > 0 ? a.tune.channelBwMhz : a.tune.bandwidthMhz);   // (a custom capture bandwidth is not the channel width)
 }
 
 // ---- the sample rate of the radio for this mode: Auto (the mode's own rate), one of the rates that suit the radio and the mode, or a typed one
@@ -316,8 +349,60 @@ bool sourceOptionsOpen(const App& a) {
     return k == DeviceInfo::Synthetic || (k == DeviceInfo::File && !a.engine.running()) || k == DeviceInfo::Audio || k == DeviceInfo::Hamlib;
 }
 
-// the synthetic generator: noise, offset and signal-shape controls (per mode)
+// "Synthetic content": the picture / video and sound the test signal carries (built-in unless the user picks files). One setting for every mode
+// that can carry them; the others say why they keep the built-in content.
+static void synthContentOptions(App& a, bool running) {
+    SynthConfig& sc = a.tune.synth;
+    std::string note;
+    const int sup = synthMediaSupport(sc, &note);
+    ImGui::TextDisabled("%s", tr("content"));
+    ImGui::SameLine();
+    if (sup == 0) {
+        ImGui::TextDisabled("%s", tr("built-in"));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", note.c_str());
+        flowEnd();
+        return;
+    }
+    bool ch = false;
+    static const char* kinds[] = {N_("Built-in"), N_("Picture file"), N_("Video file")};
+    ImGui::SetNextItemWidth(110 * gUi);
+    if (sup & kSynthMediaPicture) {
+        if (ImGui::BeginCombo("##scontent", tr(kinds[std::max(0, std::min(2, sc.mediaKind))]))) {
+            for (int i = 0; i < 3; i++) if (ImGui::Selectable(tr(kinds[i]), i == sc.mediaKind)) { sc.mediaKind = i; ch = true; }
+            ImGui::EndCombo();
+        }
+        if (sc.mediaKind != 0) {
+            flowNext();
+            if (ImGui::SmallButton(tr("Choose..."))) { const std::string p = openFileDialog(); if (!p.empty()) { sc.mediaPath = p; ch = true; } }
+            ImGui::SameLine(); ImGui::TextDisabled("%s", sc.mediaPath.empty() ? tr("no file") : std::filesystem::path(sc.mediaPath).filename().string().c_str());
+        }
+    } else {
+        if (sc.mediaAudio.empty() && !(sc.mediaKind == 2 && !sc.mediaPath.empty())) ImGui::TextDisabled("%s", tr("built-in sound"));
+        else ImGui::TextDisabled("%s", tr("your sound"));
+    }
+    if (sup & kSynthMediaAudio) {
+        flowNext(); ImGui::TextDisabled("%s", tr("sound"));
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Audio file..."))) { const std::string p = openFileDialog(); if (!p.empty()) { sc.mediaAudio = p; ch = true; } }
+        if (!sc.mediaAudio.empty()) {
+            ImGui::SameLine(); ImGui::TextDisabled("%s", std::filesystem::path(sc.mediaAudio).filename().string().c_str());
+            ImGui::SameLine(); if (ImGui::SmallButton(tr("Clear##saud"))) { sc.mediaAudio.clear(); ch = true; }
+        } else if (sc.mediaKind == 2 && (sup & kSynthMediaPicture)) { ImGui::SameLine(); ImGui::TextDisabled("%s", tr("the video's own")); }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", note.c_str());
+    const std::string st = synthMediaStatus();
+    if (!st.empty() && (sc.mediaKind != 0 || !sc.mediaAudio.empty())) { flowNext(); ImGui::TextDisabled("%s", st.c_str()); }
+    flowEnd();
+    if (ch) { savePrefsSoon(a); if (running) a.engine.retune(a.tune); }
+}
+
+static void synthSourceOptionsBody(App& a, bool running);
+// the synthetic generator: noise, offset and signal-shape controls (per mode), and its content
 static void synthSourceOptions(App& a, bool running) {
+    synthSourceOptionsBody(a, running);
+    synthContentOptions(a, running);
+}
+static void synthSourceOptionsBody(App& a, bool running) {
     SynthConfig& sc = a.tune.synth;
     bool ch = false;
     ImGui::TextDisabled("%s", tr("synthetic"));

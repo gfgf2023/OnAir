@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Voice key store: the named decryption keys the USER imports so OnAir can listen to digital-voice channels the user is authorised to hear.
 //
 // OWNER / LEGAL CONTRACT (do not weaken):
@@ -19,7 +22,7 @@
 namespace dect2 {
 namespace voicekeys {
 
-enum class Protocol : uint8_t { Any = 0, Dmr, P25, Nxdn, Dpmr };
+enum class Protocol : uint8_t { Any = 0, Dmr, P25, Nxdn, Dpmr, Zigbee, ZWave, WiSun, WMBus, LoRaWAN, EspNow };
 const char* protocolName(Protocol p);
 bool protocolFromName(const std::string& s, Protocol& p);
 
@@ -31,6 +34,8 @@ enum class Algorithm : uint8_t {
     Aes128Ofb,   // AES-128 in OFB (DMR/NXDN AES where the standard publishes the framing)
     Aes256Ofb,   // AES-256 in OFB (P25 AES; DMR/NXDN AES-256)
     Scrambler,   // 15-bit LFSR scrambler seeded by the key (NXDN and dPMR scramblers)
+    HyteraBp,    // Hytera Basic Privacy: 40 / 128 / 256 bit repeating key stream over the 49 vocoder bits (DMR, hytera.h). Not an ETSI standard
+    HyteraEnhanced, // Hytera Enhanced Privacy: 40-bit RC4 key plus the 40-bit message indicator (DMR, hytera.h). Not an ETSI standard
 };
 const char* algorithmName(Algorithm a);
 bool algorithmFromName(const std::string& s, Algorithm& a);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Our own plotting on top of Dear ImGui's draw lists: axes with ticks and grid, lines, dots, bars, shaded areas, images and heat maps,
 // panning and zooming with the mouse. It replaces the ImPlot library; the names follow ImPlot's, so a plot reads the same way.
 //
@@ -21,7 +24,7 @@ enum Cond { Cond_Always, Cond_Once };
 enum Flags { Flags_None = 0, Flags_NoTitle = 1, Flags_NoLegend = 2, Flags_Equal = 4, Flags_NoMouseText = 8,
              Flags_Overlay = 16, Flags_NoPan = 32,
              Flags_Flush = 64, Flags_OpenTop = 128, Flags_OpenBottom = 256,
-             Flags_SmoothZoom = 512, Flags_NoDrag = 1024 };   // SmoothZoom: the wheel eases the view towards its new range over a few frames   // Flush: no margin around the plot area (axes Inside or without labels); OpenTop/OpenBottom: no border on that edge (two plots stacked into one panel)   // Overlay: controls drawn over the plot after EndPlot() get the mouse (a button in a corner); NoPan: no drag or wheel (something in the plot holds the mouse)   // NoDrag: no drag pan, and the wheel only when SetNextWheelAxes asks for it (Shift held: Shift+drag selects a signal)
+             Flags_SmoothZoom = 512, Flags_NoDrag = 1024, Flags_NoDoubleReset = 2048 };   // SmoothZoom: the wheel eases the view towards its new range over a few frames   // Flush: no margin around the plot area (axes Inside or without labels); OpenTop/OpenBottom: no border on that edge (two plots stacked into one panel)   // Overlay: controls drawn over the plot after EndPlot() get the mouse (a button in a corner); NoPan: no drag or wheel (something in the plot holds the mouse)   // NoDrag: no drag pan, and the wheel only when SetNextWheelAxes asks for it (Shift held: Shift+drag selects a signal)
 enum AxisFlags { AxisFlags_None = 0, AxisFlags_NoTickLabels = 1, AxisFlags_NoGridLines = 2, AxisFlags_AutoFit = 4,
                  AxisFlags_Inside = 8 };   // Inside: small, faint tick labels inside the plot area (x along the bottom, y on the left) instead of a margin
 enum Scale { Scale_Linear, Scale_Log10 };
@@ -78,6 +81,8 @@ struct Look {
     double ref = 0;                       // the tuned frequency, for offset labels
 };
 void SetNextPlotLook(const Look& l);
+void SetNextZoomMarker(double x, float snapPx);   // the next plot: a wheel zoom with the pointer within snapPx of x keeps x still (the tuner marker)
+void SetNextDragTune(bool on, float scalePx);   // the next plot: drag to tune (drag_tune.h): a left drag on the body does not pan (the caller tunes); a left drag on the frequency scale (scalePx tall at the bottom, or the look's strip) pans x, a right or middle drag pans, the wheel over the scale pans x
 void SetNextWheelAxes(int mask);   // the next plot: the wheel zooms these axes (bit 0 x, bit 1 y; 0: it does not zoom). Not called: the built-in rule (Ctrl x, Shift y, else both)
 float LookStripHeight(const Look& l);     // the strip's height for these fonts
 
@@ -90,6 +95,7 @@ void EndSubplots();
 void SetupAxes(const char* xLabel, const char* yLabel, int xFlags = 0, int yFlags = 0);
 void SetupAxisLimits(Axis axis, double min, double max, Cond cond = Cond_Once);
 void SetupAxisConstraints(Axis axis, double min, double max);   // pan and zoom (drag, wheel) stay inside min..max
+void SetupAxisSpan(Axis axis, double minSpan, double maxSpan);   // the view of this axis is never narrower or wider than this (every axis also has a floor the drawing needs)
 void SetupAxisFormat(Axis axis, const char* fmt);
 void SetupAxisUnit(Axis axis, double unit);   // data in one unit, tick labels in another: a label shows value * unit
 void SetupAxisScale(Axis axis, Scale scale);
@@ -119,6 +125,8 @@ void PopColormap();
 Point GetPlotMousePos();
 bool IsPlotHovered();
 bool IsPlotHeld();         // the left button is down on the plot
+bool IsPlotPanning();      // a drag is panning this plot (any button)
+bool PressOnScale();       // drag to tune: the left press began on the frequency scale (it pans: the caller must not tune)
 double PanOverflowX();     // this frame's drag past the x constraint, in axis units (0 when the drag stayed inside)
 Rect GetPlotLimits();
 ImVec2 GetPlotPos();    // the plot area (inside the axes) on the screen

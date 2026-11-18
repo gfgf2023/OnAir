@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wireless M-Bus link layer: CRC, 3-of-6, frame formats A and B, manufacturer code, DIF / VIF records, encrypted payloads.
 #include "dect2/wmbus/wmbus_gen.h"
 #include "dect2/wmbus/wmbus_proto.h"
@@ -55,12 +58,14 @@ int main() {
     for (int m = 0; m < WmbusGenerator::meterCount(); m++) {
         Phy ph;
         auto air = WmbusGenerator::meterFrame(m, 5, ph);
-        const bool fb = ph == Phy::C1B;
+        const bool wize = WmbusGenerator::meterIsWize(m);
+        const bool fb = ph == Phy::C1B || wize;
         CHECK(airLength(air[0], fb) == air.size(), "meter %d: air length %zu vs %zu", m, airLength(air[0], fb), air.size());
         Frame f;
         CHECK(parseFrame(air.data(), air.size(), fb, f) && f.crcOk, "meter %d parse", m);
         CHECK(f.mfr.size() == 3 && f.id.size() == 8, "meter %d fields", m);
-        if (m == 2) CHECK(f.encrypted && f.records.empty(), "encrypted meter must not be decoded");
+        if (wize) CHECK(f.wize && f.records.empty(), "meter %d: Wize frame", m);
+        else if (m == 2) CHECK(f.encrypted && f.records.empty(), "encrypted meter must not be decoded");
         else CHECK(!f.encrypted && !f.records.empty(), "meter %d records %zu", m, f.records.size());
         auto bad = air; bad[bad.size() / 2] ^= 0x10;
         Frame g;

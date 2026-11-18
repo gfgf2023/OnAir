@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // COSPAS-SARSAT 406 MHz beacon receiver telemetry. RxTelemetry::sarsat, engine standard 94, active standard 93.
 // Receive only; nothing is transmitted.
 #pragma once
@@ -15,6 +18,8 @@ struct SarsatEntry {
     sarsat::Beacon b;
     float snrDb = 0, levelDb = -200;
     float cfoHz = 0;
+    bool confirmedByRepeat = false;   // 4.0: a repaired message reported once a later burst decoded to the same identification
+    int combined = 0;    // 0: decoded from one burst; n: from the soft bits of n bursts of the same beacon added together (repeat combining)
 };
 
 constexpr size_t kSarsatLogMax = 200;
@@ -31,6 +36,8 @@ struct SarsatTelemetry {
     double timeSec = 0, inputRate = 0;
     double wideSpanHz = 0;         // the whole-capture search covers this much (0: off)
     int wideChannels = 0;
+    uint64_t exportedBursts = 0;   // baseband files written (setBurstExport)
+    std::string lastExport;        // path of the newest one
     std::vector<SarsatEntry> log;  // newest first
 };
 

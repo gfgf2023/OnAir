@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Transmit: the list of modes, the TX session (underruns, stopping, failures, no frequency or power limit) and the round trip: the samples a TX session
 // sends to a recording sink are fed to OnAir's own receiver (through the engine) and must decode. The radios' own paths are tried against fakes:
 // with --soapy <module dir> the SoapySDR TX sink against the fake "onairtest" radio, with --fake <fake library> the PlutoSDR (libiio) TX sink against
@@ -778,6 +781,8 @@ static void soapyChecks(const std::string& moduleDir) {
     TxRequest r;
     r.modeId = "adsb"; r.synth = syn; r.loop = false; r.onceSeconds = 3;
     r.tune.centerHz = 1090e6; r.tune.gainDb = 100;   // above this radio's 60 dB scale
+    r.tune.radio["txgain.TOTAL"] = "75";   // a typed gain stage (Advanced): clamped to that stage's own range
+    r.tune.radio["txgain.PAD"] = "7";      // a stage the radio does not list: asked anyway, with a note
     CHECK(s.start(makeTxSink(radio), r, {}, err), "Soapy TX start: %s", err.c_str());
     CHECK(waitUntil(60, [&] { return !s.running(); }), "Soapy TX pass finished");
     const auto st = s.stats();
@@ -785,6 +790,8 @@ static void soapyChecks(const std::string& moduleDir) {
     CHECK(getenv("ONAIR_TEST_TXFREQ") && atof(getenv("ONAIR_TEST_TXFREQ")) == 1090e6, "TX frequency %s", getenv("ONAIR_TEST_TXFREQ") ? getenv("ONAIR_TEST_TXFREQ") : "-");
     CHECK(getenv("ONAIR_TEST_TXCH") && std::string(getenv("ONAIR_TEST_TXCH")) == "0", "a one-output radio transmits on TX1: %s", getenv("ONAIR_TEST_TXCH") ? getenv("ONAIR_TEST_TXCH") : "-");
     CHECK(getenv("ONAIR_TEST_TXGAIN") && std::fabs(atof(getenv("ONAIR_TEST_TXGAIN")) - 60) < 1e-9, "the gain is clamped to the radio's own scale only: %s", getenv("ONAIR_TEST_TXGAIN") ? getenv("ONAIR_TEST_TXGAIN") : "-");
+    CHECK(getenv("ONAIR_TEST_TXGAIN_TOTAL") && std::fabs(atof(getenv("ONAIR_TEST_TXGAIN_TOTAL")) - 60) < 1e-9, "the typed stage is clamped to its own range: %s", getenv("ONAIR_TEST_TXGAIN_TOTAL") ? getenv("ONAIR_TEST_TXGAIN_TOTAL") : "-");
+    CHECK(getenv("ONAIR_TEST_TXGAIN_PAD") && std::fabs(atof(getenv("ONAIR_TEST_TXGAIN_PAD")) - 7) < 1e-9, "an unlisted stage is asked as typed: %s", getenv("ONAIR_TEST_TXGAIN_PAD") ? getenv("ONAIR_TEST_TXGAIN_PAD") : "-");
     CHECK(getenv("ONAIR_TEST_TXACTIVE") && std::string(getenv("ONAIR_TEST_TXACTIVE")) == "0", "the TX stream is deactivated at the end");
     CHECK(std::fabs(st.rateHz - 64e6 / 7) < 1, "this radio only runs 64/7 Msps; the generator followed: %.0f", st.rateHz);
     // what writeStream received decodes
@@ -866,7 +873,7 @@ static TxPayloadKind expectedKind(const std::string& id) {
     if (id == "dab" || id == "drm" || id == "hdr" || id == "cdr") return TxPayloadKind::BroadcastAudio;
     if (id == "ft8" || id == "ft4" || id == "wspr" || id == "ft2" || id == "jt65" || id == "jt9" || id == "q65" || id == "fst4" || id == "msk144") return TxPayloadKind::Ftx;
     if (id == "rtty") return TxPayloadKind::Rtty;
-    if (id == "olivia" || id == "contestia" || id == "mfsk" || id == "thor" || id == "dominoex" || id == "hell") return TxPayloadKind::Keyboard;
+    if (id == "olivia" || id == "contestia" || id == "mfsk" || id == "thor" || id == "dominoex" || id == "hell" || id == "cp16") return TxPayloadKind::Keyboard;
     if (id == "cw") return TxPayloadKind::Cw;
     if (id == "psk") return TxPayloadKind::Psk;
     if (id == "js8") return TxPayloadKind::Js8;
@@ -899,6 +906,7 @@ static TxPayloadKind expectedKind(const std::string& id) {
     if (id == "vdes") return TxPayloadKind::Vdes;
     if (id == "uplink") return TxPayloadKind::Uplink;
     if (id == "mesh") return TxPayloadKind::Mesh;
+    if (id == "loraaprs") return TxPayloadKind::LoraAprs;
     if (id == "mac") return TxPayloadKind::Mac;
     if (id == "kaal") return TxPayloadKind::Kaal;
     if (id == "kapp") return TxPayloadKind::Kapp;
@@ -907,9 +915,10 @@ static TxPayloadKind expectedKind(const std::string& id) {
     if (id == "kavb") return TxPayloadKind::Kavb;
     if (id == "kaws") return TxPayloadKind::Kaws;
     if (id == "esubghz") return TxPayloadKind::Keyboard;
+    if (id == "meshcore") return TxPayloadKind::Keyboard;
     if (id == "vdl4" || id == "uat" || id == "wisun" || id == "zwave") return TxPayloadKind::SatScene;
     // modes that were once refused: a generic test scene, no custom message
-    static const char* scene[] = {"gnss", "ism", "cell", "gsmr", "specx", "specan", "astro", "ble", "iono", "wifi", "general", "rid", "nr", "timesig", "nbiot", "halow", "codar", "datawell", "multitone", "ant", "tetrapol", "ndb", "elektro", "lbj", "eczas", "fpv", "wmbus", "mt63", "fsq", "ifkp", "mscatter", "cquam", "ardop", "goesdcs", "modeac", "bletracker", "satbeacon", "nfc"};   // nfc: the fixed reader command script (no message to type)
+    static const char* scene[] = {"gnss", "ism", "cell", "gsmr", "specx", "specan", "astro", "ble", "iono", "wifi", "general", "rid", "nr", "timesig", "nbiot", "halow", "codar", "datawell", "multitone", "ant", "tetrapol", "ndb", "elektro", "lbj", "eczas", "fpv", "wmbus", "mt63", "fsq", "ifkp", "mscatter", "cquam", "ardop", "goesdcs", "modeac", "bletracker", "satbeacon", "nfc", "adsl", "winlinkpkt", "winlinkardop"};   // nfc: the fixed reader command script (no message to type)
     for (const char* w : scene) if (id == w) return TxPayloadKind::SatScene;
     return (TxPayloadKind)(-1);
 }
@@ -927,6 +936,7 @@ static void payloadUiCoverage() {
     CHECK(txModeForList(25, "ft8") && std::string(txModeForList(25, "ft8")->id) == "ft8", "list FT8");
     CHECK(txModeForList(59, nullptr) && std::string(txModeForList(59, nullptr)->id) == "meteor", "list Meteor");
     CHECK(txModeForList(12, nullptr), "GNSS is offered");
+    CHECK(txModeForList(11, "loraaprs") && std::string(txModeForList(11, "loraaprs")->id) == "loraaprs", "list LoRa APRS: its own mode, not Meshtastic");
 }
 
 static void dvbsFileTs() {
@@ -1001,7 +1011,7 @@ static void analogTvLiveVideo() {
     r.modeId = "atv";
     r.videoSrc = 2;
     r.videoDevice = "cam0";
-    r.pullVideo = [](int w, int h, float* y, float* u, float* v) {
+    r.pullVideo = [](double, int w, int h, float* y, float* u, float* v) {
         for (int i = 0; i < w * h; i++) { y[i] = 0.42f; if (u) u[i] = 0.f; if (v) v[i] = 0.f; }
         return true;
     };

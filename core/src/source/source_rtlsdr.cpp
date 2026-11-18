@@ -1,6 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Native driver for the RTL-SDR: the radio's own library is loaded at run time when it is installed. See native_common.h.
 #include "native_common.h"
+#include "dect2/common/diag.h"
 #include "dect2/engine/mode_tuning.h"
+#include "dect2/common/platform.h"
+#include <deque>
 #include <map>
 #include "rtl_fd_shim.h"
 
@@ -23,6 +29,7 @@ struct RtlApi {
     int (DECT2_CALL* get_tuner_gains)(rtlsdr_dev_t*, int*) = nullptr;
     int (DECT2_CALL* set_tuner_gain)(rtlsdr_dev_t*, int) = nullptr;
     int (DECT2_CALL* set_agc_mode)(rtlsdr_dev_t*, int) = nullptr;
+    int (DECT2_CALL* set_tuner_if_gain)(rtlsdr_dev_t*, int, int) = nullptr;   // optional (stage 1-6, tenths of a dB): the E4000's six IF stages only
     int (DECT2_CALL* reset_buffer)(rtlsdr_dev_t*) = nullptr;
     int (DECT2_CALL* read_async)(rtlsdr_dev_t*, cb_t, void*, uint32_t, uint32_t) = nullptr;
     int (DECT2_CALL* cancel_async)(rtlsdr_dev_t*) = nullptr;
@@ -92,7 +99,7 @@ struct RtlApi {
         if (ok) {
             lib.opt(get_tuner_type, "rtlsdr_get_tuner_type"); lib.opt(set_direct_sampling, "rtlsdr_set_direct_sampling"); lib.opt(set_bias_tee, "rtlsdr_set_bias_tee");
             lib.opt(set_freq_correction, "rtlsdr_set_freq_correction"); lib.opt(set_offset_tuning, "rtlsdr_set_offset_tuning");
-            lib.opt(read_sync, "rtlsdr_read_sync");
+            lib.opt(read_sync, "rtlsdr_read_sync"); lib.opt(set_tuner_if_gain, "rtlsdr_set_tuner_if_gain");
             lib.opt(check_dongle_model, "rtlsdr_check_dongle_model");
             blogLib = check_dongle_model != nullptr;
         }
@@ -181,6 +188,20 @@ std::vector<RadioSetting> rtlSettings(int tuner, RtlModel m) {
     // signals in direct sampling (V3 Q branch), where the tuner gain does nothing.
     v.push_back(boolSetting("rtlagc", "RTL AGC (chip gain)", "The RTL2832U chip's own automatic gain, after the tuner. Mostly for HF with direct sampling (RTL-SDR Blog V3 Q branch),\n"
                             "where the tuner gain has no effect and weak signals stay low. On VHF/UHF leave it off: it can overload on strong signals."));
+    // #233: the E4000's six IF gain stages by hand (librtlsdr rtlsdr_set_tuner_if_gain; the R820T family has no such stages). -1: left as the library sets them.
+    if (tuner == kE4000 && rtl().set_tuner_if_gain) {
+        struct If { int n; double lo, hi, step; const char* what; };
+        static const If kIf[] = {{1, -3, 6, 9, "after the mixer: -3 or 6 dB"}, {2, 0, 9, 3, "0 to 9 dB in 3 dB steps"}, {3, 0, 9, 3, "0 to 9 dB in 3 dB steps"},
+                                 {4, 0, 2, 1, "0 to 2 dB in 1 dB steps"}, {5, 3, 15, 3, "3 to 15 dB in 3 dB steps"}, {6, 3, 15, 3, "3 to 15 dB in 3 dB steps"}};
+        for (const If& f : kIf) {
+            RadioSetting r;
+            r.type = RadioSetting::Number; r.key = "gain.if" + std::to_string(f.n); r.label = "Gain stage: IF " + std::to_string(f.n); r.unit = "dB";
+            r.help = std::string("The E4000's IF amplifier stage ") + std::to_string(f.n) + " by hand (" + f.what + "). -1: left as it is (the default). "
+                     "A stage set by hand is written on the next start or retune and stays until the radio is opened again.";
+            r.minV = f.lo; r.maxV = f.hi; r.step = f.step; r.def = "-1";
+            v.push_back(r);
+        }
+    }
     if (m != kBlogV4 && m != kBlogV3)
         v.push_back(boolSetting("dxp", "Treat as DXpatrol SDR", "For a DXpatrol that shows up under a generic name: use its HF input (direct sampling, Q branch) below 28 MHz and the 100 kHz lower limit.\n(Tick it on the radio list entry of the DXpatrol; takes effect on the next start.)", m == kDxPatrol));
     return v;
@@ -224,12 +245,13 @@ protected:
         // librtlsdr opens by position in the USB list: with two dongles, an unplug or a new one shifts it, and the other radio (with its
         // antenna power) would be opened. The serial of the listing finds the radio again.
         const int at = indexOfSerial();
-        if (at == -2) { err = "RTL-SDR " + serial_ + " not found (unplugged?)"; return false; }
+        if (at == -2) { DIAG_ERROR(178818, "The RTL-SDR with serial %s is not in the USB list, so it cannot be opened (unplugged?).", serial_.c_str()); err = "RTL-SDR " + serial_ + " not found (unplugged?)"; return false; }
         const uint32_t index = at >= 0 ? (uint32_t)at : index_;
         const int r = rtl().open(&dev_, index);
         if (r != 0 || !dev_) {
             dev_ = nullptr;
             // librtlsdr hands back libusb's error code; a missing driver or permission does not pass by trying again
+            DIAG_ERROR(766086, "Opening the RTL-SDR at USB index %u failed with library code %d, so the radio stays closed.", (unsigned)index, r);
             err = "RTL-SDR: cannot open the radio: " + usbErrorText(r);
             if (r == -3 || r == -12 || (kOnWindows && usbDriverMissing(r))) openFailure_ = OpenFailure::Final;
             return false;
@@ -251,13 +273,15 @@ protected:
         rtl().set_tuner_gain_mode(dev_, 1);   // manual gain: OnAir runs its own AGC
         return configure(s, err, false);
     }
+    double lastTuneHz_ = -1;
     bool configure(const TuneSettings& s, std::string& err, bool live) override {
-        if (!dev_) return false;
+        if (!dev_) { DIAG_DEBUG(669489, "The RTL-SDR was asked to configure itself while no device is open, so nothing is changed."); return false; }
         if (!live) {
             // a TV channel cannot be squeezed into what a dongle delivers: say so instead of streaming a useless rate
             if (s.sampleRate > 3.2e6 && !s.rateChosen) {   // (a rate the user chose goes to the driver as it is; the DXpatrol is sold for up to 3.2 Msps, the same ceiling)
                 char b[200];
                 snprintf(b, sizeof b, "RTL-SDR gives at most 3.2 Msps; %s needs about %.0f Msps: use a faster radio", familyOf(s), s.sampleRate / 1e6);
+                DIAG_ERROR(111715, "The RTL-SDR cannot deliver the %.1f Msps that %s needs (its limit is 3.2 Msps), so the radio is not started.", s.sampleRate / 1e6, familyOf(s));
                 err = b;
                 openFailure_ = OpenFailure::Final;
                 return false;
@@ -265,7 +289,12 @@ protected:
             // stable rates are 225-300 kHz and 0.9-3.2 MHz; above about 2.56 MHz most dongles drop samples
             double want = s.rateChosen && s.sampleRate > 0 ? s.sampleRate : std::min(s.sampleRate > 0 ? s.sampleRate : 2.048e6, model_ == kDxPatrol ? kDxpMaxRate : 2.56e6);   // (3.4: a chosen rate is not capped)
             if (want < 900001 && (want > 300000 || want <= 225000)) want = 900001;   // librtlsdr refuses 225 kHz and below as well
+            // The RTL-SDR Blog library's set_sample_rate retunes to the frequency it last had: on a freshly opened R820T that is 0 Hz, below its
+            // automatic direct-sampling threshold (24 MHz), so the tuner went to standby before the real tune and a PLL failure then left the
+            // dongle in direct sampling at 0 Hz (#450). Tuned first, the retune it makes is the real frequency.
+            if (s.centerHz >= kDirectBelowHz && s.centerHz <= 4.29e9) rtl().set_center_freq(dev_, (uint32_t)std::llround(s.centerHz));
             if (const int r = rtl().set_sample_rate(dev_, (uint32_t)std::lround(want)); r < 0) {
+                DIAG_ERROR(713154, "The RTL-SDR driver refused a sample rate of %.3f Msps with error %d, so the radio is not started.", (double)want / 1e6, r);
                 err = "RTL-SDR: the sample rate of " + mhz(want) + " Msps was refused (error " + std::to_string(r) + ")";
                 return false;
             }
@@ -315,7 +344,7 @@ protected:
             if (p != ppm_) {
                 const int r = rtl().set_freq_correction(dev_, p);   // -2: already set
                 if (r == 0 || r == -2) ppm_ = p;
-                else { fprintf(stderr, "RTL-SDR: the frequency correction of %d ppm was refused (%d)\n", p, r); fflush(stderr); }
+                else { DIAG(541376, "The RTL-SDR driver refused a frequency correction of %d ppm with code %d, so the old correction stays.", p, r); fprintf(stderr, "RTL-SDR: the frequency correction of %d ppm was refused (%d)\n", p, r); fflush(stderr); }
             }
         } else tuneHz = ppmCorrectedHz(f, ppm);
         // offset tuning (E4000 / FC00xx only, TuneSettings "offset")
@@ -325,18 +354,21 @@ protected:
         }
         // the library takes the frequency as a 32-bit Hz value: 4.29 GHz is all the wire format holds
         if (tuneHz > 4.29e9) addNote(err, "the RTL-SDR library takes at most 4.29 GHz (32-bit Hz): " + mhz(f) + " MHz was cut to that");
-        if (rtl().set_center_freq(dev_, (uint32_t)std::llround(std::min(tuneHz, 4.29e9))) < 0) {
+        // a retune that only changes the gain leaves the tuner alone (the same frequency set again glitches the stream)
+        if ((!live || tuneHz != lastTuneHz_) && rtl().set_center_freq(dev_, (uint32_t)std::llround(std::min(tuneHz, 4.29e9))) < 0) {
+            DIAG_ERROR(211091, "The RTL-SDR driver refused a centre frequency of %.6f MHz, so the tune fails.", f / 1e6);
             err = "RTL-SDR: the driver refused " + mhz(f) + " MHz" + (hi_ > 0 ? " (this radio is specified for " + mhz(specLo) + " to " + mhz(hi_) + " MHz)" : std::string());
             openFailure_ = OpenFailure::Final;
             return false;
         }
+        lastTuneHz_ = tuneHz;
         {   // the chip's digital AGC (#233)
             const bool agc = radioFlag(s, "rtlagc");
             if (agc != agc_ && rtl().set_agc_mode(dev_, agc ? 1 : 0) == 0) agc_ = agc;
         }
         if (rtl().set_bias_tee && s.biasTee != bias_) {
             if (rtl().set_bias_tee(dev_, s.biasTee ? 1 : 0) == 0) bias_ = s.biasTee;
-            else if (s.biasTee) { fprintf(stderr, "RTL-SDR: the radio refused the bias-tee\n"); fflush(stderr); }
+            else if (s.biasTee) { DIAG(821014, "The RTL-SDR refused to switch the antenna bias-tee on, so the antenna gets no power."); fprintf(stderr, "RTL-SDR: the radio refused the bias-tee\n"); fflush(stderr); }
         }
         // the tuner offers a fixed list of gains (tenths of a dB): take the closest
         const int n = rtl().get_tuner_gains(dev_, nullptr);
@@ -347,6 +379,11 @@ protected:
             for (int v : g) if (std::abs(v - (int)std::lround(s.gainDb * 10)) < std::abs(best - (int)std::lround(s.gainDb * 10))) best = v;
             rtl().set_tuner_gain(dev_, best);
         }
+        if (tuner_ == kE4000 && rtl().set_tuner_if_gain)   // the IF stages set by hand (#233), after the tuner gain; -1 = not touched
+            for (int st = 1; st <= 6; st++) {
+                const double v = radioNumber(s, "gain.if" + std::to_string(st), -1);
+                if (v != -1) rtl().set_tuner_if_gain(dev_, st, (int)std::lround(v * 10));
+            }
         return true;
     }
     void closeDevice() override {
@@ -364,13 +401,7 @@ protected:
         // completes later than on Linux or Windows). The radio streams without pause once reset_buffer() is done, so each read returns
         // within the 100 ms of samples it asks for, and stop() waits for at most that.
         if (rtl().read_sync) {
-            const size_t bytes = (size_t)std::clamp(std::lround(rate_ * 2 * 0.1 / 16384) * 16384, 16384L, 262144L);
-            std::vector<unsigned char> buf(bytes);
-            while (run_) {
-                int got = 0;
-                if (rtl().read_sync(dev_, buf.data(), (int)bytes, &got) < 0) return;   // unplugged, or the stream died: reopened by the caller
-                if (got > 0 && run_) convert(buf.data(), (uint32_t)got);
-            }
+            readSyncLoop();
             return;
         }
 #endif
@@ -380,6 +411,54 @@ protected:
     void interrupt() override { if (dev_) rtl().cancel_async(dev_); }   // (a blocking read_sync ends with its block)
 
 private:
+#ifdef __APPLE__
+    // read_sync has one USB transfer in flight: while none is, the dongle's small FIFO overflows and samples are lost. When each read
+    // waited for the conversion, the app lost 0.4-0.65% of the samples at 2.56 Msps (more with the window in the background), and a
+    // narrowband decoder loses its symbol timing at every gap. So this thread only reads, back to back, and a second thread converts the
+    // blocks in order: 0.03-0.05%. Stop still waits for at most one block.
+    void readSyncLoop() {
+        const size_t bytes = (size_t)std::clamp(std::lround(rate_ * 2 * 0.1 / 16384) * 16384, 16384L, 262144L);
+        std::mutex mu;
+        std::condition_variable cv;
+        std::deque<std::vector<unsigned char>> full;   // read, waiting for the conversion
+        std::vector<std::vector<unsigned char>> spare;  // converted, for the next reads
+        bool done = false;
+        std::thread conv = dect2::namedThread("onair-sdr-conv", [&] {
+            for (;;) {
+                std::vector<unsigned char> b;
+                {
+                    std::unique_lock<std::mutex> lk(mu);
+                    cv.wait(lk, [&] { return done || !full.empty(); });
+                    if (full.empty()) return;
+                    b = std::move(full.front());
+                    full.pop_front();
+                }
+                if (run_) convert(b.data(), (uint32_t)b.size());
+                std::lock_guard<std::mutex> lk(mu);
+                spare.push_back(std::move(b));
+            }
+        });
+        setThreadPriority(ThreadPriority::Realtime);
+        while (run_) {
+            std::vector<unsigned char> b;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                if (!spare.empty()) { b = std::move(spare.back()); spare.pop_back(); }
+            }
+            b.resize(bytes);
+            int got = 0;
+            if (rtl().read_sync(dev_, b.data(), (int)bytes, &got) < 0) break;   // unplugged, or the stream died: reopened by the caller
+            if (got <= 0) continue;
+            b.resize((size_t)got);
+            std::lock_guard<std::mutex> lk(mu);
+            if (full.size() < 16) full.push_back(std::move(b));   // more than about 1 s behind: the ring would drop it anyway
+            cv.notify_one();
+        }
+        { std::lock_guard<std::mutex> lk(mu); done = true; }
+        cv.notify_one();
+        conv.join();
+    }
+#endif
     // where the radio with serial_ is now: the listed position while it is still there, else the first with that serial (many dongles share
     // one, such as 00000001); -1 = unknown (no serial, or a radio whose strings cannot be read), -2 = every radio was read and it is not there
     int indexOfSerial() const {
@@ -488,7 +567,7 @@ struct NativeLink : RtlLink {
     ~NativeLink() override { if (d) native::rtl().close(d); }
     bool configure(double f, double r, int g) override {
         auto& a = native::rtl();
-        if (a.set_sample_rate(d, (uint32_t)r) < 0 || a.set_center_freq(d, (uint32_t)f) < 0) return false;
+        if (a.set_sample_rate(d, (uint32_t)r) < 0 || a.set_center_freq(d, (uint32_t)f) < 0) { DIAG_DEBUG(124621, "The RTL-SDR probe link could not set %.0f Hz at %.0f samples per second, so this setting is skipped.", f, r); return false; }
         if (g < 0) a.set_tuner_gain_mode(d, 0);
         else { a.set_tuner_gain_mode(d, 1); a.set_tuner_gain(d, g); }
         return a.reset_buffer(d) >= 0;

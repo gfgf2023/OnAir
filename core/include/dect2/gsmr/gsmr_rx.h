@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GSM-R receiver: the railway GSM base stations around you (GSM 900 band, railway allocation 921 - 925 MHz), from what every base station
 // broadcasts in the clear to all mobiles on its BCCH (3GPP TS 44.018 / 45.002 / 45.003 / 45.004): its base station identity code (SCH),
 // and from System Information 1 to 4 its cell identity, location area and operator code, access parameters and channel lists.
@@ -53,9 +56,11 @@ private:
 ModeTuning gsmrTuning();
 
 // ---------------------------------------------------------------- the 900 MHz channel raster
-double gsmrArfcnToHz(int arfcn);               // downlink; 0 when not a GSM 900 channel (0 - 124, 955 - 1023)
-int gsmrHzToArfcn(double hz);                  // -1 when outside GSM 900
+double gsmrArfcnToHz(int arfcn);               // downlink: GSM 900 (0 - 124, 955 - 1023), GSM 850 (128 - 251), DCS 1800 (512 - 885); 0 other
+int gsmrHzToArfcn(double hz);                  // -1 outside GSM 850 / 900, DCS 1800, PCS 1900 (PCS shares the DCS numbers)
 bool gsmrIsRailway(int arfcn);                 // 955 - 973 (921.2 - 924.8 MHz)
+double gsmrRasterHz(double hz);                // the channel centre the frequency is on, in its own band (GSM 850 / 900, DCS 1800, PCS 1900); 0 none
+const char* gsmrBandName(double hz);           // "GSM 850", "GSM-R", "GSM 900", "DCS 1800", "PCS 1900" or ""
 // Operator of an MCC-MNC from a short built-in list of public network codes ("" unknown), and the country of an MCC
 const char* gsmrOperatorName(int mcc, int mnc);
 const char* gsmrCountry(int mcc);

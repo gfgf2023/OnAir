@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Engine::start(): opens the source, plans offset tuning, configures every receiver for the new sample rate and channel, and
 // starts the worker threads. The long body is split into small steps called in the original order.
 #include "dect2/engine/engine.h"
+#include "dect2/common/diag.h"
 #include "dect2/automation/engine.h"
 #include "engine_ctl.h"
 #include "engine_internal.h"
@@ -34,20 +38,30 @@ namespace dect2 {
 bool Engine::start(const DeviceInfo& dev, const TuneSettings& tune, const FileOptions& file) {
     std::lock_guard<std::recursive_mutex> ctl(engineControlMutex());
     stop();
+    { std::lock_guard<std::mutex> lk(rxMu_); rxTel_ = RxTelemetry(); }   // the last report of the previous mode must not be shown as this mode's (its seq stays below rxPub_)
     cpuAccounts();   // the receiver's CPU accounts (its number may have changed since the last start)
-    noTuneOffset_ = dev.kind == DeviceInfo::Audio;   // a sound card has no radio to tune off the DC spike: the signal is where the IF centre puts it (0 Hz)
+    noTuneOffset_ = dev.tunesAtDial();   // a sound card or a Hamlib rig's audio has no DC spike to tune off: the signal is where the IF centre puts it (0 Hz)
     ring_.clear();
     ring_.resetDropped();
-    radioMissing_ = 0; radioMissEvents_ = 0; cpuDropEvents_ = 0; ringDroppedSeen_ = 0;
-    lastRadioMissNs_ = 0; lastCpuDropNs_ = 0; loadPct_ = 0; loadT_ = 0; deliveredPct_ = -1; rateT0_ = 0;
+    radioMissing_ = 0; radioMissEvents_ = 0; cpuDropEvents_ = 0; ringDroppedSeen_ = 0; srcLostEvents_ = 0; ringLostSeen_ = 0; lastSrcLostNs_ = 0; cpuCause_ = 0; loopMarks_.clear();
+    lastRadioMissNs_ = 0; lastCpuDropNs_ = 0; loadPct_ = 0; cpuPct_ = 0; loadT_ = 0; deliveredPct_ = -1; delivRate_.restart();
     holdDelivery(1000);   // a radio often stutters while its stream starts
     std::string err;
-    if (int holder = 0; !claimDevice(dev, receiverId_, &holder)) { log("this radio is in use by " + deviceHolderText(holder)); return false; }
+    if (int holder = 0; !claimDevice(dev, receiverId_, &holder)) {
+        log("this radio is in use by " + deviceHolderText(holder));
+        DIAG(368551, "The radio %s is already in use by another receiver, so this receiver does not start.", dev.name.c_str());
+        return false;
+    }
     if (dev.kind == DeviceInfo::File)
         src_ = makeFileSource(file.path, file.format, file.sampleRate, file.loop);
     else
         src_ = makeSource(dev);
-    if (!src_) { log("no source"); releaseDevice(receiverId_); return false; }
+    if (!src_) {
+        log("no source");
+        DIAG_ERROR(968464, "No sample source could be created for the device %s, so the receiver does not start.", dev.name.c_str());
+        releaseDevice(receiverId_);
+        return false;
+    }
     offHz_ = 0; offRate_ = 0; offsetDc_ = false;
     std::string offNote;
     if (autoOffset_ && dev.isRadio() && offsetAllowed() && mtvOn_.load() && multiChannelSupported(stdMode_.load()) && wholeSpanFits(stdMode_.load(), tune.sampleRate, tune.bandwidthMhz, 0)) {
@@ -71,6 +85,7 @@ bool Engine::start(const DeviceInfo& dev, const TuneSettings& tune, const FileOp
     { std::lock_guard<std::mutex> lk(noteMu_); startErr_.clear(); }
     if (!src_->start(hwTune(tune), ring_, err)) {
         log("source start failed: " + err + " (" + dev.name + ")");   // the radio the user selected, so a failure names it
+        DIAG_ERROR(283584, "The radio %s did not start (%s), so the receiver stays stopped.", dev.name.c_str(), err.c_str());
         { std::lock_guard<std::mutex> lk(noteMu_); startErr_ = err.empty() ? "the radio did not start" : err; }
         src_.reset();
         releaseDevice(receiverId_);
@@ -81,7 +96,10 @@ bool Engine::start(const DeviceInfo& dev, const TuneSettings& tune, const FileOp
         offNote = "offset tuning not possible (the radio runs at " + std::to_string(src_->sampleRate() / 1e6).substr(0, 5) + " Msps): removing the DC spike instead";
         offHz_ = 0; offRate_ = 0; offsetDc_ = true;
         std::string e2;
-        if (!src_->retune(hwTune(tune), e2)) log("retune failed: " + e2);
+        if (!src_->retune(hwTune(tune), e2)) {
+            log("retune failed: " + e2);
+            DIAG(150014, "Returning the radio to the channel centre after the offset rate was refused failed (%s), so the radio may stay tuned to the offset.", e2.c_str());
+        }
     }
     { std::lock_guard<std::mutex> lk(noteMu_); note_.clear(); retuneNote_.clear(); }
     setNote(offNote.empty() ? err : err.empty() ? offNote : err + "; " + offNote, false);
@@ -132,12 +150,16 @@ bool Engine::start(const DeviceInfo& dev, const TuneSettings& tune, const FileOp
     radioLost_ = false; lastSamples_ = std::chrono::steady_clock::now(); reconnectErr_.clear();
     automation::receiverState("started", "receiver started");
     logP1Count_ = 0; logGi_ = -2; logState_ = -1; logFrameSyms_ = 0;
-    bwMhz_ = tune.bandwidthMhz; bwActive_ = bwMhz_;
+    bwMhz_ = tune.channelBwMhz > 0 ? tune.channelBwMhz : tune.bandwidthMhz; bwActive_ = bwMhz_;   // (a custom capture bandwidth does not change the width of the signal)
     bwDetected_ = 0; bwReset_ = true; bwReq_ = false;
+    // configuring every receiver makes each say its rate line ("Balise: the sample rate is too low", "APRS / Packet: listening...", ...); those
+    // are not this mode's, so they stay out of the log (they appeared on every restart after the first, #SARSAT)
+    rxLogQuiet_ = true;
     configureTvReceivers(dev, tune);
     placeNarrowReceivers(dev, tune);
     configureDecoderReceivers(dev, tune);
     configureDataReceivers(dev, tune);
+    rxLogQuiet_ = false;
     checkRateAndResetState(dev, tune);
     announceAndRun(dev, tune);
     return true;
@@ -145,7 +167,8 @@ bool Engine::start(const DeviceInfo& dev, const TuneSettings& tune, const FileOp
 
 // Configures the TV, DAB, FM, DVB-S, DTMB, analog TV and first group of receivers for the current sample rate
 void Engine::configureTvReceivers(const DeviceInfo& dev, const TuneSettings& tune) {
-    rx_.configure(rate_, tune.bandwidthMhz);
+    const double chanBw = tune.channelBwMhz > 0 ? tune.channelBwMhz : tune.bandwidthMhz;   // the signal's channel; a custom capture bandwidth is the radio's, not the channel's
+    rx_.configure(rate_, chanBw);
     {   // the resampler on its own thread: live radios on Windows by default (not yet tried elsewhere); DECT2_PIPELINE=0/1 forces it off/on
 #ifdef _WIN32
         bool pipe = src_->realtimeHardware();
@@ -155,7 +178,7 @@ void Engine::configureTvReceivers(const DeviceInfo& dev, const TuneSettings& tun
         if (const char* e = getenv("DECT2_PIPELINE")) pipe = atoi(e) != 0;
         rx_.setPipelined(pipe);
     }
-    rxT_.configure(rate_, tune.bandwidthMhz);
+    rxT_.configure(rate_, chanBw);
     {   // DVB-T: the error correction on its own thread for a live radio, so the analysis thread only demodulates (DECT2_PIPELINE=0/1 forces it)
         bool pipe = src_->realtimeHardware();
         if (const char* e = getenv("DECT2_PIPELINE")) pipe = atoi(e) != 0;
@@ -169,27 +192,29 @@ void Engine::configureTvReceivers(const DeviceInfo& dev, const TuneSettings& tun
     rxD_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });   // DMB video, on the receiver thread
     rxI_.configure(rate_, tune.isdbtBwMhz);
     rxI_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });
+    rxTsb_.configureTsb(rate_, tune.isdbtBwMhz == 7 || tune.isdbtBwMhz == 8 ? tune.isdbtBwMhz : 6, 0);
+    rxTsb_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });
     rxFm_.configure(rate_);
     rxFm_.setStationFinder(lastDev_.kind == DeviceInfo::File || lastDev_.kind == DeviceInfo::Synthetic);   // a live radio stays on the frequency tuned: a weak station is not traded for a strong neighbour
     if (stdMode_.load() == 7 && !rxFm_.ready()) log("FM needs a sample rate of at least 500 ksps");
     rxDvbs_.configure(rate_);
     rxDvbs_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { rxDvbs_.feedTs(pk, n); onTsPackets(pk, n, secs); });   // runs on the receiver thread
-    rxDvbs_.setLogCallback([this](const std::string& s) { log(s); });
-    rxDtmb_.configure(rate_, tune.bandwidthMhz);
+    rxDvbs_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxDtmb_.configure(rate_, chanBw);
     rxDtmb_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });   // runs on the receiver thread
-    rxDtmb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDtmb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAtv_.configure(rate_);
-    rxAtv_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAtv_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDmr_.configure(rate_);
-    rxDmr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDmr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDrm_.configure(rate_);
-    rxDrm_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDrm_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAdsb_.configure(rate_);
-    rxAdsb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAdsb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxGnss_.configure(rate_);
-    rxGnss_.setLogCallback([this](const std::string& s) { log(s); });
+    rxGnss_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxGnss_.setClockCompare(dev.isRadio());   // the satellites' UTC against the computer's clock: a radio only (a file or the simulator keeps its own date)
-    wide_.setLogCallback([this](const std::string& s) { log(s); });
+    wide_.setLogCallback([this](const std::string& s) { rxLog(s); });
     vfo_.configure(rate_);   // multi-VFO: the extra channels follow the capture's rate
 }
 
@@ -197,13 +222,15 @@ void Engine::configureTvReceivers(const DeviceInfo& dev, const TuneSettings& tun
 void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tune) {
     {   // a narrow channel sits tuneOffsetHz away from the radio's centre (a file holds the channel as recorded: no offset)
         const ModeTuning* mto = modeTuning(stdMode_.load());
-        const double o = mto && dev.kind != DeviceInfo::File && dev.kind != DeviceInfo::Audio ? -mto->tuneOffsetHz : 0.0;
+        const double o = mto && dev.kind != DeviceInfo::File && !dev.tunesAtDial() ? -mto->tuneOffsetHz : 0.0;
         for (int wm : WideModes::modes()) wide_.configure(wm, rate_, o);
-        wide_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : fileCentreHz_.load());   // the logs of a whole-span decoder keep their rows' frequencies over a retune
+        // offset tuning: the radio sits offHz_ below, the samples are mixed back to the channel centre (offMix_), so the span centre is the channel's
+        { const double wc_ = dev.kind != DeviceInfo::File ? radioTune(tune).centerHz + offHz_.load() : fileCentreHz_.load(); wide_.setCenterHz(wc_); wideAllCentre_.store(wc_); }   // the logs of a whole-span decoder keep their rows' frequencies over a retune
         rxSonde_.setSignalOffset(o);
         rxAis_.setSignalOffset(o);
         rxAis_.setCenterHz(dev.isRadio() ? radioTune(tune).centerHz : dev.kind == DeviceInfo::File && rate_ >= 5e6 ? fileCentreHz_.load() : 0.0);   // a wide capture holds the long-range channels too
         rxMarine_.setSignalOffset(o);
+        rxSitor_.setSignalOffset(o);
         rxAcars_.setSignalOffset(o);
         if (dev.kind != DeviceInfo::File) rxAcars_.setCenterHz(radioTune(tune).centerHz);   // channel frequencies and the 25 kHz grid come from it
         rxInmc_.setSignalOffset(o);
@@ -217,8 +244,10 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxAirband_.setSignalOffset(o);
         rxVdl2_.setSignalOffset(o);
         rxVdl2_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxDme_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the channel number of the tuned reply frequency
         rxAirband_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the channels are placed from it
         rxIsm_.setSignalOffset(o);
+        rxIsm_.setRealtime(dev.kind != DeviceInfo::File);   // a radio: feed() never waits (#542); a file: nothing is dropped
         rxIsm_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the devices' frequencies
         rxVor_.setSignalOffset(o);
         rxVor_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // VOR, localizer, glide slope or marker by the frequency
@@ -244,7 +273,9 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxAle_.setDialHz(dev.kind != DeviceInfo::File ? tune.centerHz : 0.0);   // the dial, logged with each call
         rxOrb_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // absolute frequencies and Doppler
         rxBle_.setSignalOffset(o);
-        rxBle_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the advertising channel tried first
+        rxBtc_.setSignalOffset(o);
+        rxBtc_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // which 1 MHz channels the capture covers
+        rxBle_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : (fileCentreHz_.load() >= 2.38e9 && fileCentreHz_.load() <= 2.5e9 ? fileCentreHz_.load() : 0.0));   // the advertising channel tried first (a recording: its centre in the 2.4 GHz band)
         rxQo100_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the IF: where the beacons and transponders lie
         rxTime_.setSignalOffset(o);
         rxCube_.setSignalOffset(o);
@@ -253,6 +284,11 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxVdes_.setSignalOffset(o);
         rxVdes_.setDialHz(dev.kind != DeviceInfo::File ? tune.centerHz : 0.0);   // places the ASM channels and the VDE-TER bands
         rxFlarm_.setSignalOffset(o);
+        rxAdsl_.setSignalOffset(o);
+        rxAvRoad_.setSignalOffset(o);
+        rxX40_.setSignalOffset(o); rxX40_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxAvRoad_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxAdsl_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // which channels are in the capture
         rxDji_.setSignalOffset(o);
         rxDji_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the bands and frequencies of the signals
         rxCube_.setDialHz(dev.kind != DeviceInfo::File ? tune.centerHz : 0.0);   // names frames after the satellite table
@@ -266,8 +302,33 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxSsdv_.setSignalOffset(o);
         rxEbi_.setSignalOffset(o);
         rxInmsat_.setSignalOffset(o);
+        rxRc_.setSignalOffset(o);
+        rxXlink_.setSignalOffset(o);
+        for (auto& r : rxCis_) r.setSignalOffset(o);
+        for (auto& r : rxW1a_) r.setSignalOffset(o);
+        rxXlink_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxRc_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxNrf_.setSignalOffset(o);
+        rxSens_.setSignalOffset(o);
+        rxBgan_.setSignalOffset(o); rxBgan_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxSfer_.setSignalOffset(o);
+        rxLtpos_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxFbr_.setSignalOffset(o); rxFbr_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // Fleet Broadcast: the Doppler shift is searched around this
         rxAtis_.setSignalOffset(o);
+        rxSelcal_.setSignalOffset(o);
+        rxSelcal_.setDialHz(tune.centerHz);
+        rxFy3a_.setSignalOffset(o);
+        for (auto& w : rxWx_) w.setSignalOffset(o);
+        for (auto& w : rxSd3_) w.setSignalOffset(o);
+        for (auto& h : rxHs_) h.setSignalOffset(o);
+        for (auto& w : rxXb_) w.setSignalOffset(o);
+        rxFy3m_.setSignalOffset(o);
+        for (auto& h : rxHfu_) h.setSignalOffset(o);
+        for (auto& h : rxHfm_) h.setSignalOffset(o);
+        rxRpr_.setSignalOffset(o);
+        rxPh2_.setSignalOffset(o);
+        rxPh3_.setSignalOffset(o);
+        rxPh4_.setSignalOffset(o);
         rxSw_.setSignalOffset(o);
         rxSw_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxInmsat_.setCenterFrequency(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
@@ -291,10 +352,13 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxSw_.setDialHz(tune.centerHz);
         rxZw_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxSb_.setSignalOffset(o);
+        rxSatd_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxSb_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // for the CSV and the screen
         rxMs_.setSignalOffset(o);
         rxGd_.setSignalOffset(o);
         rxGd_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // for the channel numbers and the CSV
+        rxHrdcp_.setSignalOffset(o);
+        rxHrdcp_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxModeAc_.setSignalOffset(o);
         rxBt_.setSignalOffset(o);
         rxMs_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // for the CSV and the screen
@@ -303,6 +367,8 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxWs_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // where every Wi-SUN channel lies in the band taken in
         rxZb_.setSignalOffset(o);
         rxZb_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // which 802.15.4 channel the radio is on
+        rxTh_.setSignalOffset(o);
+        rxTh_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxNb_.setSignalOffset(o);
         rxNb_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // which raster points the radio takes in
         rxHl_.setSignalOffset(o);
@@ -342,16 +408,26 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxMilhf_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxDgps_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxIsdbs_.setSignalOffset(o);
+        rxDvbsh_.setSignalOffset(o);
         rxIsdbs_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxC2_.setSignalOffset(o);
+        rxC2_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxMpt_.setSignalOffset(o);
         rxMpt_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxLtr_.setSignalOffset(o);
         rxLtr_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxEdacs_.setSignalOffset(o);
         rxEdacs_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxSmartnet_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxSmartnet_.setSignalOffset(o);
+        rxTetraDmo_.setSignalOffset(o);
+        rxOpenSky_.setSignalOffset(o);
         rxMarineVhf_.setSignalOffset(o);
         rxMarineVhf_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
         rxMarineVhf_.setDialHz(tune.centerHz);   // files: the dial frequency places the channels
+        rxChv_.setSignalOffset(o);
+        rxChv_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
+        rxChv_.setDialHz(tune.centerHz);
         rxP25p2_.setSignalOffset(o);
         rxMt_.setSignalOffset(o);
         rxCd_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // which part of the HF radar bands the radio is on
@@ -360,12 +436,22 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
         rxGeneral_.setSignalOffset(o);
         for (auto& g : extraGeneral_) g.setSignalOffset(o);
         rxRid_.setSignalOffset(o);
-        rxRid_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // which BLE and Wi-Fi channels lie in the band
+        // which BLE and Wi-Fi channels lie in the band; a recording: its centre (the frequency entered for it) when that is in the 2.4 GHz band,
+        // since the BLE whitening and the channel offsets follow from it (with no centre the receiver assumed a channel on the centre)
+        const double fc = fileCentreHz_.load(), fc24 = fc >= 2.38e9 && fc <= 2.5e9 ? fc : 0.0;
+        rxRid_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : fc24);
+        rxEspnow_.setSignalOffset(o);
+        rxEspnow_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : fc24);   // a recording: the channel from its centre when that is in the band
         rxMeteor_.setSignalOffset(o);
         rxNr_.setSignalOffset(o);
-        rxNr_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the sync raster points searched
+        // the sync raster points searched; a recording: its centre (the frequency entered for it) when it is in the NR bands (with none, only the
+        // dial was searched and an SSB on a raster point off the centre was never found)
+        { const double fcn = fileCentreHz_.load(); rxNr_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : (fcn >= 400e6 && fcn <= 7.2e9 ? fcn : 0.0)); }
         rxGoes_.setSignalOffset(o);
         rxEl_.setSignalOffset(o);
+        rxGkL_.setSignalOffset(o);
+        rxGkH_.setSignalOffset(o);
+        rxFy_.setSignalOffset(o);
         rxVdl4_.setSignalOffset(o);
         rxHrpt_.setSignalOffset(o);
         rxWifi_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);   // the channel noted with each network
@@ -375,77 +461,80 @@ void Engine::placeNarrowReceivers(const DeviceInfo& dev, const TuneSettings& tun
 // Configures the narrow-channel decoders (sondes, ais, acars... tetra, psk, spectrum tools, astro, ...) with their log callbacks
 void Engine::configureDecoderReceivers(const DeviceInfo& dev, const TuneSettings& tune) {
     rxSonde_.configure(rate_);
-    rxSonde_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSonde_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAis_.configure(rate_);
-    rxAis_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAis_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxMarine_.setAudioInput(dev.kind == DeviceInfo::Audio);   // a sound card or WAV gives the demodulated audio itself (VHF DSC tones), a radio gives an FM channel
     rxMarine_.configure(rate_);
-    rxMarine_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMarine_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAcars_.configure(rate_);
-    rxAcars_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAcars_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxInmc_.configure(rate_);
-    rxInmc_.setLogCallback([this](const std::string& s) { log(s); });
+    rxInmc_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAero_.configure(rate_);
-    rxAero_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAero_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxIridium_.configure(rate_);
-    rxIridium_.setLogCallback([this](const std::string& s) { log(s); });
+    rxIridium_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMesh_.configure(rate_);
-    rxMesh_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMesh_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxHdr_.configure(rate_);
-    rxHdr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHdr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxCdr_.configure(rate_);
-    rxCdr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxCdr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxPager_.configure(rate_);
-    rxPager_.setLogCallback([this](const std::string& s) { log(s); });
+    rxPager_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxPacket_.configure(rate_);
-    rxPacket_.setLogCallback([this](const std::string& s) { log(s); });
+    rxPacket_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxHfdig_.configure(rate_);
-    rxHfdig_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHfdig_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAirband_.configure(rate_);
     rxVdl2_.configure(rate_);
-    rxVdl2_.setLogCallback([this](const std::string& s) { log(s); });
-    rxAirband_.setLogCallback([this](const std::string& s) { log(s); });
+    rxVdl2_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxAirband_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxIsm_.configure(rate_);
-    rxIsm_.setLogCallback([this](const std::string& s) { log(s); });
+    rxIsm_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxVor_.configure(rate_);
-    rxVor_.setLogCallback([this](const std::string& s) { log(s); });
+    rxVor_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxNdb_.configure(rate_);
-    rxNdb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxNdb_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxSitor_.configure(rate_);
+    rxSitor_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDme_.configure(rate_);
-    rxDme_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDme_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxM17_.configure(rate_);
     rxHfdl_.configure(rate_);
-    rxHfdl_.setLogCallback([this](const std::string& s) { log(s); });
-    rxM17_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHfdl_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxM17_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxCell_.configure(rate_);
-    rxCell_.setLogCallback([this](const std::string& s) { log(s); });
+    rxCell_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxCw_.configure(rate_);
-    rxCw_.setLogCallback([this](const std::string& s) { log(s); });
+    rxCw_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDstar_.configure(rate_);
-    rxDstar_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDstar_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxNxdn_.configure(rate_);
     rxDpmr_.configure(rate_);
     rxDpmr_.setChannel(tune.centerHz / 1e6);   // the PMR446 channel it sits on (the scan steps from there)
-    rxDpmr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDpmr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMac_.configure(rate_);
-    rxMac_.setLogCallback([this](const std::string& s) { log(s); });
-    rxNxdn_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMac_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxNxdn_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxP25_.configure(rate_);
-    rxP25_.setLogCallback([this](const std::string& s) { log(s); });
+    rxP25_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxGsmr_.configure(rate_);
-    rxGsmr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxGsmr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxTetra_.configure(rate_);
-    rxTetra_.setLogCallback([this](const std::string& s) { log(s); });
+    rxTetra_.setLogCallback([this](const std::string& s) { rxLog(s); });
     // the other receivers say what they listen for when configured, and the last of these stays on the bottom line: name the active one last
     if (stdMode_.load() == 34) log("Cell towers: searching for LTE cells");
     if (stdMode_.load() == 41) log("GSM-R: searching for base stations (BCCH carriers)");
     if (stdMode_.load() == 48) log("TETRA: searching for base stations (receive only, nothing is decrypted)");
     rxPsk_.configure(rate_);
-    rxPsk_.setLogCallback([this](const std::string& s) { log(s); });
+    rxPsk_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxJs8_.configure(rate_);
     rxSpecx_.configure(rate_);
-    rxSpecx_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSpecx_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSpecan_.configure(rate_);
-    rxSpecan_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSpecan_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSpecan_.setCenterHz(dev.kind != DeviceInfo::File ? radioTune(tune).centerHz : 0.0);
     // stepped sweeps retune the radio straight from the receiver (no hold, no reset: the receiver skips the settling samples itself);
     // a file, the test signal and the HackRF's own sweep do not step
@@ -459,7 +548,7 @@ void Engine::configureDecoderReceivers(const DeviceInfo& dev, const TuneSettings
         });
     else rxSpecan_.setRetuneCallback(nullptr);
     rxAstro_.configure(rate_);
-    rxAstro_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAstro_.setLogCallback([this](const std::string& s) { rxLog(s); });
     // frequency switching retunes the radio straight from the receiver (it skips the settling samples itself); a file or the test signal cannot
     if (stdMode_.load() == 50 && dev.isRadio())
         rxAstro_.setRetuneCallback([this](double offsetHz) {
@@ -477,199 +566,288 @@ void Engine::configureDataReceivers(const DeviceInfo& dev, const TuneSettings& t
     rxDvbc_.configure(rate_);
     rxDvbc_.setBlocking(dev.kind == DeviceInfo::File);
     rxDvbc_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });   // runs on the receiver thread
-    rxDvbc_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDvbc_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxC2_.configure(rate_);
+    rxC2_.setBlocking(dev.kind == DeviceInfo::File);
+    rxC2_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });   // runs on the receiver thread
+    rxC2_.setIpCallback([this](const uint8_t* ip, size_t n) { ipOut_.packet(ip, n); });   // GSE PLPs
+    rxC2_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxIsdbs_.configure(rate_);
+    rxDvbsh_.configure(rate_);
+    rxDvbsh_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });   // DVB-SH: to the TV player
     rxIsdbs_.setPacketCallback([this](const uint8_t* pk, size_t n, double secs) { onTsPackets(pk, n, secs); });   // runs on the receiver thread
-    rxIsdbs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxIsdbs_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxOrb_.configure(rate_);
-    rxOrb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxOrb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxUplink_.configure(rate_);
-    rxUplink_.setLogCallback([this](const std::string& s) { log(s); });
+    rxUplink_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAle_.configure(rate_);
-    rxAle_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAle_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxBle_.configure(rate_);
-    rxBle_.setLogCallback([this](const std::string& s) { log(s); });
+    rxBle_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxIono_.configure(rate_);
-    rxIono_.setLogCallback([this](const std::string& s) { log(s); });
+    rxIono_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxIono_.setCenterHz(radioTune(tune).centerHz);   // 0 .. 30 MHz is placed from it (a file: the frequency it was set to)
     // sweep starts are whole seconds of UTC with a radio (the computer clock at the first sample); a file or the test signal counts from 0
     rxIono_.setTimeOrigin(dev.isRadio() ? std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() : 0.0);
     rxQo100_.configure(rate_);
     rxTime_.configure(rate_);
     rxCube_.configure(rate_);
+    { const CubesatView* cv = cubesatViewForActive(activeStdFor(stdMode_.load())); rxCube_.setFramingMask(cv ? 1u << cv->framing : 0u); }   // an entry of one framing hears that framing only
     rxGs_.configure(rate_);
     rxGs_.setWallClock(dev.kind != DeviceInfo::File);
-    rxGs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxGs_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxVdes_.configure(rate_);
     rxVdes_.setWallClock(dev.kind != DeviceInfo::File);
-    rxVdes_.setLogCallback([this](const std::string& s) { log(s); });
+    rxVdes_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxFlarm_.configure(rate_);
     rxFlarm_.setWallClock(true);   // the packets are keyed to the time of day; a file is decoded as if it were live
-    rxFlarm_.setLogCallback([this](const std::string& s) { log(s); });
+    rxFlarm_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxAdsl_.configure(rate_);
+    if (const int v = avroad::variantOfActive(activeStdFor(stdMode_.load())); v >= 0) { rxAvRoad_.setVariant(v); rxAvRoad_.configure(rate_); }
+    if (const int v = x40::variantOfActive(activeStdFor(stdMode_.load())); v >= 0) { rxX40_.setVariant(v); rxX40_.configure(rate_); }
+    rxX40_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxAvRoad_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxAdsl_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDji_.configure(rate_);
     rxDji_.setWallClock(dev.kind != DeviceInfo::File);
-    rxDji_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDji_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxCube_.setWallClock(dev.kind != DeviceInfo::File);
-    rxCube_.setLogCallback([this](const std::string& s) { log(s); });
+    rxCube_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxZb_.configure(rate_);
+    rxTh_.configure(rate_);
+    rxTh_.setThreadMode(true);
     rxNb_.configure(rate_);
-    rxNb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxNb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxHl_.configure(rate_);
-    rxHl_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHl_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxCd_.configure(rate_);
     rxWb_.configure(rate_);
-    rxCd_.setLogCallback([this](const std::string& s) { log(s); });
+    rxCd_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDw_.configure(rate_);
-    rxDw_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDw_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSame_.configure(rate_);
-    rxSame_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSame_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAnt_.configure(rate_);
-    rxAnt_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAnt_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDect_.configure(rate_);
-    rxDect_.setLogCallback([this](const std::string& s) { log(s); });
+    rxDect_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxTetrapol_.configure(rate_);
-    rxTetrapol_.setLogCallback([this](const std::string& s) { log(s); });
+    rxTetrapol_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKlw_.configure(rate_);
     rxTdcs_.configure(rate_);
-    rxKlw_.setLogCallback([this](const std::string& s) { log(s); });
-    rxTdcs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKlw_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxTdcs_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxHorus_.configure(rate_);
-    rxHorus_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHorus_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxLbj_.configure(rate_);
-    rxLbj_.setLogCallback([this](const std::string& s) { log(s); });
+    rxLbj_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxEloran_.configure(rate_);
-    rxEloran_.setLogCallback([this](const std::string& s) { log(s); });
+    rxEloran_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxNfc_.configure(rate_);
-    rxNfc_.setLogCallback([this](const std::string& s) { log(s); });
+    rxNfc_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSbas_.configure(rate_);
-    rxSbas_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSbas_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMilhf_.configure(rate_);
-    rxMilhf_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMilhf_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxArgos_.configure(rate_);
-    rxArgos_.setLogCallback([this](const std::string& s) { log(s); });
+    rxArgos_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSfx_.configure(rate_);
-    rxSfx_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSfx_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxDgps_.configure(rate_);
     rxFusion_.configure(rate_);
-    rxFusion_.setLogCallback([this](const std::string& s) { log(s); });
-    rxDgps_.setLogCallback([this](const std::string& s) { log(s); });
+    rxFusion_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxDgps_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMpt_.configure(rate_);
-    rxMpt_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMpt_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxLtr_.configure(rate_);
-    rxLtr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxLtr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxEdacs_.configure(rate_);
-    rxEdacs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxEdacs_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxSmartnet_.configure(rate_);
+    rxSmartnet_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxTetraDmo_.configure(rate_);
+    rxTetraDmo_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxOpenSky_.configure(rate_);
+    rxOpenSky_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMarineVhf_.configure(rate_);
-    rxMarineVhf_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMarineVhf_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxChv_.configure(rate_);
+    // the service of the mode: only the app's screen chose it, so headless runs (command line, web, the QA sweep) ran CB on every one
+    if (const int ca = activeStdFor(stdMode_.load()); ca >= 341 && ca <= 348) rxChv_.setService((chv::Service)(ca - 341));
+    rxChv_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxP25p2_.configure(rate_);
-    rxP25p2_.setLogCallback([this](const std::string& s) { log(s); });
+    rxP25p2_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMt_.configure(rate_);
-    rxMt_.setLogCallback([this](const std::string& s) { log(s); });
-    rxZb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMt_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxZb_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxTh_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxLr_.configure(rate_);
-    rxLr_.setLogCallback([this](const std::string& s) { log(s); });
+    rxLr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxLw_.configure(rate_);
-    rxLw_.setLogCallback([this](const std::string& s) { log(s); });
+    rxLw_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxLs_.configure(rate_);
-    rxLs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxLs_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxPac_.configure(rate_);
-    rxPac_.setLogCallback([this](const std::string& s) { log(s); });
+    rxPac_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxEsg_.configure(rate_);
     rxRoshf_.configure(rate_);
-    rxRoshf_.setLogCallback([this](const std::string& s) { log(s); });
+    rxRoshf_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSsdv_.configure(rate_);
-    rxSsdv_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSsdv_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxEbi_.configure(rate_);
-    rxEbi_.setLogCallback([this](const std::string& s) { log(s); });
+    rxEbi_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxRc_.configure(rate_);
+    rxXlink_.configure(rate_);
+    for (auto& r : rxCis_) { r.configure(rate_); r.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    for (auto& r : rxW1a_) { r.configure(rate_); r.setLogCallback([this](const std::string& s) { rxLog(s); }); }
     rxNrf_.configure(rate_);
+    rxSens_.configure(rate_);
+    rxBgan_.configure(rate_);
+    rxBgan_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxSfer_.configure(rate_);
+    rxSfer_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxLtpos_.setClockKey(&ring_);
+    rxLtpos_.configure(rate_);
+    rxLtpos_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxFbr_.configure(rate_);
+    rxFbr_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSw_.configure(rate_);
-    rxSw_.setLogCallback([this](const std::string& s) { log(s); });
-    rxNrf_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSw_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxRc_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxXlink_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxNrf_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxSens_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxSelcal_.setAudioInput(dev.kind == DeviceInfo::Audio);
+    rxSelcal_.configure(rate_);
+    rxSelcal_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxUmts_.configure(rate_);
+    rxUmts_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxCdma_.configure(rate_);
+    rxCdma_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxTds_.configure(rate_);
+    rxTds_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxVdl3_.configure(rate_);
+    rxVdl3_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxCp16_.configure(rate_);
+    rxCp16_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxAtis_.configure(rate_);
-    rxAtis_.setLogCallback([this](const std::string& s) { log(s); });
+    rxAtis_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    for (auto& w : rxWx_) { w.setBlocking(!src_->realtimeHardware()); w.configure(rate_); w.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    for (auto& w : rxSd3_) { w.configure(rate_); w.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    for (auto& h : rxHs_) { h.configure(rate_); h.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    for (auto& w : rxXb_) { w.configure(rate_); w.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    rxFy3a_.configure(rate_);
+    rxFy3a_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxFy3m_.configure(rate_);
+    rxFy3m_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    for (auto& h : rxHfu_) { h.configure(rate_); h.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    for (auto& h : rxHfm_) { h.configure(rate_); h.setLogCallback([this](const std::string& s) { rxLog(s); }); }
+    rxRpr_.configure(rate_);
+    rxRpr_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxPh2_.configure(rate_);
+    rxPh2_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxPh3_.configure(rate_);
+    rxPh3_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxPh4_.configure(rate_);
+    rxPh4_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxInmsat_.configure(rate_);
-    rxInmsat_.setLogCallback([this](const std::string& s) { log(s); });
-    rxEsg_.setLogCallback([this](const std::string& s) { log(s); });
+    rxInmsat_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxEsg_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxPskd_.configure(rate_);
-    rxPskd_.setLogCallback([this](const std::string& s) { log(s); });
+    rxPskd_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxWs_.configure(rate_);
-    rxWs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxWs_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxFpv_.configure(rate_);
-    rxFpv_.setLogCallback([this](const std::string& s) { log(s); });
+    rxFpv_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxTones_.setAudioInput(dev.kind == DeviceInfo::Audio);   // a sound card gives the audio itself, a radio gives an FM channel
     rxTones_.configure(rate_);
-    rxTones_.setLogCallback([this](const std::string& s) { log(s); });
+    rxTones_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSar_.configure(rate_);
-    rxSar_.setLogCallback([this](const std::string& s) { log(s); });
+    rxSar_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMt63_.configure(rate_);
-    rxMt63_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMt63_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxFsq_.configure(rate_);
-    rxFsq_.setLogCallback([this](const std::string& s) { log(s); });
+    rxFsq_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxIfkp_.configure(rate_);
-    rxIfkp_.setLogCallback([this](const std::string& s) { log(s); });
+    rxIfkp_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKaal_.configure(rate_);
-    rxKaal_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKaal_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKait_.configure(rate_);
-    rxKait_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKait_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKavb_.configure(rate_);
-    rxKavb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKavb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKaws_.configure(rate_);
-    rxKaws_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKaws_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKapp_.configure(rate_);
-    rxKapp_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKapp_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxKaft_.configure(rate_);
-    rxKaft_.setLogCallback([this](const std::string& s) { log(s); });
+    rxKaft_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxCq_.configure(rate_);
-    rxCq_.setLogCallback([this](const std::string& s) { log(s); });
+    rxCq_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxArd_.configure(rate_);
-    rxArd_.setLogCallback([this](const std::string& s) { log(s); });
+    rxArd_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxZw_.configure(rate_);
-    rxZw_.setLogCallback([this](const std::string& m) { log(m); });
+    rxBtc_.configure(rate_);
+    rxBtc_.setLogCallback([this](const std::string& m) { rxLog(m); });
+    rxZw_.setLogCallback([this](const std::string& m) { rxLog(m); });
     rxEcz_.configure(rate_);
     rxWmb_.configure(rate_);
-    rxWmb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxWmb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxModeAc_.configure(rate_);
-    rxModeAc_.setLogCallback([this](const std::string& s) { log(s); });
+    rxModeAc_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxSb_.configure(rate_);
-    rxSb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxNavic_.configure(rate_);
+    if (satmisc::isSatDetectStd(stdMode_.load())) { rxSatd_.setSystem(stdMode_.load()); rxSatd_.configure(rate_); }
+    rxSb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMs_.configure(rate_);
     rxBt_.configure(rate_);
-    rxMs_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMs_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxGd_.configure(rate_);
-    rxGd_.setLogCallback([this](const std::string& s) { log(s); });
-    rxBt_.setLogCallback([this](const std::string& s) { log(s); });
-    rxEcz_.setLogCallback([this](const std::string& s) { log(s); });
+    rxGd_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxHrdcp_.configure(rate_);
+    rxHrdcp_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxBt_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxEcz_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxEcz_.setClockMode(dev.kind == DeviceInfo::File ? 0 : 1);   // a file has no clock to compare; a radio and the test signal run on the computer's
     rxHfb_.configure(rate_);
-    rxHfb_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHfb_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxHfb_.setCenterHz(radioTune(tune).centerHz);
     // NCDXF slots are told from the computer clock at the first sample with a radio; a file or the test signal counts from 0 (no slots)
     rxHfb_.setTimeOrigin(dev.isRadio() ? std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() : 0.0, dev.isRadio());
-    rxTime_.setLogCallback([this](const std::string& s) { log(s); });
+    rxTime_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxTime_.setClockMode(dev.kind == DeviceInfo::File ? 0 : 1);   // a file has no clock to compare; a radio and the test signal run on the computer's
     rxWifi_.configure(rate_);
     rxGeneral_.configure(rate_);
-    rxGeneral_.setLogCallback([this](const std::string& s) { log(s); });
-    for (auto& g : extraGeneral_) { g.configure(rate_); g.setSilent(true); g.setLogCallback([this](const std::string& s) { log(s); }); }
+    rxGeneral_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    for (auto& g : extraGeneral_) { g.configure(rate_); g.setSilent(true); g.setLogCallback([this](const std::string& s) { rxLog(s); }); }
     rxRid_.configure(rate_);
-    rxRid_.setLogCallback([this](const std::string& s) { log(s); });
+    rxRid_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxEspnow_.configure(rate_);
+    rxEspnow_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxNr_.configure(rate_);
-    rxNr_.setLogCallback([this](const std::string& s) { log(s); });
-    rxWifi_.setLogCallback([this](const std::string& s) { log(s); });
+    rxNr_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxWifi_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxMeteor_.configure(rate_);
-    rxMeteor_.setLogCallback([this](const std::string& s) { log(s); });
+    rxMeteor_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxGoes_.configure(rate_);
     rxEl_.configure(rate_);
+    rxGkL_.configure(rate_);
+    rxGkH_.configure(rate_);
     rxHrpt_.configure(rate_);
-    rxHrpt_.setLogCallback([this](const std::string& s) { log(s); });
-    rxGoes_.setLogCallback([this](const std::string& s) { log(s); });
-    rxEl_.setLogCallback([this](const std::string& s) { log(s); });
+    rxHrpt_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxGoes_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxEl_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxGkL_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxGkH_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxFy_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    if (const int fl = fygeoLinkOfActive(activeStdFor(stdMode_.load()), rxFy_.lritSatellite()); fl >= 0) { rxFy_.setLink(fl); rxFy_.configure(rate_); }   // FengYun: only when it is the mode (the DVB-S2 receiver inside is heavy)
     rxUat_.configure(rate_);
-    rxUat_.setLogCallback([this](const std::string& s) { log(s); });
+    rxUat_.setLogCallback([this](const std::string& s) { rxLog(s); });
     rxVdl4_.configure(rate_);
-    rxVdl4_.setLogCallback([this](const std::string& s) { log(s); });
-    rxQo100_.setLogCallback([this](const std::string& s) { log(s); });
-    rxJs8_.setLogCallback([this](const std::string& s) { log(s); });
+    rxVdl4_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxQo100_.setLogCallback([this](const std::string& s) { rxLog(s); });
+    rxJs8_.setLogCallback([this](const std::string& s) { rxLog(s); });
 }
 
 // Warns when the sample rate is too low for the mode, then resets the per-mode counters and the transport-stream state
@@ -698,18 +876,19 @@ void Engine::checkRateAndResetState(const DeviceInfo& dev, const TuneSettings& t
         unpack_ = BbUnpacker();
         tsSnap_ = TsSnapshot();
         lastT2Frame_ = -1;
-        unpack_.setSink([this](const uint8_t* pkt) { demux_.feed(pkt); if (!playerExternal_) { ttx_.feedTs(pkt); dvbsub_.feedTs(pkt); } frameBuf_.insert(frameBuf_.end(), pkt, pkt + 188); });
+        unpack_.setSink([this](const uint8_t* in) { uint8_t merged[188]; memcpy(merged, in, 188); plpMerge_.step(merged); const uint8_t* pkt = merged; demux_.feed(pkt); if (!playerExternal_) { ttx_.feedTs(pkt); dvbsub_.feedTs(pkt); } frameBuf_.insert(frameBuf_.end(), pkt, pkt + 188); });
     }
     rx_.setPlpCallback([this](const PlpResult& r) { if (plpDump_) plpDump_(r); { std::lock_guard<std::mutex> lk(t2ExportMu_); if (t2Export_) t2Export_->onPlp(r); } onPlp(r); });
     {   // DVB-T2 / DVB-T, ATSC and DAB at a rate their receiver cannot use (the telemetry test that stood here never fired: the receiver
         // publishes nothing before its first samples, so the user got no word at all, e.g. an RTL-SDR at 2.56 Msps on an 8 MHz channel)
         const int sm = stdMode_.load();
-        const double need = sm <= 4 ? minSampleRateFor(sm, tune.bandwidthMhz) : 0;
+        const double chanW = tune.channelBwMhz > 0 ? tune.channelBwMhz : tune.bandwidthMhz;
+        const double need = sm <= 4 ? minSampleRateFor(sm, chanW) : 0;
         if (need > 0 && rate_.load() < need - 1) {
             char what[64], m[240];
             if (sm == 3) snprintf(what, sizeof what, "an ATSC channel");
             else if (sm == 4) snprintf(what, sizeof what, "a DAB ensemble");
-            else snprintf(what, sizeof what, "the %g MHz %s channel", tune.bandwidthMhz, sm == 1 ? "DVB-T2" : sm == 2 ? "DVB-T" : "DVB-T2 / DVB-T");
+            else snprintf(what, sizeof what, "the %g MHz %s channel", chanW, sm == 1 ? "DVB-T2" : sm == 2 ? "DVB-T" : "DVB-T2 / DVB-T");
             snprintf(m, sizeof m, "sample rate %.2f Msps is too low for %s (at least %.2f Msps is needed) - %s", rate_.load() / 1e6, what, need / 1e6,
                      sm <= 2 ? "only the spectrum is shown" : "the receiver cannot lock with this radio");
             log(m);
@@ -747,7 +926,7 @@ void Engine::announceAndRun(const DeviceInfo& dev, const TuneSettings& tune) {
         snprintf(b, sizeof b, "radio centre %.3f MHz%s  LNA %d dB  VGA %d dB  amp %s", tune.centerHz / 1e6, hwNote(tune).c_str(), tune.lnaDb, tune.vgaDb, tune.ampOn ? "on" : "off");
         log(b);
     }
-    tSpec_ = tRx_ = 0; nSamp_ = 0;
+    tSpec_ = tRx_ = tRxCpu_ = 0; nSamp_ = 0;
     stopReq_ = false;
     startEpoch_++;
     running_ = true;

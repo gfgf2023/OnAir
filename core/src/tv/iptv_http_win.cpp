@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Internet TV: https on Windows through WinHTTP, which uses the system's own TLS (Schannel) and certificate store. Written from the
 // documented WinHTTP API; needs a test on Windows (the CI build compiles and links it).
 #ifdef _WIN32
@@ -5,6 +8,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <chrono>
+#include "dect2/common/diag.h"
 
 namespace dect2::iptv {
 namespace {
@@ -39,14 +43,15 @@ std::unique_ptr<HttpBody> httpOpenPlatform(const std::string& url, const HttpOpt
     auto b = std::make_unique<WinBody>();
     b->cancel = o.cancel;
     b->ses = WinHttpOpen(wide(o.userAgent.empty() ? "OnAir" : o.userAgent).c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
-    if (!b->ses) { r.error = "WinHTTP is not available"; return nullptr; }
+    if (!b->ses) { DIAG(201883, "WinHTTP could not be opened, so https addresses cannot be loaded."); r.error = "WinHTTP is not available"; return nullptr; }
     WinHttpSetTimeouts(b->ses, o.connectTimeoutMs, o.connectTimeoutMs, o.connectTimeoutMs, o.readTimeoutMs);
     b->con = WinHttpConnect(b->ses, std::wstring(host, uc.dwHostNameLength).c_str(), uc.nPort, 0);
-    if (!b->con) { r.error = "could not connect"; return nullptr; }
+    if (!b->con) { DIAG_DEBUG(438462, "WinHTTP could not connect to the server, so the request fails."); r.error = "could not connect"; return nullptr; }
     std::wstring p(path, uc.dwUrlPathLength);
     if (uc.lpszExtraInfo && uc.dwExtraInfoLength) p += std::wstring(uc.lpszExtraInfo, uc.dwExtraInfoLength);
-    b->req = WinHttpOpenRequest(b->con, L"GET", p.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-    if (!b->req) { r.error = "could not start the request"; return nullptr; }
+    const bool upload = !o.method.empty() && o.method != "GET";   // an upload (SondeHub): the method and the body as given
+    b->req = WinHttpOpenRequest(b->con, upload ? wide(o.method).c_str() : L"GET", p.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+    if (!b->req) { DIAG_DEBUG(185233, "WinHTTP could not create the request, so the request fails."); r.error = "could not start the request"; return nullptr; }
     if (o.insecureTls) {   // Advanced > Ignore certificate errors
         DWORD fl = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         WinHttpSetOption(b->req, WINHTTP_OPTION_SECURITY_FLAGS, &fl, sizeof fl);
@@ -55,7 +60,9 @@ std::unique_ptr<HttpBody> httpOpenPlatform(const std::string& url, const HttpOpt
     if (!o.referer.empty()) hdr += "Referer: " + o.referer + "\r\n";
     for (auto& h : o.headers) hdr += h.first + ": " + h.second + "\r\n";
     const std::wstring wh = wide(hdr);
-    if (!WinHttpSendRequest(b->req, wh.c_str(), (DWORD)-1L, nullptr, 0, 0, 0) || !WinHttpReceiveResponse(b->req, nullptr)) {
+    LPVOID sendData = upload && !o.requestBody.empty() ? (LPVOID)o.requestBody.data() : WINHTTP_NO_REQUEST_DATA;
+    const DWORD sendLen = upload ? (DWORD)o.requestBody.size() : 0;
+    if (!WinHttpSendRequest(b->req, wh.c_str(), (DWORD)-1L, sendData, sendLen, sendLen, 0) || !WinHttpReceiveResponse(b->req, nullptr)) {
         const DWORD e = GetLastError();
         r.error = e == ERROR_WINHTTP_SECURE_FAILURE || e == ERROR_WINHTTP_SECURE_CERT_DATE_INVALID || e == ERROR_WINHTTP_SECURE_INVALID_CA || e == ERROR_WINHTTP_SECURE_CERT_CN_INVALID
             ? "certificate problem: the server's certificate is not trusted (Advanced > Ignore certificate errors can be ticked for a stream you trust)"
@@ -71,7 +78,7 @@ std::unique_ptr<HttpBody> httpOpenPlatform(const std::string& url, const HttpOpt
     }
     if (st < 200 || st >= 300) {
         r.error = "HTTP " + std::to_string(st) + (st == 403 ? " Forbidden: the server refuses this request (try another User-Agent or Referer under Advanced, the link may have expired, or the stream is not available in your country)" : st == 404 ? " Not Found: the stream no longer exists at this address" : "");
-        return nullptr;
+        if (!o.keepErrorBody) return nullptr;
     }
     return b;
 }

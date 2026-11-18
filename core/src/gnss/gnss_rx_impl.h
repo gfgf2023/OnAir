@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The GNSS receiver's private state (Impl) and its constants, shared by gnss_rx.cpp and the gnss_rx_*.cpp files that hold the bigger
 // member functions. Not part of the API.
 #pragma once
@@ -128,6 +131,8 @@ struct GnssReceiver::Impl {
     double galCredit = 0;
     SatNav gsat[kGalPrns];
     GalNav gnav[kGalPrns];
+    GalRlmAssembler rlmAsm[kGalPrns];
+    uint8_t lastNma = 0xFF;
     bool ggtoValid = false;                      // GST - GPS from word type 10
     double ggtoA0 = 0, ggtoA1 = 0, ggtoT0 = 0;
     int ggtoWn0 = 0, ggtoWn = 0;

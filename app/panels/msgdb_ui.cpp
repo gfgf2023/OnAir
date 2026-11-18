@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Messages window (View > Messages): the unified database of decoded messages (core/src/msgdb) with search, filters, a timeline, export and the
 // retention settings. The database is fed by a tap on the automation event bus; voice and encrypted content never reaches it.
 #include "dect2/common/time_fmt.h"
+#include "dect2/common/diag.h"
 #include "../app.h"
 #include "dect2/common/u8file.h"
 #include "dect2/automation/engine.h"
@@ -76,7 +80,8 @@ void applySettings() {
     l.maxAgeDays = S.keepDays;
     mdb::global().setLimits(l);
     const au::FamilyMask mask = au::familyBit(au::FAdsb) | au::familyBit(au::FAcars) | au::familyBit(au::FVdl2) | au::familyBit(au::FHfdl) | au::familyBit(au::FPager) | au::familyBit(au::FAis) | au::familyBit(au::FAprs) |
-                                au::familyBit(au::FSonde) | au::familyBit(au::FLora) | au::familyBit(au::FBle) | au::familyBit(au::FRid) | au::familyBit(au::FDsc) | au::familyBit(au::FSession) | au::familyBit(au::FMsg);
+                                au::familyBit(au::FSonde) | au::familyBit(au::FLora) | au::familyBit(au::FBle) | au::familyBit(au::FRid) | au::familyBit(au::FDsc) | au::familyBit(au::FSession) | au::familyBit(au::FMsg) |
+                                au::familyBit(au::FHam) | au::familyBit(au::FSensor) | au::familyBit(au::FBroadcast) | au::familyBit(au::FImage);   // 3.9: HF digital and CW calls, sensors, FM/DAB songs, pictures
     if (S.record) au::global().setTap([](const au::Event& e) { mdb::global().enqueue(e); }, mask);
     else au::global().setTap(nullptr, 0);
 }
@@ -136,6 +141,7 @@ void exportButton(const char* label, const char* fmt, const char* ext) {
     std::ofstream o(dect2::u8file(path), std::ios::binary);
     o << mdb::global().exportAs(f, fmt);
     o.flush();
+    if (!o) DIAG(706513, "Writing the message database export %s failed (the folder may be read-only or the disk full), so nothing was saved.", path.c_str());
     S.note = o ? std::string(tr("saved")) + " " + path : std::string(tr("could not write")) + " " + path;
 }
 
@@ -166,6 +172,7 @@ void exportGeoButton(const char* label, dect2::xport::Format fmt) {
     std::ofstream o(dect2::u8file(path), std::ios::binary);
     o << data;
     o.flush();
+    if (!o) DIAG(510847, "Writing the message export file %s failed (the folder may be read-only or the disk full), so nothing was saved.", path.c_str());
     S.note = o ? std::string(tr("saved")) + " " + path : std::string(tr("could not write")) + " " + path;
 }
 

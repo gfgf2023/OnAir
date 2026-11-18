@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Iridium receiver telemetry, shared by the receiver and the UI. Every vector is capped; a report stays well below 100 kB.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -157,7 +160,16 @@ struct IridiumCall {                 // a voice call: the traffic frames on one 
     uint32_t decoded = 0;            // frames the codec plug-in turned into sound
     double audioSec = 0;             // length of the sound
     std::string status;              // "decoded", "codec needed", "not readable"
-    std::string file;                // the recording, when saved
+    std::string file;                // the recording, when saved (never a silent one)
+    std::string warning;             // plain-words reason when there is no sound or no file (codec missing, plug-in returns silence, write failed)
+    int64_t wallEnd = 0;             // Unix time the recording was saved (0 = not saved)
+    uint32_t silent = 0;             // frames the network marks as silence (link control word 'silent'): never sent to the codec
+    uint32_t dataSlots = 0;          // voice slots carrying data (Reed-Solomon / CRC passed, the toolkit's VO6 VOD VOZ): not speech, not sent to the codec
+    uint32_t emptyFrames = 0;        // frames the codec plug-in refused (returned no sound)
+    uint32_t gapFrames = 0;          // 90 ms frames of silence inserted for lost bursts
+    float level = 0;                 // peak of the last decoded frame, 0..1
+    bool mute = false, solo = false; // mixer: a soloed call is heard alone; a muted call is recorded but not played
+    bool audible = false;            // played now (listen choice, mute and solo applied)
 };
 
 struct IridiumTelemetry {

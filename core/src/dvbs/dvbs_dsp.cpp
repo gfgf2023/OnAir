@@ -244,9 +244,10 @@ void SymbolTimer::process(SplitBuf& in, std::vector<cf32>& out) {
     const float* xr = buf_.re.data();
     const float* xi = buf_.im.data();
     const size_t outBase = out.size();
-    // How many symbols fit in what we have (a symbol is about two samples; the loop corrections are tiny)
+    // How many symbols fit in what we have: a symbol is about two samples, and the step 2 (1 - corr) never falls to 1 because the correction
+    // is held below 0.5 (below). Sizing for 1.5 samples a symbol let a pulled loop (impulsive noise, clipping) write past the end (ASan, fuzz_engine_modes).
     const double lim = (double)buf_.size() - m_ - 1;
-    out.resize(outBase + (size_t)std::max(0.0, (lim - t_) / 1.5) + 2);
+    out.resize(outBase + (size_t)std::max(0.0, lim - t_) + 2);
     cf32* o = out.data() + outBase;
     size_t made = 0;
 #if defined(DVBS_AVX2_DOT)
@@ -276,7 +277,7 @@ void SymbolTimer::process(SplitBuf& in, std::vector<cf32>& out) {
             invPow = power_ > 0 ? 1.f / power_ : 1.f; gain = std::sqrt(invPow);
         } else {
             power_ += (pw - power_) * (1.f / 4096.f);
-            if ((count_ & 15) == 0) { invPow = 1.f / power_; gain = std::sqrt(invPow); }
+            if ((count_ & 15) == 0) { invPow = 1.f / std::max(power_, 1e-12f); gain = std::sqrt(invPow); }   // exact silence (a stopped file, a dropout) must not give 1/0
         }
         if (havePrev_) {
             // Gardner: positive when the sampling instant is late
@@ -284,6 +285,7 @@ void SymbolTimer::process(SplitBuf& in, std::vector<cf32>& out) {
             e = std::max(-2.f, std::min(2.f, e));
             integ_ += ki_ * e;
             corrPrev = kp_ * e + integ_;
+            if (!(std::fabs(corrPrev) < 0.5)) { corrPrev = 0; integ_ = 0; }   // never a NaN or a wild value into the timing instants
             errMs_ += (e * e - errMs_) * 0.002f;
         }
         prevRe_ = yr; prevIm_ = yi; havePrev_ = true;

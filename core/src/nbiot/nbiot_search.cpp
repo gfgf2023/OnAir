@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NB-IoT cell search and decode (nbiot_phy.h): NPSS detection, timing and carrier / clock offset, NSSS (cell id), NPBCH (MIB-NB), SIB1-NB.
 #include "dect2/nbiot/nbiot_phy.h"
 #include "dect2/cell/cell_dsp.h"
@@ -134,29 +137,49 @@ bool align(const std::vector<cf32>& y240, const Det& d, Aligned& out) {
     const int W = 8;
     for (int j0 = 0; j0 + 2 <= maxFrames; j0 += W) {
         const int jn = std::min(W, maxFrames - j0);
-        std::vector<double> S(41, 0.0);
-        int used = 0;
-        for (int dl = -20; dl <= 20; dl++) {
-            double sum = 0;
-            used = 0;
-            for (int j = j0; j < j0 + jn; j++) {
-                const long s = (long)std::lround(a0 + L * j) + dl;
-                if (s < 0 || (size_t)(s + symUseful(13) + kFft + 2) > N1) continue;
-                sum += npssMetric(y1.data(), N1, s);
-                used++;
+        // the NPSS metric summed over the window's frames at offsets -R .. R from the predicted positions
+        auto scanWin = [&](int R, std::vector<double>& S) {
+            S.assign((size_t)(2 * R + 1), 0.0);
+            int used = 0;
+            for (int dl = -R; dl <= R; dl++) {
+                double sum = 0;
+                used = 0;
+                for (int j = j0; j < j0 + jn; j++) {
+                    const long s = (long)std::lround(a0 + L * j) + dl;
+                    if (s < 0 || (size_t)(s + symUseful(13) + kFft + 2) > N1) continue;
+                    sum += npssMetric(y1.data(), N1, s);
+                    used++;
+                }
+                S[(size_t)(dl + R)] = sum;
             }
-            S[(size_t)(dl + 20)] = sum;
-        }
-        if (used < 2) continue;
+            return used;
+        };
+        int R = 20;
+        std::vector<double> S;
+        if (scanWin(R, S) < 2) continue;
         int pk = 0;
-        for (int i = 1; i < 41; i++) if (S[(size_t)i] > S[(size_t)pk]) pk = i;
-        std::vector<double> sorted = S;
-        std::nth_element(sorted.begin(), sorted.begin() + 20, sorted.end());
-        if (S[(size_t)pk] < 2.2 * sorted[20]) continue;
+        for (int i = 1; i < 2 * R + 1; i++) if (S[(size_t)i] > S[(size_t)pk]) pk = i;
+        {   // the decision as before: +-20, the peak 2.2 times the median (a wider window here let noise through: phantom cells)
+            std::vector<double> sorted = S;
+            std::nth_element(sorted.begin(), sorted.begin() + R, sorted.end());
+            if (S[(size_t)pk] < 2.2 * sorted[(size_t)R]) continue;
+        }
+        // The first window: the coarse timing is a mean over the whole block, and with a 50 ppm sample clock the first frames sit up to 100
+        // samples (at 1.92 Msps) from it, so +-20 can hold only a side peak of the NPSS, 60 samples off (NSSS and MIB then failed). The peak's
+        // place is taken from +-128 when the true one is there; whether there is a cell stays the +-20 decision above.
+        if (pts.empty()) {
+            std::vector<double> W2;
+            if (scanWin(128, W2) >= 2) {
+                int p2 = 0;
+                for (int i = 1; i < 257; i++) if (W2[(size_t)i] > W2[(size_t)p2]) p2 = i;
+                if (p2 > 0 && p2 < 256 && W2[(size_t)p2] > S[(size_t)pk]) { R = 128; S.swap(W2); pk = p2; }
+            }
+        }
+        const int nS = 2 * R + 1;
         double frac = 0;
-        if (pk > 0 && pk < 40) { const double a = S[(size_t)pk - 1], b = S[(size_t)pk], c = S[(size_t)pk + 1]; const double den = a - 2 * b + c; if (den < 0) frac = 0.5 * (a - c) / den; }
+        if (pk > 0 && pk < nS - 1) { const double a = S[(size_t)pk - 1], b = S[(size_t)pk], c = S[(size_t)pk + 1]; const double den = a - 2 * b + c; if (den < 0) frac = 0.5 * (a - c) / den; }
         const double jc = j0 + 0.5 * (jn - 1);
-        pts.push_back({jc, a0 + L * jc + (pk - 20) + frac});
+        pts.push_back({jc, a0 + L * jc + (pk - R) + frac});
         if (pts.size() >= 2) {   // least squares line through the points
             double sx = 0, sy = 0, sxx = 0, sxy = 0;
             for (const auto& p : pts) { sx += p.first; sy += p.second; sxx += p.first * p.first; sxy += p.first * p.second; }

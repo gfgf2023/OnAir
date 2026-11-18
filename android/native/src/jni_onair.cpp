@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // JNI bridge: the Android app talks to the desktop receiver library (dect2::Engine) through these functions only.
 // One engine for the whole process. Receive only: nothing here transmits.
 #include <jni.h>
@@ -16,11 +19,15 @@
 #include "dect2/source/gain.h"
 #include "dect2/source/iq_file.h"
 #include "dect2/engine/mode_tuning.h"
+#include "dect2/engine/mode_registry.h"
 #include "dect2/net/netradio.h"
 #include "dect2/net/remote_api.h"
 #include "dect2/general/general_rx.h"
 #include "dect2/fm/fm_rx.h"
 #include "results_json.h"
+#include "dect2/cdr/cdr_rx.h"
+#include "dect2/cdr/cdr_dra.h"
+#include "dect2/codec/codec_paths.h"
 #include "jni_radio.h"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "OnAir", __VA_ARGS__)
@@ -50,6 +57,7 @@ struct Bridge {
     int gainMax = 0;
     uint64_t specSeq = 0, rxSeq = 0;
     std::string lastError;
+    int cdrListen = -1;           // CDR service to play (#463): -1 the first audio service, as the desktop's panel picks it; 0 none
 };
 Bridge* gB = nullptr;
 
@@ -185,6 +193,7 @@ void pushGain(Bridge& b) {
 } // namespace
 
 std::string onair::deviceJsonOf(const DeviceInfo& d) { return deviceJson(d); }
+dect2::Engine* onair::bridgeEngine() { return gB ? &gB->eng : nullptr; }
 
 #define FN(ret, name) extern "C" JNIEXPORT ret JNICALL Java_io_github_adswill_onair_OnAirNative_##name
 
@@ -195,6 +204,7 @@ FN(jboolean, nativeInit)(JNIEnv* e, jobject, jstring resultsDir) {
     dect2::setDiagSink([](const std::string& s) { if (gB) gB->eng.log(s); });   // driver messages (radio lost, stream restarted, verbose lines) into the log the app shows: stderr goes nowhere on Android
     const std::string dir = jstr(e, resultsDir);
     if (!dir.empty()) gB->eng.setResultsDir(dir);
+    gB->eng.cdr().setListen(gB->cdrListen);
     return JNI_TRUE;
 }
 
@@ -202,11 +212,9 @@ FN(jboolean, nativeInit)(JNIEnv* e, jobject, jstring resultsDir) {
 FN(jstring, nativeModeTable)(JNIEnv* e, jobject) {
     std::string s = "[";
     bool first = true;
-    for (int st = 0; st < 120; st++) {
-        const ModeTuning* mt = modeTuning(st);
-        if (!mt) continue;
+    for (const ModeTuning& mt : modeTunings()) {   // the whole table: standards above 120 exist too
         if (!first) s += ','; first = false;
-        s += tuningJson(st, nullptr);
+        s += tuningJson(mt.stdMode, nullptr);
     }
     s += "],";
     std::string subs = "[";
@@ -265,6 +273,7 @@ FN(jstring, nativeStart)(JNIEnv* e, jobject, jint kind, jstring host, jint port,
     applySubMode(b.eng, b.sub);
     b.specSeq = 0; b.rxSeq = 0;
     const bool ok = b.eng.start(b.dev, b.tune, b.file);
+    b.eng.cdr().setListen(b.cdrListen);
     b.lastError = ok ? "" : (b.eng.sourceNote().empty() ? "could not start the source" : b.eng.sourceNote());
     return mk(e, b.lastError);
 }
@@ -279,8 +288,11 @@ FN(jstring, nativeNote)(JNIEnv* e, jobject) { return mk(e, gB->eng.sourceNote())
 FN(void, nativeRetune)(JNIEnv*, jobject, jdouble hz) {
     Bridge& b = *gB;
     std::lock_guard<std::mutex> lk(b.mu);
+    const bool moved = std::fabs(b.tune.centerHz - hz) > 1;
     b.tune.centerHz = hz;
-    if (b.eng.running()) b.eng.retune(b.tune);
+    // a new frequency forgets the old station (its RDS name and text, its queued sound), as the desktop does for FM and the modes after the TV
+    // standards (#463: the next station kept the previous one's RDS); the gain and radio calls below keep using retune()
+    if (b.eng.running()) { if (moved && b.std >= 6) b.eng.retuneReset(b.tune); else b.eng.retune(b.tune); }
 }
 FN(void, nativeSetGain)(JNIEnv*, jobject, jdouble db, jboolean agc) {
     Bridge& b = *gB;
@@ -340,8 +352,9 @@ FN(jstring, nativeTelemetry)(JNIEnv* e, jobject, jboolean force) {
         return mk(e, std::string("{\"running\":") + (b.eng.running() ? "true" : "false") + ",\"available\":false,\"cards\":[],\"tables\":[]}");
     }
     b.rxSeq = rx.seq;
-    if (rx.standard == 3) { dect2::DabEnsemble ens = b.eng.dabEnsemble(); return mk(e, onair::resultsJson(rx, b.eng.running(), &ens)); }
-    return mk(e, onair::resultsJson(rx, b.eng.running()));
+    const dect2::SampleLoss loss = b.eng.sampleLoss();
+    if (rx.standard == 3) { dect2::DabEnsemble ens = b.eng.dabEnsemble(); return mk(e, onair::resultsJson(rx, b.eng.running(), &ens, &loss, b.cdrListen)); }
+    return mk(e, onair::resultsJson(rx, b.eng.running(), nullptr, &loss, b.cdrListen));
 }
 
 // "total\nline\nline..." : the log lines after the first `since` ones
@@ -360,10 +373,21 @@ FN(void, nativeClearResults)(JNIEnv*, jobject) { gB->eng.clearResults(gB->std); 
 FN(void, nativeSetVerbose)(JNIEnv*, jobject, jboolean on) { dect2::setVerboseLogging(on); }
 
 // sound: volume 0..1 and mute, for the receivers that play it
+namespace {
+template <class R> void pushSound(R& r, float v, bool mute) {
+    if constexpr (requires { r.setVolume(v); }) r.setVolume(v);
+    if constexpr (requires { r.setMuted(mute); }) r.setMuted(mute);
+}
+} // namespace
 FN(void, nativeSetVolume)(JNIEnv*, jobject, jfloat v, jboolean mute) {
     Bridge& b = *gB;
-    b.eng.fm().setVolume(v); b.eng.fm().setMuted(mute);
-    b.eng.general().setVolume(v); b.eng.general().setMuted(mute);
+    Engine& g = b.eng;
+    // every receiver of the engine that plays sound (the desktop's mode screens push the slider to theirs): a mode without its screen on the phone still follows the slider
+#define S(x) pushSound(g.x(), v, mute);
+    S(fm) S(general) S(player) S(dabAudio) S(airband) S(ale) S(ardop) S(atis) S(atv) S(cdr) S(cquam) S(cw) S(dmr) S(dpmr) S(drm) S(dstar) S(edacs) S(fpv) S(fsq) S(fusion)
+    S(hdr) S(hfbeacon) S(hfdig) S(ifkp) S(kaal) S(mac) S(marine) S(marineVhf) S(ndb) S(nxdn) S(packet) S(pactor) S(psk) S(same) S(selcal) S(timesig) S(tones) S(vor)
+#undef S
+    g.setWideVolume(v);
 }
 // general receiver: demod 0 NFM 1 WFM 2 AM 3 USB 4 LSB 5 CW, filter width (0 = default), squelch (auto or level dBFS)
 FN(void, nativeGeneral)(JNIEnv*, jobject, jint demod, jdouble widthHz, jboolean sqOn, jboolean sqAuto, jfloat sqDb) {
@@ -373,5 +397,45 @@ FN(void, nativeGeneral)(JNIEnv*, jobject, jint demod, jdouble widthHz, jboolean 
     g.setSquelch(sqOn, sqAuto, sqDb);
 }
 FN(void, nativeFmDeemphasis)(JNIEnv*, jobject, jdouble us) { gB->eng.fm().setDeemphasis(us); }
+
+// IQ recording of the radio's raw samples (the core's IqRecorder: CS8 + SigMF meta). Returns "ok\t<path>" or "err\t<reason>".
+// Nothing is recorded unless the app asks; no network use. hasGeo only when the user allowed the location.
+FN(jstring, nativeRecStart)(JNIEnv* e, jobject, jstring dir, jstring hw, jboolean hasGeo, jdouble lat, jdouble lon, jlong maxBytes) {
+    Bridge& b = *gB;
+    std::lock_guard<std::mutex> lk(b.mu);
+    b.eng.setRecordSigmf(true);
+    b.eng.setRecordExtra(jstr(e, hw), hasGeo, lat, lon);
+    b.eng.setRecordMaxBytes(maxBytes > 0 ? (uint64_t)maxBytes : 0);
+    std::string d = jstr(e, dir);
+    if (!d.empty() && d.back() != '/') d += '/';
+    const std::string path = d + b.eng.recordingName(FileFormat::CS8);
+    std::string err;
+    if (!b.eng.startRecording(path, FileFormat::CS8, err)) return mk(e, "err\t" + err);
+    return mk(e, "ok\t" + path);
+}
+// "active\tseconds\tbytes\tdropped\tcapReached\terror\tpath"
+FN(jstring, nativeRecStats)(JNIEnv* e, jobject) {
+    const RecordingStats r = gB->eng.recordingStats();
+    return mk(e, std::string(r.active ? "1" : "0") + "\t" + std::to_string(r.seconds) + "\t" + std::to_string(r.bytes) + "\t" +
+                     std::to_string(r.droppedSamples) + "\t" + (gB->eng.recordingCapReached() ? "1" : "0") + "\t" + r.error + "\t" + r.path);
+}
+FN(void, nativeRecStop)(JNIEnv*, jobject) { gB->eng.stopRecording(); }
+
+// CDR (#463): the service whose DRA+ sound plays; -1 the first audio service, 0 none
+FN(void, nativeCdrListen)(JNIEnv*, jobject, jint serviceId) {
+    Bridge& b = *gB;
+    b.cdrListen = serviceId < -1 ? -1 : serviceId;
+    b.eng.cdr().setListen(b.cdrListen);
+}
+// The app's codecs folder (files/codecs: the add-ons the user imported, docs/CODECS.md) and a new look for the DRA+ add-on.
+// Returns "found\tpath\tproblem" (found 1 or 0; problem empty when no library was found at all).
+FN(jstring, nativeCodecs)(JNIEnv* e, jobject, jstring dir) {
+    const std::string d = jstr(e, dir);
+    if (!d.empty()) dect2::codec::setExtraCodecDir(d);
+    const bool ok = dect2::cdr::draRescan();
+    std::string path, problem;
+    dect2::cdr::draAvailable(&path, &problem);
+    return mk(e, std::string(ok ? "1" : "0") + "\t" + path + "\t" + problem);
+}
 
 FN(jstring, nativeVersion)(JNIEnv* e, jobject) { return mk(e, ONAIR_VERSION); }

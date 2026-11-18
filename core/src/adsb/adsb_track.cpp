@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B frame validation and the aircraft table.
+#include "dect2/limits.h"
 #include "dect2/adsb/adsb_track.h"
 #include "dect2/results/results_io.h"
 #include "dect2/net/feeds.h"
@@ -13,8 +17,8 @@ namespace dect2 {
 
 using namespace adsb;
 
-static const size_t kMaxRecords = 2000;     // bound on the table, whatever the band carries
-static const size_t kMaxListed = 128;       // aircraft in one telemetry report
+static const size_t kMaxRecords = limits::kAircraft;     // bound on the table, whatever the band carries
+static const size_t kMaxListed = limits::kAircraft;       // aircraft in one telemetry report
 static const size_t kMaxFrames = 64;
 static const size_t kMaxTrack = 80;   // a few minutes of 5 s samples: enough of a trail to read the path on the map
 static const double kMaxSpeedKt = 1800;     // faster than this between two positions is a jump, not a flight
@@ -35,6 +39,8 @@ void AdsbTracker::reset() {
     stats_ = AdsbRangeStats();
     now_ = 0;
     snrEma_ = levelEma_ = 0; snrInit_ = false;
+    trust_.clear();
+    raEvents_.clear();
 }
 
 void AdsbTracker::shiftTime(double dt) {
@@ -45,6 +51,8 @@ void AdsbTracker::shiftTime(double dt) {
         for (int i = 0; i < 2; i++) { r.cpr[i].t += dt; r.scpr[i].t += dt; }
     }
     for (auto& f : frames_) f.timeSec += dt;
+    trust_.shiftTime(dt);
+    for (auto& e : raEvents_) { e.startSec += dt; e.lastSec += dt; }
     now_ += dt;
 }
 
@@ -153,6 +161,40 @@ bool AdsbTracker::tryCorrect(AdsbRaw& raw, int len, uint32_t, double now) {
                     if (syn[c] != ab) continue;
                     const int sel[3] = {a, b, c};
                     if (tryFlip(3, sel)) return true;
+                }
+            }
+            if (opt_.fixBits >= 3 && L == 112) {
+                // deeper repair (an Advanced choice): four or five flips among the 18 least certain bits, only for a frame whose format fits, from a known aircraft, and what it says
+                // fits that aircraft's altitude (ordered by XOR first, so most combinations cost one compare)
+                int idx2[112];
+                std::iota(idx2, idx2 + L, 0);
+                const int K2 = 18;
+                std::partial_sort(idx2, idx2 + K2, idx2 + L, [&](int a, int b) { return raw.conf[a] < raw.conf[b]; });
+                uint32_t sy[K2];
+                for (int k = 0; k < K2; k++) sy[k] = singleBitSyndrome(L, idx2[k]);
+                auto accept = [&](std::initializer_list<int> sel) {
+                    uint8_t t[14];
+                    std::memcpy(t, raw.bytes, 14);
+                    for (int i : sel) t[idx2[i] >> 3] ^= (uint8_t)(0x80 >> (idx2[i] & 7));
+                    int df; uint32_t icao;
+                    if (!fits(t, df, icao) || !knownAddress(icao, now)) return false;
+                    auto it = rec_.find(icao);
+                    if (it == rec_.end()) return false;
+                    const int tc = (int)getBits(t, 33, 5);
+                    if (tc >= 9 && tc <= 18 && now - it->second.altTime <= 30.0) {
+                        int alt = 0;
+                        if (adsb::decodeAlt12(getBits(t, 41, 12), alt) && std::abs(alt - it->second.trustedAltFt) > 2500) return false;
+                    }
+                    std::memcpy(raw.bytes, t, 14); raw.bits = L;
+                    return true;
+                };
+                for (int a = 0; a < K2; a++) for (int b = a + 1; b < K2; b++) for (int c = b + 1; c < K2; c++) {
+                    const uint32_t x = sy[a] ^ sy[b] ^ sy[c] ^ rem;
+                    for (int d = c + 1; d < K2; d++) {
+                        if (sy[d] == x && accept({a, b, c, d})) return true;
+                        const uint32_t y = x ^ sy[d];
+                        for (int e = d + 1; e < K2; e++) if (sy[e] == y && accept({a, b, c, d, e})) return true;
+                    }
                 }
             }
         }
@@ -359,6 +401,41 @@ void AdsbTracker::commitPosition(Rec& r, double lat, double lon, int kind, doubl
         r.lastTrack = now;
     }
     if (refValid_ && kind >= 2) maxRange_ = std::max(maxRange_, (float)distanceNm(refLat_, refLon_, lat, lon));
+    AdsbTrustObs o;
+    o.icao = a.icao; o.timeSec = now; o.lat = lat; o.lon = lon;
+    if (refValid_) { o.hasRange = true; o.rangeNm = distanceNm(refLat_, refLon_, lat, lon); o.bearingDeg = bearingDeg(refLat_, refLon_, lat, lon); }
+    o.levelDbfs = a.levelDbfs; o.hasLevel = curSrc_ == 0;
+    o.confirmed = kind >= 2; o.relayed = a.tisb; o.ground = a.ground;
+    o.hasAlt = a.hasAlt; o.altFt = a.altFt;
+    o.hasGroundSpeed = a.hasSpeed && a.speedKind == 0; o.groundSpeedKt = a.speedKt;
+    o.callsign = a.callsign;
+    trust_.observe(o);
+}
+
+// An advisory goes on the conflict timeline; the repeats of one (same aircraft and threat, up to 30 s apart) are one row
+void AdsbTracker::noteRa(Rec& r, const AdsbFrame& f, const CommB& c) {
+    const uint32_t threat = c.tti == 1 ? c.threatIcao : 0;
+    const AdsbAircraft& a = r.a;
+    AdsbRaEvent* e = nullptr;
+    for (auto it = raEvents_.rbegin(); it != raEvents_.rend(); ++it) {
+        if (f.timeSec - it->lastSec > 30.0) break;
+        if (it->icao == a.icao && it->threat == threat) { e = &*it; break; }
+    }
+    if (!e) {
+        raEvents_.emplace_back();
+        if (raEvents_.size() > 32) raEvents_.pop_front();
+        e = &raEvents_.back();
+        e->startSec = f.timeSec; e->icao = a.icao; e->threat = threat;
+    }
+    e->lastSec = f.timeSec; e->ara = c.ara; e->rac = c.rac; e->terminated = c.raTerminated; e->multipleThreats = c.multipleThreats; e->updates++;
+    e->via = f.df == 16 ? "air-air" : (f.df == 17 || f.df == 18) ? "squitter" : "Comm-B";
+    e->callsign = a.callsign; e->hasAlt = a.hasAlt; e->altFt = a.altFt;
+    auto t = rec_.find(threat);
+    if (threat && t != rec_.end()) {
+        const AdsbAircraft& q = t->second.a;
+        e->threatCallsign = q.callsign; e->hasThreatAlt = q.hasAlt; e->threatAltFt = q.altFt;
+        if (a.hasPos && q.hasPos) { e->hasSeparation = true; e->separationNm = (float)distanceNm(a.lat, a.lon, q.lat, q.lon); }
+    }
 }
 
 void AdsbTracker::airbornePosition(Rec& r, const Msg& m, double now) {
@@ -452,6 +529,14 @@ void AdsbTracker::applyMsg(Rec& r, const AdsbFrame& f) {
     if (m.hasBaro) { a.hasBaroSet = true; a.baroSetMb = (float)m.baroMb; }
     if (m.adsbVersion >= 0) a.adsbVersion = m.adsbVersion;
     if (m.nacp >= 0) a.nacp = m.nacp;
+    if (m.nacv >= 0) a.nacv = m.nacv;
+    if (m.capAcas >= 0) a.capAcas = m.capAcas;
+    if (m.cap1090In >= 0) a.cap1090In = m.cap1090In;
+    if (m.capUatIn >= 0) a.capUatIn = m.capUatIn;
+    if (m.raActive >= 0) a.raActive = m.raActive;
+    if (m.identOn >= 0) a.identOn = m.identOn;
+    if (m.atcSvc >= 0) a.atcSvc = m.atcSvc;
+    if (m.lengthCode >= 0) a.lengthCode = m.lengthCode;
     if (m.sil >= 0) a.sil = m.sil;
     if (m.hasCpr && !m.surface) {   // containment from the type code (DO-260B table, supplement bits ignored)
         static const int8_t nicOfTc[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, 11, 10, 9, 7, 8, 5, 4, 3, 2, 0};   // TC 9 - 18
@@ -527,7 +612,12 @@ void AdsbTracker::applyMsg(Rec& r, const AdsbFrame& f) {
     }
     if (c.bds == 0x30) {
         r.tRa = now;
+        noteRa(r, f, c);
         a.hasRa = true; a.raAra = c.ara; a.raRac = c.rac; a.raTerminated = c.raTerminated; a.raThreat = c.tti == 1 ? c.threatIcao : 0;
+    }
+    if (m.hasRaBcast) {                            // TC 28 subtype 2: the same fields as BDS 3,0, seen without a Comm-B
+        r.tRa = now;
+        a.hasRa = true; a.raAra = m.raAra; a.raRac = m.raRac; a.raTerminated = m.raTerm; a.raThreat = m.raTti == 1 ? m.raThreat : 0;
     }
     if (c.bds == 0x10) { a.subnetVersion = c.subnetVersion; a.acasRa = c.acasOperating; }
     if (c.bds == 0x17) a.gicbMask = c.gicbMask;
@@ -541,8 +631,9 @@ void AdsbTracker::tick(double now) {
         stats_.nextSample += 10;
     }
     if (now >= stats_.nextSample) stats_.nextSample = now + 10;
+    trust_.tick(now);
     for (auto it = rec_.begin(); it != rec_.end();) {
-        if (now - it->second.lastSeen > (opt_.dropSec > 0 ? opt_.dropSec : opt_.expirySec)) it = rec_.erase(it);
+        if (now - it->second.lastSeen > limits::staleSec(limits::Family::Adsb, opt_.dropSec > 0 ? opt_.dropSec : opt_.expirySec)) it = rec_.erase(it);
         else ++it;
     }
 }
@@ -559,6 +650,7 @@ void AdsbTracker::snapshot(AdsbTelemetry& t, double now) const {
     std::sort(v.begin(), v.end(), [](const Rec* a, const Rec* b) { return a->lastSeen > b->lastSeen; });
     if (v.size() > kMaxListed) v.resize(kMaxListed);
     t.aircraft.clear();
+    t.trustDoubtful = 0;
     t.aircraft.reserve(v.size());
     for (const Rec* r : v) {
         AdsbAircraft a = r->a;
@@ -578,8 +670,15 @@ void AdsbTracker::snapshot(AdsbTelemetry& t, double now) const {
             a.distNm = (float)distanceNm(refLat_, refLon_, a.lat, a.lon);
             a.bearingDeg = (float)bearingDeg(refLat_, refLon_, a.lat, a.lon);
         }
+        {
+            const AdsbTrustVerdict v = trust_.verdict(a.icao, now);
+            a.trust = v.score; a.trustFlags = v.flags; a.trustWhy = v.why;
+            if (v.doubtful()) t.trustDoubtful++;
+        }
         t.aircraft.push_back(std::move(a));
     }
+    t.raEvents.assign(raEvents_.begin(), raEvents_.end());
+    t.trustCalibrated = trust_.calibrated();
     t.frames.assign(frames_.begin(), frames_.end());
     t.refValid = refValid_; t.refLat = refLat_; t.refLon = refLon_;
     t.maxRangeNm = maxRange_;

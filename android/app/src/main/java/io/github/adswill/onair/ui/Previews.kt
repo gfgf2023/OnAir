@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.ui
 
 import android.content.res.Configuration
@@ -140,6 +143,7 @@ fun PreviewRadio() = PreviewSurface {
 fun PreviewAddNetworkRadio() = PreviewSurface { AddNetworkRadioDialog(discoveryOn = false, onDiscovery = {}, onDismiss = {}, onAdd = {}) }
 
 private object NoSettings : SettingsActions {
+    override fun setAutoStart(on: Boolean) {}
     override fun setDark(on: Boolean) {}; override fun setFollowSystemTheme(on: Boolean) {}; override fun setTypeLook(l: TypeLook) {}
     override fun setColormap(i: Int) {}; override fun setRange(lo: Float, hi: Float) {}; override fun autoRange() {}
     override fun setPeakHold(on: Boolean) {}; override fun setCentreTuning(on: Boolean) {}; override fun setStepHz(hz: Double) {}; override fun setVerbose(on: Boolean) {}

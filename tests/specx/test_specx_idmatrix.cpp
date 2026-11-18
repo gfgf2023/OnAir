@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // "What is this?" on the app's own test signals: every mode that has a generator is rendered at random frequency offsets and SNRs, the
 // identifier (dect2/engine/sig_ident.h) is run on the region a click would select, and the result is scored against the mode that made the
 // signal. Prints the per-family and per-mode accuracy, the confusions, the reliability of the confidence numbers and the reject rates; the
@@ -291,7 +294,8 @@ int main(int argc, char** argv) {
         const std::string fam = famOf(c);
         for (size_t si = 0; si < snrs.size(); si++)
             for (int tr = 0; tr < trials; tr++) {
-                Rng r(0x9E3779B9u * (uint32_t)(std::hash<std::string>()(c.label) + si * 17 + tr * 101));
+                // the seed comes from the label through libc++'s string hash on every platform (std::hash differs between libc++ and libstdc++)
+                Rng r(0x9E3779B9u * (uint32_t)(stable_string_hash(c.label.data(), c.label.size()) + si * 17 + tr * 101));
                 const Prepared p = prepare(clean, c.rate, snrs[si], r);
                 for (int fk = 0; fk < (int)freqKnown.size(); fk++) {
                     const int fmode = freqKnown[fk];

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/tetra/tetra_voice.h"
 #include <algorithm>
 
@@ -26,7 +29,7 @@ void CallTracker::onEvent(const CallEvent& e, double now) {
         return;
     }
     if (e.kind == 4) {   // D-TX-GRANTED / CONTINUE / CEASED: a call already known goes on (a long group call outlives kTtlSec); its state is kept as it is
-        for (auto& s : slot_) if (s.valid && s.callId == e.callId) s.t = now;
+        for (auto& s : slot_) if (s.valid && s.callId == e.callId) { s.t = now; if (e.enc == 0 && e.issi >= 0 && s.enc != 1) s.issi = e.issi; }   // D-TX-GRANTED names who holds the floor
         return;
     }
     if (e.kind != 1 && e.kind != 2) return;
@@ -35,13 +38,15 @@ void CallTracker::onEvent(const CallEvent& e, double now) {
         if (!(e.slots & (1 << (4 - tn)))) continue;
         Entry& s = slot_[tn - 1];
         if (s.valid && s.callId == e.callId) {
-            // encrypted is sticky within a call; clear needs a PDU that says so; "not stated" (D-CONNECT without the element) changes nothing
-            if (e.enc == 1) s.enc = 1; else if (e.enc == 0 && s.enc == -1) s.enc = 0;
+            // a cipher flag is believed only after 2 identical consecutive messages of the call (one bit-flipped PDU that passed the CRC must not mute a
+            // clear call); clear is accepted at once and wins over an earlier encrypted state; "not stated" (D-CONNECT without the element) changes nothing
+            if (e.enc == 1) { if (s.encSeen) s.enc = 1; s.encSeen = true; }
+            else if (e.enc == 0) { s.enc = 0; s.encSeen = false; }
             if (s.enc == 1) { s.gssi = s.issi = -1; }
             else if (e.enc == 0) { if (e.gssi >= 0) s.gssi = e.gssi; if (e.issi >= 0) s.issi = e.issi; }
             s.t = now;
         } else {
-            s.valid = true; s.callId = e.callId; s.enc = e.enc; s.t = now;
+            s.valid = true; s.callId = e.callId; s.enc = e.enc == 0 ? 0 : -1; s.encSeen = e.enc == 1; s.t = now;
             s.gssi = s.issi = -1;
             if (e.enc == 0) { s.gssi = e.gssi; s.issi = e.issi; }
         }

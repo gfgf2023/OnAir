@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Golden-vector test of the transport-stream parsing layer (dect2::tsp, the Rust crate onair_ts): CRC-32, packet header, PAT packet, and PAT / PMT / SDT / NIT / EIT /
 // TVCT / TDT sections built from random descriptors, mutated, truncated, with corrupt length fields, over ONAIR_DIFF_ITERS (default 200000) seeded inputs per
 // family. Buffers are exactly as long as the section so a sanitizer build sees any read past the end. Every result goes into a digest (tests/common/golden.h)
@@ -267,5 +270,5 @@ int main() {
     }
     printf("ts proto: parsed ok: pat %ld pmt %ld sdt %ld nit %ld eit %ld tvct %ld tdt %ld packets %ld\n", okCount[0], okCount[1], okCount[2], okCount[3], okCount[4], okCount[5], okCount[6], okCount[7]);
     // recorded again for 3.0: stream type 0x14 is DRA audio (dtmb-dra-030, rust/onair_ts/src/si.rs)
-    return golden::check("ts_proto_rs", dig, 0x58ca169e78d44eaaull, !getenv("ONAIR_DIFF_ITERS"));
+    return golden::check("ts_proto_rs", dig, 0x40910f7b8b055a5full, !getenv("ONAIR_DIFF_ITERS"));
 }

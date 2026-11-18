@@ -1,14 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mesh (LoRa) settings: band plan and region, protocols and presets, channel keys, the custom LoRa setting of each entry,
 // and the MeshCore preset list (with its optional refresh from the internet).
 // Split from mesh_ui.cpp; the shared state is declared in mesh_internal.h.
 #include "dect2/common/thread_name.h"
 #include "mesh_internal.h"
+#include "dect2/mesh/mesh_channel_url.h"
+#include "dect2/mesh/mesh_crypto.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <thread>
+void meshWatchSettings();   // mesh_watch_ui.cpp
+void meshFwdSettings();
 
 using namespace meshui;
 
@@ -42,19 +49,31 @@ int effRegion(const App& a) {   // the selected plan, or the entry's first when 
 
 bool planCombo(App& a, const char* id, int& r, bool shortNames) {   // the band plans this entry can use
     bool ch = false;
-    if (ImGui::BeginCombo(id, shortNames ? kPlans[r].shortName : kPlans[r].name)) {
-        for (int i = 0; i < kNumPlans; i++) if (planFits(a, i) && ImGui::Selectable(shortNames ? kPlans[i].shortName : kPlans[i].name, i == r)) { r = i; ch = true; }
+    auto label = [&](int i) {   // the plan's name, with the frequency this entry really tunes to when that differs (MeshCore's channel is not the Meshtastic one)
+        static char buf[8][128]; static int n = 0; char* b = buf[n++ & 7];
+        const double mhz = planMhz(a, i);
+        if (std::fabs(mhz - kPlans[i].mhz) < 1e-6) snprintf(b, 128, "%s", shortNames ? kPlans[i].shortName : kPlans[i].name);
+        else snprintf(b, 128, "%s  (%s %.3f MHz)", shortNames ? kPlans[i].shortName : kPlans[i].name, subMask(a) == 2 ? "MeshCore" : "channel", mhz);
+        return (const char*)b;
+    };
+    if (ImGui::BeginCombo(id, label(r))) {
+        for (int i = 0; i < kNumPlans; i++) if (planFits(a, i) && ImGui::Selectable(label(i), i == r)) { r = i; ch = true; }
         ImGui::EndCombo();
     }
     return ch;
 }
 
+// The frequency a plan tunes to for this mode entry: the plan's channel (Meshtastic LongFast, LoRa APRS, MeshCom), MeshCore's own channel for MeshCore
+double planMhz(const App& a, int region) {
+    if (subMask(a) == 2) return region == 1 ? 910.525 : region == 8 ? 915.8 : region == 9 ? 915.075 : 869.618;   // MeshCore's own channel (AU or Mid in ANZ)
+    return kPlans[region].mhz;
+}
+
 void applyRegion(App& a, int region) {
     S.region = region;
     plat::prefs().setI("meshRegion", region);
-    a.freqMhz = kPlans[region].mhz;                    // the plan's channel (Meshtastic LongFast, LoRa APRS, MeshCom)
-    if (subMask(a) == 2) a.freqMhz = region == 1 ? 910.525 : region == 8 ? 915.8 : region == 9 ? 915.075 : 869.618;   // MeshCore's own channel (AU or Mid in ANZ)
     a.tune.synth.modeOpt[1] = kPlans[region].synthRegion;
+    tuneFreq(a, planMhz(a, region));   // an explicit plan choice retunes now (live or stopped), like a channel pick
 }
 
 // ---------------------------------------------------------------- custom LoRa setting, Meshtastic region
@@ -159,6 +178,79 @@ static void meshCorePresets(App& a) {
     else if (S.mcFetch == 4) { ImGui::SameLine(); ImGui::TextDisabled("%zu presets loaded", S.mcList.size()); }
     else if (S.mcFetch == 5) { ImGui::SameLine(); ImGui::TextDisabled("could not fetch (the previous list stays)"); }
     ImGui::Spacing();
+}
+
+// Meshtastic channel link (https://meshtastic.org/e/#...): import sets the region, the modem preset (or a custom setting) and the channel keys in one go;
+// "Copy link" makes one from the keys and the region / preset in use (mesh_channel_url.h)
+void channelLink(App& a) {
+    static char url[1024];
+    static std::string msg;
+    ImGui::TextDisabled("%s", tr("Meshtastic channel link"));
+    ImGui::SetNextItemWidth(std::min(420 * gUi, ImGui::GetContentRegionAvail().x - 160 * gUi));
+    ImGui::InputTextWithHint("##mturl", "https://meshtastic.org/e/#...", url, sizeof url, ImGuiInputTextFlags_Password);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Paste the link the Meshtastic app shares (Channels, Share, or the text of its QR code). It holds the channel keys, so it is hidden here."));
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Import##mturl"))) {
+        dect2::MeshtasticChannelSet cs;
+        std::string err;
+        if (!dect2::meshtasticUrlDecode(url, cs, err)) msg = err;
+        else {
+            int added = 0;
+            for (size_t i = 0; i < cs.channels.size(); i++) {
+                const std::string name = dect2::meshtasticUrlChannelName(cs, i), key = dect2::meshtasticUrlChannelKey(cs.channels[i]);
+                if (key == "AQ==" && (name == "LongFast" || cs.channels[i].name.empty())) continue;   // the built-in default channel
+                bool have = false;
+                for (const auto& k : S.keys) if (k.proto == 1 && k.name == name && k.secret == key) have = true;
+                if (!have && a.engine.mesh().addMeshtasticChannel(name, key)) { S.keys.push_back({1, name, key}); added++; }
+            }
+            saveKeys();
+            msg = std::to_string(added) + " channel key(s) added";
+            dect2::MeshLoraSettings l;
+            std::string le;
+            if (cs.hasLora && dect2::meshtasticUrlLora(cs, l, le)) {
+                State::Custom& c = customOf(a);
+                if (cs.usePreset && cs.overrideFrequency <= 0 && cs.channelNum == 0 && cs.channels[0].name.empty()) {   // the usual slot: the region and preset settings
+                    c.on = false;
+                    S.mtRegion = dect2::meshtasticRegionFromEnum(cs.region);
+                    S.mtPreset = dect2::meshtasticPresetFromEnum(cs.modemPreset);
+                    plat::prefs().setS("meshMtRegion", S.mtRegion);
+                    plat::prefs().setS("meshMtPreset", S.mtPreset);
+                } else {   // a private primary name, a channel number or a frequency of its own: the custom setting on that frequency
+                    c.on = true; c.mhz = l.freqHz / 1e6; c.bwHz = l.bwHz; c.sf = l.sf; c.cr = l.cr; c.sync = 0x2B; c.preamble = 16;
+                }
+                saveCustom(a);
+                a.freqMhz = l.freqHz / 1e6;
+                char b[160];
+                std::snprintf(b, sizeof b, ", %s %s, %.4f MHz", dect2::meshtasticRegionFromEnum(cs.region).c_str(), l.name.c_str(), l.freqHz / 1e6);
+                msg += b;
+                if (a.engine.running()) startReceiver(a);
+            } else if (cs.hasLora) msg += " (radio setting not used: " + le + ")";
+            pushKeys(a);
+            url[0] = 0;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Copy link##mturl"))) {
+        dect2::MeshtasticChannelSet cs;
+        dect2::MeshtasticUrlChannel prim;
+        prim.psk = {1};
+        cs.channels.push_back(prim);
+        for (const auto& k : S.keys) {
+            if (k.proto != 1) continue;
+            dect2::MeshtasticUrlChannel c;
+            c.name = k.name;
+            std::vector<uint8_t> raw;
+            if (!dect2::meshcrypto::base64Decode(k.secret, raw) && !dect2::meshcrypto::hexDecode(k.secret, raw)) continue;
+            c.psk = raw;
+            cs.channels.push_back(c);
+        }
+        cs.hasLora = true; cs.usePreset = true; cs.hopLimit = 3; cs.txEnabled = true;
+        cs.modemPreset = std::max(0, dect2::meshtasticPresetToEnum(S.mtPreset));
+        cs.region = std::max(0, dect2::meshtasticRegionToEnum(!S.mtRegion.empty() ? S.mtRegion : planRegionName(kPlans[effRegion(a)].rxRegion)));
+        ImGui::SetClipboardText(dect2::meshtasticUrlEncode(cs).c_str());
+        msg = "link copied (default channel first, then your Meshtastic keys)";
+    }
+    if (!msg.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", msg.c_str()); ImGui::PopTextWrapPos(); }
 }
 
 void loraSettings(App& a) {
@@ -290,6 +382,17 @@ void settingsView(App& a) {
     }
     if (!subMask(a) || subMask(a) == 1)    if (ImGui::Checkbox("Search every Meshtastic preset of the region", &S.allPresets)) plat::prefs().setB("meshPresets", S.allPresets);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: LongFast only (the default of every new node). On: also MediumFast, MediumSlow, ShortFast, ShortSlow, LongModerate\nand LongSlow, each on its own channel slot. Uses more CPU, and only the slots inside the captured band are searched.");
+    {
+        static const char* sz[] = {"standard", "5 times", "20 times"};
+        int cur = S.tableScale == 20 ? 2 : S.tableScale == 5 ? 1 : 0;
+        ImGui::TextUnformatted(tr("Table size")); ImGui::SameLine(0, 8 * gUi);
+        ImGui::SetNextItemWidth(120 * gUi);
+        if (ImGui::BeginCombo("##meshsz", sz[cur])) {
+            for (int i = 0; i < 3; i++) if (ImGui::Selectable(sz[i], cur == i)) { S.tableScale = i == 2 ? 20 : i == 1 ? 5 : 1; plat::prefs().setI("meshTableScale", S.tableScale); }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("How many rows the lists keep before the oldest leave: standard is 100 packets, 150 nodes, 100 messages, 150 APRS stations, 200 LoRaWAN devices. Larger sizes use more memory and a little more CPU; Save results exports what is kept."));
+    }
     ImGui::Spacing();
     loraSettings(a);
     ImGui::Spacing();
@@ -333,6 +436,12 @@ void settingsView(App& a) {
         ImGui::PopID();
     }
     if (S.keys.empty()) ImGui::TextDisabled("no key added");
+    ImGui::Spacing();
+    channelLink(a);
+    ImGui::Spacing();
+    meshWatchSettings();   // node watch (mesh_watch_ui.cpp)
+    ImGui::Spacing();
+    meshFwdSettings();
     ImGui::Spacing();
     { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("Keys are kept in this computer's settings, never sent anywhere."); ImGui::PopTextWrapPos(); }
 }

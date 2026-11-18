@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // PACTOR-I wiring: the tuning is registered under its engine standard, the mode row, family and poll-slot counts, the engine cases, the panel hook,
 // the help page and the panel say "experimental" and that PACTOR-II / -III / -IV are not supported.
 #include <cstdio>
@@ -33,9 +36,9 @@ int main() {
     const std::string doc = readFile("docs/pactor.md");
     CHECK(has(doc, "experimental") && has(doc, "PACTOR-II") && has(doc, "proprietary") && has(doc, "reverse engineer"), "the help page says experimental and names the unsupported modes");
     const std::string ui = readFile("app/pactor/pactor_ui.cpp");
-    CHECK(has(ui, "Experimental") && has(ui, "not supported"), "the panel says experimental and names the limit");
+    CHECK(has(ui, "Experimental") && has(ui, "their own modes") && has(ui, "not decoded"), "the panel says experimental and names the limit");
     const std::string tbl = readFile("app/ui/mode_table.cpp");
-    CHECK(has(tbl, "PACTOR-II, -III and -IV are proprietary"), "mode row names the limit");
+    CHECK(has(tbl, "PACTOR-II, -III and -IV have their own modes"), "mode row names the limit");
     std::printf(fails ? "pactor mode: %d FAILED\n" : "pactor mode: all passed\n", fails);
     return fails ? 1 : 0;
 }

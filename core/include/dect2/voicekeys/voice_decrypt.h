@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Per-call voice decryption with a user-supplied key. A receiver that has detected encryption (the DMR privacy flag, the P25/NXDN cipher
 // fields) builds a Decryptor for the call from the key the store matched, then hands each voice frame's bits through decryptFrame() before
 // the vocoder. When no key matches, nothing is built and nothing is decrypted — the call is still only reported, exactly as before.
@@ -9,11 +12,13 @@
 //   - DMR enhanced/basic privacy as deployed by Motorola / Hytera uses proprietary key/IV handling that is NOT publicly published; OnAir
 //     therefore applies only the generic ETSI-documented keystream over the voice bits and does not reverse-engineer the vendor framing.
 //     setUnsupportedNote() carries that caveat to the UI.
+//   - Hytera Basic / Enhanced Privacy: from DSD-FME (ISC, credited), hytera.h; applied to 49-bit frames, never searched or recovered.
 //   - NXDN / dPMR scramblers (15-bit LFSR) are applied as publicly described; the DES / AES options use the OFB keystream.
 // Nothing here tries keys against the traffic or recovers a key. Wrong-key detection is advisory only (frame sanity), never a search.
 #pragma once
 #include "dect2/voicekeys/voice_keys.h"
 #include "dect2/voicekeys/voice_crypto.h"
+#include "dect2/voicekeys/hytera.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -47,6 +52,9 @@ public:
     // After a few frames this decides WrongKey vs Decrypted. This is display only: it never changes the key or tries another.
     void reportFrameErrors(int errs);
 
+    // Hytera only: call at each DMR voice superframe start (the first of the 18 frames); the IV (setIv) is the 5-byte message indicator
+    void startSuperframe() { if (hyt_) hyt_->startSuperframe(); }
+
     DecryptStatus status() const { return status_; }
     const std::string& keyName() const { return name_; }
     const std::string& unsupportedNote() const { return note_; }
@@ -63,6 +71,7 @@ private:
     std::string name_, note_;
     // keystream state
     Rc4 rc4_;
+    std::unique_ptr<HyteraDecryptor> hyt_;   // Hytera BP / Enhanced: frameBits is 49 (the vocoder bits after FEC), see hytera.h
     Des des_;
     Lfsr15 lfsr_;
     uint8_t iv_[16] = {};

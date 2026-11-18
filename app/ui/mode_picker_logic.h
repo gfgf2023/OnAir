@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Mode Browser's pure logic (no ImGui, no mode table): tags, the filter, the grid layout, keyboard moves, the recent list and the
 // "does my radio fit this mode" check. app/ui/mode_picker.cpp draws it; tests/app/test_mode_picker.cpp tests it.
 #pragma once
@@ -50,10 +53,11 @@ inline uint32_t tagsOfGroup(int g) {
 // a few modes whose tags differ from their group's, by name
 inline uint32_t tagsOfName(const std::string& n) {
     if (n == "Marine VHF") return TVoice | TMarine;
+    if (n == "HFGCS / HF voice") return TVoice | THf | TAviation;
     if (n == "Airband" || n == "Airband voice") return TVoice | TAviation;
     if (n == "VOR / ILS" || n == "NDB") return TAviation;
     if (n == "NAVTEX" || n == "DSC" || n == "Weather fax") return TMarine | THf;
-    if (n == "Meteor-M LRPT" || n == "GOES HRIT" || n == "Elektro-L") return TSatellite | TWeather;
+    if (n == "Meteor-M LRPT" || n == "GOES HRIT" || n == "Elektro-L" || n == "GK-2A LRIT" || n == "GK-2A HRIT" || n == "FY-4 LRIT" || n == "FY-4A HRIT-II/III" || n == "FY-2 S-VISSR") return TSatellite | TWeather;
     if (n == "GNSS") return TSatellite;
     if (n == "FM" || n == "DAB") return TBroadcast;
     return 0;

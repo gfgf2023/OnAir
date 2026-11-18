@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/plugin/manifest.h"
 #include "dect2/automation/json_mini.h"
 #include <cmath>
@@ -83,6 +86,12 @@ static bool numField(const aj::Value& o, const char* k, double& dst, double lo, 
     if (v->type != aj::Value::Num || !std::isfinite(v->n) || v->n < lo || v->n > hi) { err = std::string("\"") + k + "\" must be a number from " + std::to_string((long long)lo) + " to " + std::to_string((long long)hi); return false; }
     dst = v->n;
     return true;
+}
+
+bool versionSpecMatches(const std::string& spec, const std::string& version) {
+    if (spec == "*") return true;
+    if (spec.compare(0, 2, "<=") == 0) return compareVersions(version, spec.substr(2)) <= 0;
+    return !spec.empty() && compareVersions(version, spec) == 0;
 }
 
 std::string Manifest::libraryFile() const {

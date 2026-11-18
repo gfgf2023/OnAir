@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Inmarsat-C NCS channel receiver: 1200 symbol/s BPSK, 8.64 s frames.
 //
 // Chain: mix the channel to 0 Hz, 3-stage CIC decimator to 96 to 190 ksps (r1), carrier search by squaring and an FFT (the squared BPSK signal has
@@ -618,6 +621,7 @@ struct InmcReceiver::Impl {
     std::vector<int> ids;                      // number of each channel, for the log
     int nextId = 1;
     bool searchOn = true;
+    double searchSpan = 0;
     WideSearch ws;
     struct Black { double f, until; };
     std::vector<Black> black;
@@ -728,7 +732,8 @@ struct InmcReceiver::Impl {
     }
 
     void search() {
-        const std::vector<double> cands = ws.candidates();
+        std::vector<double> cands = ws.candidates();
+        if (searchSpan > 0) cands.erase(std::remove_if(cands.begin(), cands.end(), [this](double f) { return std::fabs(f) > searchSpan; }), cands.end());
         moveTuned(cands);
         std::vector<double> keep;
         for (double f : cands) {
@@ -803,6 +808,10 @@ void InmcReceiver::setSignalOffset(double hz) {
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->offsetHz = hz;
     if (!p_->ch.empty()) { p_->ch[0]->offsetHz = hz; p_->ch[0]->setOffset(); }
+}
+void InmcReceiver::setSearchSpan(double hz) {
+    std::lock_guard<std::mutex> lk(p_->mu);
+    p_->searchSpan = hz;
 }
 void InmcReceiver::setChannelSearch(bool on) {
     std::lock_guard<std::mutex> lk(p_->mu);

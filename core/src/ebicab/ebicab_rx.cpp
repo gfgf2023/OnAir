@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // EBICab / Eurobalise up-link receiver, see ebicab_rx.h
 #include "dect2/ebicab/ebicab_rx.h"
 #include "dect2/ebicab/ebicab_proto.h"
@@ -144,7 +147,7 @@ struct EbicabReceiver::Impl {
         }
         lastBurstIdForTelegram = burstId;
         EbicabTelegram e;
-        e.utc = utc; e.timeSec = nowSec(); e.longFmt = t.longFmt; e.inverted = t.inverted; e.header = t.header; e.hex = t.hex; e.snrDb = burstSnr;
+        e.utc = utc; e.timeSec = nowSec(); e.longFmt = t.longFmt; e.inverted = t.inverted; e.header = t.header; e.packets = t.packets; e.hex = t.hex; e.snrDb = burstSnr;
         telegrams.push_front(e);
         if (telegrams.size() > kEbicabTelegramsMax) telegrams.pop_back();
         if (t.header.valid) {

@@ -1,7 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog FPV video screens: the live picture (with snapshot and recording), the channel grid with the scan, and the capture's spectrum.
 // The receiver (FpvReceiver) measures the channels and makes the pictures; the telemetry carries the levels and the numbers. The on-screen display
 // of the flight controller is part of the picture: it is shown, not decoded.
+#include "ui/video_adjust.h"
 #include "app.h"
+#include "../d40/d40_ui.h"
+#include "dect2/atv/atv_aspect.h"
 #include "dect2/atv/atv_std.h"
 #include "dect2/fpv/fpv_chan.h"
 #include "dect2/fpv/fpv_live.h"
@@ -32,8 +38,10 @@ struct State {
     std::shared_ptr<const AtvFrame> frame;
     bool frameDirty = false;
     int deint = 0;                              // 0 weave, 1 bob
+    int aspect = 0;                             // picture format: 0 Auto, 1 4:3, 2 16:9 (atv_aspect.h; saved)
     int sysHint = -1;                           // -1 automatic, 0 PAL, 1 NTSC
     bool colourOn = true;
+    vadj::Control adjust;                       // display brightness and contrast (#239)
     float saturation = 1.f;
     int sub = 0;                                // 0 automatic, 1 6.0 MHz, 2 6.5 MHz
     int pushedDeint = -1, pushedSys = -2, pushedSub = -1;
@@ -64,6 +72,7 @@ void loadState() {
     S.loaded = true;
     if (const char* v = std::getenv("ONAIR_FPV_VIEW")) S.view = std::max(0, std::min(2, std::atoi(v)));   // dev: the screen to open on (screenshots)
     S.deint = (int)plat::prefs().getI("fpvDeint", 0) == 1 ? 1 : 0;
+    S.aspect = (int)std::max<long long>(0, std::min<long long>(2, (long long)plat::prefs().getI("fpvAspect", 0)));
     S.sub = (int)std::max<long long>(0, std::min<long long>(2, (long long)plat::prefs().getI("fpvSub", 0)));
 }
 
@@ -197,6 +206,8 @@ void upload() {
     }
     std::vector<uint32_t> px((size_t)f.width * f.height);
     memcpy(px.data(), f.rgba.data(), px.size() * 4);
+    S.adjust.load("fpv");
+    dect2::video::apply(px.data(), px.size(), S.adjust.adj);   // display only: the frame itself (and the recorded pictures) are not changed
     S.img->update(0, 0, f.width, f.height, px.data());
 }
 
@@ -218,6 +229,9 @@ void toggleRecord(App& a) {
     sayf(tr("Recording into %s"), S.recDir.c_str());
 }
 
+// the aspect the picture is shown with: the setting, Auto from the wide screen signalling when the video carries it (else 4:3)
+float pictureAspect(const App& a) { return (float)dect2::atvDisplayAspect(S.aspect, a.rx.fpv.video.wssText); }
+
 void picture(App& a, ImVec2 box) {
     const bool on = live(a);
     const FpvTelemetry& t = a.rx.fpv;
@@ -225,7 +239,7 @@ void picture(App& a, ImVec2 box) {
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##fpvpic", box);
     dl->AddRectFilled(p0, ImVec2(p0.x + box.x, p0.y + box.y), IM_COL32(0, 0, 0, 255));
-    const float ar = S.img && S.imgH > 0 ? (float)S.imgW / S.imgH : 4.f / 3.f;
+    const float ar = pictureAspect(a);
     ImVec2 sz = box;
     if (box.x / box.y > ar) sz.x = box.y * ar; else sz.y = box.x / ar;
     const ImVec2 q0(p0.x + (box.x - sz.x) * 0.5f, p0.y + (box.y - sz.y) * 0.5f), q1(q0.x + sz.x, q0.y + sz.y);
@@ -337,6 +351,7 @@ void channelsView(App& a) {
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("A scan tunes the radio over the channels one after the other and measures each one inside the capture. Click a channel to tune to it."));
     ImGui::PopTextWrapPos();
+    d40FpvPickLine(t);   // 4.0: free channels for N pilots (app/d40)
     ImGui::Spacing();
     const float W = ImGui::GetContentRegionAvail().x;
     const float labW = 54 * gUi, cellW = std::max(48.f * gUi, (W - labW) / 8.f), cellH = 46 * gUi;
@@ -509,10 +524,20 @@ void decoder(App& a, bool&) {
     nextIf(220);
     ImGui::TextDisabled("%s", tr("Saturation")); ImGui::SameLine(0, 5 * gUi); ImGui::SetNextItemWidth(fit(90));
     ImGui::SliderFloat("##fpvsat", &S.saturation, 0.f, 2.f, "%.2f");
+    if (S.adjust.controls("fpv", fit(90))) S.frameDirty = true;
     ImGui::TextDisabled("%s", tr("Fields")); ImGui::SameLine(0, 5 * gUi);
     if (pillButton(tr("Weave"), S.deint == 0)) { S.deint = 0; plat::prefs().setI("fpvDeint", 0); savePrefs(a); }
     ImGui::SameLine(0, 4 * gUi);
     if (pillButton(tr("Bob"), S.deint == 1)) { S.deint = 1; plat::prefs().setI("fpvDeint", 1); savePrefs(a); }
+    {
+        static const char* const kAspects[3] = {"Auto", "4:3", "16:9"};
+        ImGui::TextDisabled("%s", tr("Aspect")); ImGui::SameLine(0, 5 * gUi); ImGui::SetNextItemWidth(fit(90));
+        if (ImGui::BeginCombo("##fpvasp", kAspects[std::max(0, std::min(2, S.aspect))])) {
+            for (int i = 0; i < 3; i++) if (ImGui::Selectable(kAspects[i], S.aspect == i)) { S.aspect = i; plat::prefs().setI("fpvAspect", i); savePrefs(a); }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The shape of the picture on screen. 16:9 stretches an anamorphic 16:9 picture back to its width. Auto follows the wide screen signalling when the video carries it, else 4:3."));
+    }
 }
 
 void receiver(App& a) {
@@ -609,9 +634,12 @@ void synth(App& a, bool& changed) {
 
 } // namespace
 
-bool fpvFullPicture(ImVec2 disp) {
+bool fpvFullPicture(App& a, ImVec2 disp) {   // full screen draws instead of the tab: take the new frames here too (#239)
+    loadState();
+    pullFrame(a);
+    upload();
     if (!S.img || !S.frame) return false;
-    const float ar = S.imgH > 0 ? (float)S.imgW / S.imgH : 4.f / 3.f;
+    const float ar = pictureAspect(a);
     ImVec2 sz = disp;
     if (disp.x / disp.y > ar) sz.x = disp.y * ar; else sz.y = disp.x / ar;
     ImGui::SetCursorPos(ImVec2((disp.x - sz.x) * 0.5f, (disp.y - sz.y) * 0.5f));

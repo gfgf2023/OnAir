@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // shapes.js - original vector artwork for the map icons, hand-authored as SVG path data in a -32..32 box, nose up.
 // Pure data (no DOM). Each shape = {
 //   body:   [path...]  filled with the track colour and outlined (1.2 px at icon-size 1),
@@ -232,6 +235,44 @@ export const SHAPES = {
     detail: ["M-4,-10H4V8H-4Z", "M-2,-8H2V6H-2Z", "M-4.2,14H4.2V20H-4.2Z"],
     lines: ["M0,-21V-26"],
     leader: "M0,-27V-31.5",
+  },
+
+  // ---------- ground and infrastructure (drawn for the legend and for layers the hub adds later) ----------
+  train: {   // locomotive and cars from above, nose up
+    rotates: true,
+    body: [pod(0, -10, 5.2, 18), rect(0, 12, 4.6, 7), rect(0, 25.4, 4.6, 3.2)],
+    detail: ["M-3.2,-24H3.2", "M-5.2,-6H5.2"],
+    lines: ["M0,-28V-30"],
+  },
+  cell: {   // base station: mast with three sector panels
+    rotates: false,
+    body: ["M0,-8L5,22H-5Z", rect(-11, -9, 2.6, 7), rect(11, -9, 2.6, 7), rect(0, -17, 2.6, 6)],
+    detail: ["M-3,10H3M-4,16H4"],
+    lines: ["M-17,-15A18,18 0 0,0 -17,-3M17,-15A18,18 0 0,1 17,-3"],
+  },
+  tower: {   // lattice tower with a beacon
+    rotates: false,
+    body: ["M-2.4,-18H2.4L10,24H-10Z"],
+    detail: ["M-5,0H5M-7.2,12H7.2M-3.6,-9H3.6M-6,4L5,12M6,4L-5,12"],
+    lines: ["M0,-18V-24M-5,-25L5,-25"],
+  },
+  wx: {   // weather: cloud and rain
+    rotates: false,
+    body: ["M-18,9A8,8 0 0,1 -14,-5A11,11 0 0,1 8,-9A9,9 0 0,1 18,9Z"],
+    detail: [],
+    lines: ["M-9,15L-11,22M0,15L-2,22M9,15L7,22"],
+  },
+  pager: {   // pager with a waves
+    rotates: false,
+    body: [rect(0, 6, 12, 14)],
+    detail: ["M-8,-2H8V8H-8Z", "M-6,13H-2M2,13H6"],
+    lines: ["M-8,-12A11,11 0 0,1 8,-12M-13,-17A18,18 0 0,1 13,-17"],
+  },
+  ham_qso: {   // a contact: two stations and the link
+    rotates: false,
+    body: [circ(-13, 12, 6), circ(13, -12, 6)],
+    detail: [],
+    lines: ["M-9,8C-4,-4 4,4 9,-8"],
   },
 
   // ---------- other layers ----------

@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The voice monitor on screen (voice_monitor_ui.h). English only, like the codec helper.
 #include "voice_monitor_ui.h"
+#include "voice_clips_ui.h"
 #include "../app.h"
 #include "../platform/platform.h"
 #include "../codec/speech_codec_ui.h"
@@ -18,6 +22,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "../ui/font_size.h"
 
 namespace voiceui {
 
@@ -129,7 +134,7 @@ std::string recordFolder(const vm::Monitor& m) {
 void load() {
     if (S.loaded) return;
     S.loaded = true;
-    vm::setDefaultRecordDir(plat::dataDir() + "/voice-recordings");
+    vm::setDefaultRecordDir(recordingsSub("voice-recordings"));
     std::ifstream f(settingsPath(), std::ios::binary);
     if (!f) return;
     std::stringstream ss; ss << f.rdbuf();
@@ -147,6 +152,30 @@ void save() {
 void open(const char* mode) { if (mode) S.mode = mode; S.open = true; }
 
 // ---------------------------------------------------------------- the strip in the mode's tab
+
+// "No audio: why" (dect2/voice/voice_silence.h): one amber line, only while calls are heard and nothing is played, with the button that fixes it
+void silenceLine(App& a, const char* mode, bool live, bool codecReady) {
+    load();
+    vm::Monitor& m = vm::monitor(mode);
+    const vm::Silence sl = vm::whySilent(m.silenceInput(live, codecReady, a.volume, a.muted));
+    if (sl.why == vm::SilenceWhy::None) return;
+    ImGui::PushID(mode);
+    ImGui::PushStyleColor(ImGuiCol_Text, pal::warnAmber());
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(sl.text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+    if (sl.canReleaseHold) { ImGui::SameLine(); if (ImGui::SmallButton("Release hold##sil")) m.releaseHold(), save(); }
+    if (sl.canUseDefaultOutput) {
+        vm::Settings s = m.settings();
+        if (!s.device.empty()) { ImGui::SameLine(); if (ImGui::SmallButton("Use default output##sil")) { s.device.clear(); apply(m, s); } }
+    }
+    if (sl.why == vm::SilenceWhy::ModeVolume) {
+        vm::Settings s = m.settings();
+        ImGui::SameLine(); if (ImGui::SmallButton("Set volume to 100 %##sil")) { s.volume = 1.f; apply(m, s); }
+    }
+    ImGui::PopID();
+}
 
 void strip(App& a, const char* mode, const char* title, const Link& l) {
     load();
@@ -201,13 +230,14 @@ void strip(App& a, const char* mode, const char* title, const Link& l) {
     if (ImGui::SmallButton("Voice monitor...")) open(mode);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Calls, history search, talkgroup filters, mute list, priority, squelch and the output device of %s", title);
     flowEnd();
+    silenceLine(a, mode, l.live, l.codecReady);
 
     // the "now talking" card
     const float cardH = ImGui::GetTextLineHeightWithSpacing() * 3.2f;
     ImGui::BeginChild("##vmcard", ImVec2(0, cardH), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
     if (talking || haveOther) {
         const vm::CallEntry& e = talking ? now : other;
-        ImGui::PushFont(a.ui, ImGui::GetFontSize() * 1.45f);
+        ImGui::PushFont(a.ui, fontBase() * 1.45f);
         ImGui::TextColored(talking ? pal::okGreen() : pal::grey(0.75f), "%s", ellipsize(target(e), ImGui::GetContentRegionAvail().x * 0.62f).c_str());
         ImGui::SameLine();
         ImGui::TextColored(pal::grey(0.85f), "from %s", ellipsize(source(e), ImGui::GetContentRegionAvail().x).c_str());
@@ -232,7 +262,7 @@ void strip(App& a, const char* mode, const char* title, const Link& l) {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Never play %s again (the Voice monitor's mute list)", tok.c_str());
         }
     } else {
-        ImGui::PushFont(a.ui, ImGui::GetFontSize() * 1.3f);
+        ImGui::PushFont(a.ui, fontBase() * 1.3f);
         ImGui::TextDisabled("%s", !l.live ? "Start the receiver to listen" : !l.locked ? "Looking for a signal" : "Nobody is talking");
         ImGui::PopFont();
         if (l.live) {
@@ -286,6 +316,70 @@ void callsTab(vm::Monitor& m, const vm::Settings& s) {
     ImGui::EndTable();
 }
 
+// ---- the Channels tab (#431): every talkgroup heard, with Mute / Solo / Priority as in the Aviation channel list.
+// Mute: the talkgroup is never played. Solo: only the talkgroups that are solo play (the allow list; "Play only the allow list" is switched on and
+// off with it). Priority: a call of it takes the sound from the others.
+std::vector<std::string> idTokens(const std::string& text) {
+    std::vector<std::string> v; std::string cur;
+    for (char c : text) { if (c == ',' || c == ' ' || c == '\n' || c == '\t' || c == ';') { if (!cur.empty()) v.push_back(cur); cur.clear(); } else cur += c; }
+    if (!cur.empty()) v.push_back(cur);
+    return v;
+}
+std::string upperOf(std::string s) { for (auto& c : s) c = (char)std::toupper((unsigned char)c); return s; }
+bool hasToken(const std::string& text, const std::string& tok) {
+    for (const auto& t : idTokens(text)) if (upperOf(t) == upperOf(tok)) return true;
+    return false;
+}
+std::string toggleToken(const std::string& text, const std::string& tok, bool on) {
+    std::string out;
+    for (const auto& t : idTokens(text)) if (upperOf(t) != upperOf(tok)) { if (!out.empty()) out += ", "; out += t; }
+    if (on) { if (!out.empty()) out += ", "; out += tok; }
+    return out;
+}
+
+void channelsTab(vm::Monitor& m, vm::Settings s) {
+    struct Row { std::string tok, name; vm::CallInfo info; int64_t last = 0; uint32_t calls = 0; };
+    std::vector<Row> rows;
+    auto add = [&](const vm::CallEntry& e) {
+        const std::string tok = vm::Monitor::targetToken(e.info);
+        if (tok.empty()) return;
+        for (Row& r : rows) if (r.tok == tok) { r.calls++; r.last = std::max(r.last, std::max(e.wallEnd, e.wallStart)); return; }
+        Row r; r.tok = tok; r.name = target(e); r.info = e.info; r.last = std::max(e.wallEnd, e.wallStart); r.calls = 1; rows.push_back(std::move(r));
+    };
+    for (const auto& e : m.calls()) add(e);
+    for (const auto& e : m.history(std::string(), 2000)) add(e);
+    // a talkgroup on a list but not heard yet (typed in Filters) is also shown
+    for (const std::string* l : {&s.allow, &s.mute, &s.priority})
+        for (const auto& t : idTokens(*l)) { bool have = false; for (const Row& r : rows) if (upperOf(r.tok) == upperOf(t)) have = true; if (!have) { Row r; r.tok = t; r.name = t; rows.push_back(std::move(r)); } }
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", "Mute: never played. Solo: only the solo talkgroups are played. Priority: a call of it takes the sound from the others. The lists are the ones in Filters.");
+    ImGui::PopTextWrapPos();
+    if (rows.empty()) { ImGui::TextDisabled("No talkgroup heard yet."); return; }
+    if (!ImGui::BeginTable("##vmchan", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Talkgroup", ImGuiTableColumnFlags_WidthStretch, 1.f);
+    ImGui::TableSetupColumn("Calls", ImGuiTableColumnFlags_WidthFixed, 44 * gUi);
+    ImGui::TableSetupColumn("Mute", ImGuiTableColumnFlags_WidthFixed, 48 * gUi);
+    ImGui::TableSetupColumn("Solo", ImGuiTableColumnFlags_WidthFixed, 48 * gUi);
+    ImGui::TableSetupColumn("Priority", ImGuiTableColumnFlags_WidthFixed, 60 * gUi);
+    ImGui::TableHeadersRow();
+    bool ch = false;
+    for (size_t i = 0; i < rows.size(); i++) {
+        Row& r = rows[i];
+        ImGui::PushID((int)i);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(r.name.c_str());
+        ImGui::TableNextColumn(); if (r.calls) ImGui::Text("%u", r.calls); else ImGui::TextUnformatted("-");
+        bool mute = hasToken(s.mute, r.tok), solo = hasToken(s.allow, r.tok), prio = hasToken(s.priority, r.tok);
+        ImGui::TableNextColumn(); if (ImGui::Checkbox("##mute", &mute)) { s.mute = toggleToken(s.mute, r.tok, mute); if (mute) s.allow = toggleToken(s.allow, r.tok, false); ch = true; }
+        ImGui::TableNextColumn(); if (ImGui::Checkbox("##solo", &solo)) { s.allow = toggleToken(s.allow, r.tok, solo); if (solo) s.mute = toggleToken(s.mute, r.tok, false); ch = true; }
+        ImGui::TableNextColumn(); if (ImGui::Checkbox("##prio", &prio)) { s.priority = toggleToken(s.priority, r.tok, prio); ch = true; }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+    if (ch) { s.allowOnly = !idTokens(s.allow).empty(); m.setSettings(s); save(); }
+}
+
 void historyTab(vm::Monitor& m, Bufs& b) {
     ImGui::SetNextItemWidth(220 * gUi);
     ImGui::InputTextWithHint("##vmsearch", "search: talkgroup, ID, callsign, label, state", b.search, sizeof b.search);
@@ -322,6 +416,19 @@ void historyTab(vm::Monitor& m, Bufs& b) {
         } else ImGui::TextDisabled("-");
     }
     ImGui::EndTable();
+}
+
+// the shared "Recent voice clips" list (voice_clips_ui.h) for this mode's recordings
+void clipsTab(App& a, vm::Monitor& m) {
+    std::vector<vm::Clip> fresh;
+    for (const auto& e : m.history(std::string(), 500)) {
+        if (e.file.empty() || e.active) continue;
+        vm::Clip c;
+        c.path = e.file; c.mode = m.mode(); c.label = target(e) + " from " + source(e);
+        c.wallStart = e.wallStart; c.seconds = e.seconds();
+        fresh.push_back(std::move(c));
+    }
+    voiceclips::panel(a, m.mode().c_str(), "vmclips", recordFolder(m), std::string(), fresh);
 }
 
 void heardTab(vm::Monitor& m) {
@@ -596,7 +703,6 @@ void helpTab(const char* title) {
 } // namespace
 
 void window(App& a) {
-    (void)a;
     if (!S.open) return;
     load();
     firstWindowSize(760 * gUi, 520 * gUi);
@@ -619,8 +725,10 @@ void window(App& a) {
     else ImGui::TextDisabled("nobody talking");
     if (ImGui::BeginTabBar("##vmtabs")) {
         if (ImGui::BeginTabItem("Calls")) { callsTab(m, s); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Channels")) { channelsTab(m, s); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Conversations")) { conversationsTab(m); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("History")) { historyTab(m, b); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Clips")) { clipsTab(a, m); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Last heard")) { heardTab(m); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Filters")) { filtersTab(m, s, b); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Sound")) { soundTab(m, s, b, titleOf(S.mode)); ImGui::EndTabItem(); }

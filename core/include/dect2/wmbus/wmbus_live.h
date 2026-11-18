@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wireless M-Bus (EN 13757-4) receiver for the engine: IQ in, meter frames out.
 // 868 MHz plan: S1 on 868.3 MHz, T1 and C1 on 868.95 MHz, R2 on 868.03 / 868.09 / 868.15 MHz; 169 MHz plan: N1a..f from 169.40625 MHz in 12.5 kHz steps.
 // Every channel that lies inside the capture is mixed to baseband, filtered, FM-demodulated and run through a chip clock recovery and sync search per mode
@@ -33,6 +36,9 @@ public:
     void feed(const cf32* x, size_t n);
     bool telemetry(WmbusTelemetry& out, uint64_t lastSeq);
     void setLogCallback(std::function<void(const std::string&)> cb);
+    // 4.0: a view onto some wireless M-Bus modes: bit k of the mask = wmbus::Phy k; only the meters and frames of those modes are reported (telemetry()), 0 = every mode.
+    void setPhyMask(uint32_t mask);
+    void setMfrFilter(const std::string& code);   // 4.0: only the meters (and frames) of this manufacturer code ("KAM"); "" every manufacturer. Combined with the mode mask.
 
 private:
     struct Impl;

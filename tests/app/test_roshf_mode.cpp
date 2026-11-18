@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ROS (HF) wiring: the tuning is registered under its engine standard, the mode row, family and poll-slot counts, the engine cases, the panel hook,
 // the doc page and the panel / mode row carry the honesty strings (partial, needs a public spec).
 #include <cstdio>
@@ -22,6 +25,11 @@ static bool has(const std::string& s, const char* t) { return s.find(t) != std::
 int main() {
     const dect2::ModeTuning mt = dect2::roshfTuning();
     CHECK(mt.stdMode == 207 && dect2::modeTuningById("roshf") && dect2::modeTuningById("roshf")->stdMode == 207 && dect2::modeTuning(207), "tuning table");
+    {
+        int n = 0; const dect2::RoshfPreset* p = dect2::roshfPresets(n); bool cb = false;
+        for (int i = 0; i < n; i++) if (p[i].mhz == 27.635) cb = true;
+        CHECK(cb, "11 m / CB band preset 27.635");
+    }
     CHECK(has(readFile("app/ui/mode_table.cpp"), "{205, \"ROS (HF)\", 10,"), "mode row");
     CHECK(has(readFile("app/panels/modeui.cpp"), "case 205: return &kRoshfUi;"), "panel hook");
     { const std::string a = readFile("app/app.h"); const size_t q = a.find("constexpr int kNumFamilies = "); CHECK(q != std::string::npos && atoi(a.c_str() + q + 29) >= 206, "kNumFamilies"); }

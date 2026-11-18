@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Data feeds out to other programs: ADS-B (SBS-1 BaseStation and Beast TCP servers), AIS (NMEA over UDP), APRS (APRS-IS igate
 // client and a KISS TCP server), ACARS and VDL2 (acarsdec / dumpvdl2 JSON over UDP). All off until the user turns one on.
 // The decoders hand their results to Feeds::get(); the network work runs on the feeds' own thread. A decoder never waits:
@@ -8,6 +11,8 @@
 #include "dect2/gnss/gnss_tel.h"
 #include "dect2/net/aprs_gate.h"
 #include "dect2/net/feed_targets.h"
+#include "dect2/net/sonde_upload.h"
+#include "dect2/net/sondehub.h"
 #include "dect2/vdl2/vdl2_tel.h"
 #include <atomic>
 #include <condition_variable>
@@ -37,6 +42,8 @@ struct FeedConfig {
     std::string aprsServer = "rotate.aprs2.net"; int aprsServerPort = 14580;
     AprsGateConfig aprsGate;                                   // rate limits and the duplicate window of the iGate (aprs_gate.h)
     std::vector<FeedTarget> targets;                           // outbound aggregator targets (feed_targets.h), each off until enabled
+    std::vector<SondeUploadTarget> sondeTargets;               // radiosonde upload to APRS-IS aggregators (sonde_upload.h), each off until enabled
+    SondeHubConfig sondeHub;                                   // radiosonde upload to SondeHub (sondehub.h), off until enabled
     std::string stationId = "OnAir";                           // station_id in the ACARS / VDL2 JSON
 };
 

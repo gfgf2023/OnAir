@@ -1,10 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B screens: the aircraft table, the selected aircraft's detail, the statistics view, the sources panel and the
 // unit controls.
 // Split from adsb_ui.cpp; the shared state is declared in adsb_internal.h.
 #include "transcribe/transcribe_app.h"
 #include "../panels/photo_links_ui.h"
 #include "adsb_internal.h"
+#include "dect2/watchlist/plane_alert.h"
 #include "adsb_acars.h"
+#include "dect2/aero/aero_adsc.h"
 
 using namespace adsbui;
 
@@ -53,6 +58,17 @@ void displayControls() {
     if (ImGui::Checkbox(tr("Labels on the map"), &S.disp.labels)) ch = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The callsign, altitude and speed boxes beside the aircraft. Off: cleaner in crowded areas; the selected aircraft still shows its box."));
     ImGui::SetNextItemWidth(140 * gUi);
+    if (ImGui::SliderInt(tr("Label text size (%)"), &S.disp.labelScale, ad::kMinLabelScale, ad::kMaxLabelScale)) { S.disp.labelScale = ad::clampLabelScale(S.disp.labelScale); ch = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The size of the text in the boxes beside the aircraft on the map. 100 is the normal size."));
+    {
+        bool f1 = S.disp.labelFields & 1, f2 = S.disp.labelFields & 2, f4 = S.disp.labelFields & 4;
+        ImGui::TextDisabled("%s", tr("Show in the label"));
+        if (ImGui::Checkbox(tr("Altitude and speed"), &f1)) ch = true;
+        if (ImGui::Checkbox(tr("Squawk and category"), &f2)) ch = true;
+        if (ImGui::Checkbox(tr("Registration and operator"), &f4)) ch = true;
+        S.disp.labelFields = (f1 ? 1 : 0) | (f2 ? 2 : 0) | (f4 ? 4 : 0);
+    }
+    ImGui::SetNextItemWidth(140 * gUi);
     if (ImGui::SliderInt(tr("Track width (px)"), &S.disp.trackWidth, ad::kMinTrackWidth, ad::kMaxTrackWidth)) { S.disp.trackWidth = ad::clampTrackWidth(S.disp.trackWidth); ch = true; }
     bool never = S.disp.dropSec == 0;
     if (ImGui::Checkbox(tr("Never drop silent aircraft"), &never)) { S.disp.dropSec = never ? 0 : ad::kDefaultDropSec; ch = true; }
@@ -62,9 +78,10 @@ void displayControls() {
         if (ImGui::InputInt(tr("Drop after (s)"), &sec, 10, 60)) { S.disp.dropSec = std::max(ad::kMinDropSec, ad::clampDropSec(sec)); ch = true; }
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("An aircraft that has not been heard for this long leaves the table and the map. Never keeps them until the list is cleared (the table holds at most 2000)."));
+    horizonControls();
     if (ch) {
         plat::Prefs& p = plat::prefs();
-        p.setB(ad::kPrefAltColour, S.disp.altColour); p.setB(ad::kPrefLabels, S.disp.labels); p.setI(ad::kPrefTrackWidth, S.disp.trackWidth); p.setI(ad::kPrefDropSec, S.disp.dropSec);
+        p.setB(ad::kPrefAltColour, S.disp.altColour); p.setB(ad::kPrefLabels, S.disp.labels); p.setI(ad::kPrefLabelScale, S.disp.labelScale); p.setI(ad::kPrefLabelFields, S.disp.labelFields); p.setI(ad::kPrefTrackWidth, S.disp.trackWidth); p.setI(ad::kPrefDropSec, S.disp.dropSec);
         p.flush();
     }
     ImGui::EndPopup();
@@ -78,6 +95,71 @@ std::string typeText(const AdsbAircraft& ac) {
     return ac.category + " " + n;
 }
 
+bool shown(const AdsbAircraft& ac) {
+    if (!S.filter.active()) return true;
+    dect2::AdsbFilterInfo in;
+    if (!S.filter.text.empty()) { in.registration = registrationOf(ac.icao); in.type = typeOf(ac); in.operatorName = operatorOf(ac.icao); }
+    return dect2::adsbFilterMatch(S.filter, ac, in);
+}
+
+void filterBar(App& a) {
+    if (!S.filterLoaded) { S.filterLoaded = true; S.filter = dect2::adsbFilterFromText(plat::prefs().getS("adsbFilter", "")); }
+    const std::string before = dect2::adsbFilterToText(S.filter);
+    static char txt[96];
+    static bool init = false;
+    if (!init) { init = true; std::snprintf(txt, sizeof txt, "%s", S.filter.text.c_str()); }
+    ImGui::SetNextItemWidth(std::min(190 * gUi, ImGui::GetContentRegionAvail().x * 0.5f));
+    if (ImGui::InputTextWithHint("##adsbfind", tr("Search callsign, hex, reg, type"), txt, sizeof txt)) S.filter.text = txt;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Every word must be found in the address, callsign, registration, type or operator (any case)."));
+    ImGui::SameLine();
+    const bool more = S.filter.altMinFt >= 0 || S.filter.altMaxFt >= 0 || !S.filter.squawks.empty() || !S.filter.categories.empty() || S.filter.ground || S.filter.militaryOnly;
+    if (ImGui::Button(more ? tr("Filter *##adsbflt") : tr("Filter##adsbflt"))) ImGui::OpenPopup("##adsbfltpop");
+    if (ImGui::BeginPopup("##adsbfltpop")) {
+        auto band = [](const char* id, int& v) {
+            int x = v < 0 ? 0 : v;
+            bool on = v >= 0;
+            if (ImGui::Checkbox(id, &on)) v = on ? x : -1;
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!on);
+            ImGui::SetNextItemWidth(90 * gUi);
+            if (ImGui::InputInt((std::string("##v") + id).c_str(), &x, 500, 5000) && on) v = std::max(0, x);
+            ImGui::EndDisabled();
+            ImGui::SameLine(); ImGui::TextDisabled("ft");
+        };
+        band(tr("Altitude from"), S.filter.altMinFt);
+        band(tr("Altitude to"), S.filter.altMaxFt);
+        auto field = [](const char* label, const char* hint, std::string& v) {
+            char b[64]; std::snprintf(b, sizeof b, "%s", v.c_str());
+            ImGui::SetNextItemWidth(160 * gUi);
+            if (ImGui::InputTextWithHint(label, hint, b, sizeof b)) v = b;
+        };
+        field(tr("Squawk##adsbsq"), "7700, 75*", S.filter.squawks);
+        field(tr("Category##adsbcat"), "A3, B, C1", S.filter.categories);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Emitter category: A light to heavy and rotorcraft, B gliders, balloons, drones, C surface vehicles. One letter takes every category of it."));
+        const char* g[] = {N_("Ground and airborne"), N_("Ground only"), N_("Airborne only")};
+        ImGui::SetNextItemWidth(170 * gUi);
+        if (ImGui::BeginCombo("##adsbgnd", tr(g[S.filter.ground]))) {
+            for (int i = 0; i < 3; i++) if (ImGui::Selectable(tr(g[i]), S.filter.ground == i)) S.filter.ground = i;
+            ImGui::EndCombo();
+        }
+        ImGui::Checkbox(tr("Military address blocks only"), &S.filter.militaryOnly);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("US AE0000-AFFFFF and UK 43C000-43CFFF. Other countries' military aircraft are not in a known block."));
+        if (ImGui::Button(tr("Clear all##adsbflt"))) { S.filter = dect2::AdsbFilter(); txt[0] = 0; }
+        ImGui::EndPopup();
+    }
+    if (S.filter.active()) {
+        const auto& v = a.rx.adsb.aircraft;
+        size_t n = 0;
+        if (live(a)) for (const auto& ac : v) n += shown(ac);
+        ImGui::SameLine();
+        ImGui::TextColored(kWarn, tr("%zu of %zu shown"), n, live(a) ? v.size() : (size_t)0);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Show all##adsbflt"))) { S.filter = dect2::AdsbFilter(); txt[0] = 0; }
+    }
+    const std::string after = dect2::adsbFilterToText(S.filter);
+    if (after != before) plat::prefs().setS("adsbFilter", after);
+}
+
 void aircraftTable(App& a, bool compact) {
     const AdsbTelemetry& t = a.rx.adsb;
     const bool on = live(a);
@@ -87,7 +169,7 @@ void aircraftTable(App& a, bool compact) {
         static std::string note;
         resexp::Table x; x.cols = {"time", "frequency_hz", "mode", "icao", "registration", "country", "operator", "callsign", "type", "source", au::altCol(S.units), "geo_" + std::string(au::altCol(S.units)), au::speedCol(S.units), "speed_kind", "ias_kt", "mach", "heading_deg", "heading_kind", au::vrateCol(S.units), "lat", "lon", "fix", au::distCol(S.units), "bearing_deg", "squawk", "selected_" + std::string(au::altCol(S.units)), "emergency", "nacp", "adsb_version", "tisb", "ground", "messages", "age_s", "pos_age_s", "level_dbfs"};
         const std::string now = resexp::stamp();
-        if (on) for (const auto& ac : t.aircraft)
+        if (on) for (const auto& ac : t.aircraft) if (shown(ac))
             x.add({now, "1090000000", "ADS-B", icaoText(ac.icao), registrationOf(ac.icao), countryCode(ac.icao), operatorOf(ac.icao), ac.callsign, typeOf(ac), sourceName(t, ac.srcId), ac.ground ? "ground" : (ac.hasAlt ? uAlt(ac.altFt) : ""), ac.hasGeoAlt ? uAlt(ac.geoAltFt) : "",
                    ac.hasSpeed ? uSpd(ac.speedKt) : "", ac.hasSpeed ? (ac.speedKind == 0 ? "gs" : ac.speedKind == 1 ? "ias" : "tas") : "", ac.hasIas ? std::to_string(ac.iasKt) : "", ac.hasMach ? resexp::num(ac.mach, 2) : "",
                    ac.hasHeading ? resexp::num(ac.headingDeg, 0) : "", ac.hasHeading ? (ac.headingIsTrack ? "track" : "heading") : "",
@@ -97,9 +179,9 @@ void aircraftTable(App& a, bool compact) {
                    ac.nacp >= 0 ? std::to_string(ac.nacp) : "", ac.adsbVersion >= 0 ? std::to_string(ac.adsbVersion) : "", ac.tisb ? "1" : "", ac.ground ? "1" : "",
                    std::to_string(ac.messages), resexp::num(ac.ageSec, 0), ac.hasPos ? resexp::num(ac.posAgeSec, 0) : "", resexp::num(ac.levelDbfs, 0)});
         resexp::saveButton(x, "adsb", note, "svadsb");
-        ImGui::SameLine();
+        sameLineIf(200 * gUi, -1.f);   // wraps in a narrow pane (the Simple view)
         unitsControls();
-        ImGui::SameLine(); displayControls();
+        sameLineIf(70 * gUi, -1.f); displayControls();
         if (!note.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", note.c_str()); }
     }
     if (!ImGui::BeginTable(compact ? "##acs" : "##acf", cols, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
@@ -125,7 +207,7 @@ void aircraftTable(App& a, bool compact) {
     }
     ImGui::TableHeadersRow();
     std::vector<const AdsbAircraft*> rows;   // by address, not by last heard: the rows do not move about
-    if (on) for (const auto& x : t.aircraft) rows.push_back(&x);
+    if (on) for (const auto& x : t.aircraft) if (shown(x)) rows.push_back(&x);
     std::sort(rows.begin(), rows.end(), [](const AdsbAircraft* x, const AdsbAircraft* y) { return x->icao < y->icao; });
     for (const AdsbAircraft* pac : rows) {
         const AdsbAircraft& ac = *pac;
@@ -137,6 +219,14 @@ void aircraftTable(App& a, bool compact) {
         if (ImGui::Selectable(id, S.sel == ac.icao, ImGuiSelectableFlags_SpanAllColumns)) S.sel = ac.icao;
         if (ImGui::BeginPopupContextItem()) { photolinks::aircraftMenuItems(ac.icao, registrationOf(ac.icao), ac.callsign); ImGui::EndPopup(); }
         ImGui::TableNextColumn(); ImGui::TextUnformatted(ac.callsign.empty() ? "-" : ac.callsign.c_str());
+        if (const auto* pa = planeAlertFor(ac.icao)) {   // plane-alert-db category (adsb_planealert_ui.cpp)
+            ImGui::SameLine(0, 4 * gUi); ImGui::TextColored(kWarn, "%s", pa->category.empty() ? "PA" : pa->category.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("plane-alert-db: %s\n%s %s\n%s", pa->operatorName.c_str(), pa->registration.c_str(), pa->type.c_str(), pa->tagText().c_str());
+        }
+        if (seenNewToday(ac.icao)) {   // never heard before today (adsb_seen_ui.cpp)
+            ImGui::SameLine(0, 4 * gUi); ImGui::TextColored(kGood, "new");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("First heard ever today (ADS-B, History)"));
+        }
         if (const int nm = acarslog::count(ac.icao)) {   // ACARS messages from this aircraft: a mark after the callsign
             ImGui::SameLine(0, 4 * gUi); ImGui::TextColored(kWarn, "*");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(tr("%d ACARS messages"), nm);
@@ -222,7 +312,7 @@ static void acarsLogSection(const App& a, const AdsbAircraft& ac) {
     ImGui::EndChild();
 }
 
-void detail(const App& a) {
+void detail(App& a) {
     // the readout of the selected aircraft is refreshed once a second and always has the same rows, so that it does not jump about
     static AdsbAircraft shown; static bool have = false; static double at = 0; static uint32_t of = 0;
     const AdsbTelemetry& t = a.rx.adsb;
@@ -232,6 +322,12 @@ void detail(const App& a) {
     const double now = ImGui::GetTime();
     if (!have || of != cur->icao || now - at > 1.0) { shown = *cur; have = true; of = cur->icao; at = now; }
     const AdsbAircraft* ac = &shown;
+    if (ac->hasPos && ImGui::SmallButton(tr("Listen on airband"))) {   // E15: opens Airband on the nearest airport's Tower / Approach / Centre
+        std::string what;
+        if (airbandListenAt(a, ac->lat, ac->lon, ac->hasAlt ? ac->altFt : 10000, what)) firstStartSay(what);
+        else firstStartSay(tr("No airport with airband frequencies near this aircraft."));
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Switches this receiver to Airband, tuned to the nearest airport. The channel is a best guess from the aircraft's height and position."));
     auto kv = [&](const char* k, const std::string& v) { ImGui::TextDisabled("%s", k); kvColumn(96 * gUi); ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(v.c_str()); ImGui::PopTextWrapPos(); ImGui::PopFont(); };
     char b[96];
     kv("ICAO", icaoText(ac->icao) + (ac->icao >> 24 ? " (not ICAO)" : ""));
@@ -279,16 +375,53 @@ void detail(const App& a) {
     kv("wind", b);
     if (ac->hasSat) snprintf(b, sizeof b, "%+.0f C %s", ac->satC, ac->satDerived ? "derived" : "reported"); else snprintf(b, sizeof b, "-");
     kv("SAT", b);
+    {   // operational status (TC 31) and velocity quality (TC 19)
+        std::string o;
+        auto flag = [&](const char* n, int v) { if (v >= 0) o += std::string(o.empty() ? "" : ", ") + n + (v ? " yes" : " no"); };
+        flag(tr("ACAS"), ac->capAcas); flag(tr("1090 In"), ac->cap1090In); flag(tr("UAT In"), ac->capUatIn); flag(tr("RA active"), ac->raActive); flag(tr("IDENT"), ac->identOn); flag(tr("ATC services"), ac->atcSvc);
+        if (ac->nacv >= 0) o += std::string(o.empty() ? "" : ", ") + "NACv " + std::to_string(ac->nacv);
+        if (ac->lengthCode >= 0) o += std::string(o.empty() ? "" : ", ") + tr("length/width code") + " " + std::to_string(ac->lengthCode);
+        if (!o.empty()) ImGui::TextDisabled("%s: %s", tr("Status"), o.c_str());
+    }
     if (ac->hasRa) {
         std::string ra = dect2::adsb::raText(ac->raAra, ac->raRac, ac->raTerminated);
         if (ac->raThreat) { snprintf(b, sizeof b, ", threat %06X", (unsigned)ac->raThreat); ra += b; }
         snprintf(b, sizeof b, " (%.0f s ago)", ac->raAgeSec); ra += b;
         ImGui::TextDisabled("ACAS RA"); kvColumn(96 * gUi); ImGui::TextColored(kWarn, "%s", ra.c_str());
     } else kv("ACAS RA", "-");
+    if (ac->trust >= 0) {
+        snprintf(b, sizeof b, "%d / 100", ac->trust);
+        ImGui::TextDisabled("%s", tr("trust")); kvColumn(96 * gUi);
+        if (ac->trust < 80) {
+            ImGui::TextColored(kWarn, "%s", b);
+            static const char* const why[] = {N_("much louder than aircraft at that range"), N_("much weaker than aircraft at that range"), N_("claimed position is beyond the radio horizon"),
+                                              N_("position jumps"), N_("claimed speed does not match the positions"), N_("registration callsign does not match the address"), N_("same callsign on another address far away")};
+            for (int i = 0; i < 7; i++) if (ac->trustFlags & (1u << i)) ImGui::TextWrapped("- %s", tr(why[i]));
+        }
+        else ImGui::TextUnformatted(b);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Checks what this aircraft claims against what the receiver can measure. A low score is a hint, not proof: a shaded antenna, ducting or a faulty transponder look similar."));
+    }
+    for (const auto& e : t.raEvents) {   // the conflict timeline of this aircraft: as the one manoeuvring or as the threat
+        if (e.icao != ac->icao && e.threat != ac->icao) continue;
+        std::string line = (e.icao == ac->icao ? std::string(tr("advisory")) : std::string(tr("threat to ")) + (e.callsign.empty() ? icaoText(e.icao) : e.callsign));
+        snprintf(b, sizeof b, " %.0f s ago, %.0f s long, %d updates", t.timeSec - e.lastSec, e.lastSec - e.startSec, e.updates); line += b;
+        if (e.icao == ac->icao && e.threat) line += ", " + (e.threatCallsign.empty() ? icaoText(e.threat) : e.threatCallsign);
+        if (e.hasSeparation) { line += ", " + uDist(e.separationNm, 1) + " " + au::distUnit(S.units); }
+        if (e.hasAlt && e.hasThreatAlt) { line += ", " + uAlt(std::abs(e.altFt - e.threatAltFt)) + " " + au::altUnit(S.units); }
+        ImGui::TextDisabled("%s", tr("conflict")); kvColumn(96 * gUi); ImGui::TextWrapped("%s", line.c_str());
+    }
     if (ac->emergency) snprintf(b, sizeof b, "state %d", ac->emergency); else snprintf(b, sizeof b, "none");
     kv("emergency", b);
     snprintf(b, sizeof b, "%u messages", ac->messages); kv("heard", b);
     snprintf(b, sizeof b, "%.0f dBFS", ac->levelDbfs); kv("level", b);
+    {   // the ADS-C contracts its operator and the ATC centres hold with it, from ACARS, VDL2, HFDL and Aero
+        const std::string reg = registrationOf(ac->icao);
+        if (!reg.empty()) for (const auto& c : dect2::AdscContractBook::get().contractsOf(reg)) {
+            static const char* const st[] = {N_("requested"), N_("acknowledged"), N_("refused"), N_("cancelled")};
+            ImGui::TextDisabled("ADS-C %s", c.ground.c_str()); kvColumn(96 * gUi);
+            ImGui::TextWrapped("%s (%s)", dect2::AdscContractBook::describe(c).c_str(), tr(st[c.state]));
+        }
+    }
     acarsLogSection(a, *ac);
     tx::voiceSection(a, ac->icao, ac->callsign, registrationOf(ac->icao));
 }

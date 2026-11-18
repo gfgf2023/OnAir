@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DTMB channel decoder (see dtmb_chain.h).
 #include "dect2/common/thread_name.h"
 #include "dect2/dtmb/dtmb_chain.h"
@@ -9,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include "dect2/common/timecompat.h"
+#include "dect2/common/diag.h"
 
 namespace dect2::dtmb {
 
@@ -276,6 +280,7 @@ void FecChain::decodeBatch(std::vector<Job>& jobs, std::vector<Result>& out, Ldp
             gpuWords_ += m;
             compute_->report(true, 1e3 * dt / (double)m);
         } else {
+            DIAG_DEBUG(685284, "The GPU LDPC decoder for DTMB gave no usable result, so decoding continues on the CPU.");
             gpuBad_ = true;   // no usable GPU kernel (or it failed): from now on the CPU
         }
     }

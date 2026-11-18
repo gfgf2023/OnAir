@@ -35,8 +35,9 @@ constexpr int kBinLo = 77, kBinHi = 844;   // 300 .. 3300 Hz
 constexpr double kLockRatio = 251.0, kKeepRatio = 100.0;
 constexpr double kBauds[3] = {45.45, 50.0, 75.0};
 constexpr int kBaudIdx[3] = {0, 1, 2};
-constexpr int kShiftIdx[3] = {0, 2, 4};      // 170, 425, 850 Hz
-constexpr double kShiftHz[3] = {170.0, 425.0, 850.0};
+constexpr int kShiftN = 5;
+constexpr int kShiftIdx[kShiftN] = {0, 1, 2, 3, 4};      // 170, 200, 425, 450, 850 Hz (kRttyShiftTable; 450 Hz is the weather RTTY of DWD, #506)
+constexpr double kShiftHz[kShiftN] = {170.0, 200.0, 425.0, 450.0, 850.0};
 constexpr double kRttyStep = 2150.0;         // channel spacing: a pair of 850 Hz shift always lies inside one 3000 Hz window
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -90,7 +91,7 @@ private:
     double sec_ = 0;
     std::vector<Track> tracks_;
     std::vector<RttyWideSignal> gone_;               // finished signals, lowHz from this channel's dial (centre added in snapshot)
-    struct Cand { double lo; int shift; int frames; };
+    struct Cand { double lo; int shift; int frames; double err = 0; };
     std::vector<Cand> cands_;
     std::vector<std::pair<double, double>> hold_;    // (lowHz, until sec): a pair that was no RTTY, not tried again for a while
 
@@ -187,7 +188,7 @@ private:
         }
         // new pairs: both tones present, 24 dB over the floor, on three frames in a row
         std::vector<Cand> now;
-        for (int si = 0; si < 3; si++) {
+        for (int si = 0; si < kShiftN; si++) {
             const int ds = (int)std::lround(kShiftHz[si] / kBinHz);
             std::vector<std::pair<double, int>> sco;
             for (int k = kBinLo; k + ds <= kBinHi; k++) {
@@ -206,8 +207,19 @@ private:
                 taken.push_back(c.second);
                 if (taken.size() >= 3) break;
                 const double fa = centroid(c.second, fl), fb = centroid(c.second + ds, fl);
-                now.push_back({0.5 * (fa + (fb - kShiftHz[si])), si, 1});
+                if (std::fabs((fb - fa) - kShiftHz[si]) > 9.0) continue;   // the tones are not this shift apart (425 and 450 Hz lie 25 Hz from each other)
+                now.push_back({0.5 * (fa + (fb - kShiftHz[si])), si, 1, std::fabs((fb - fa) - kShiftHz[si])});
             }
+        }
+        // one pair seen as two shifts (a keying sideband next to a tone makes a false 425 Hz pair beside a true 450 Hz one): keep the shift the measured spacing fits best
+        for (size_t i = 0; i < now.size();) {
+            bool worse = false;
+            for (size_t j = 0; j < now.size() && !worse; j++) {
+                if (j == i || now[j].shift == now[i].shift || now[j].err >= now[i].err) continue;
+                const double ih = now[i].lo + kShiftHz[now[i].shift], jh = now[j].lo + kShiftHz[now[j].shift];
+                worse = std::fabs(now[i].lo - now[j].lo) < 40 || std::fabs(ih - jh) < 40;
+            }
+            if (worse) now.erase(now.begin() + (long)i); else i++;
         }
         std::vector<Cand> next;
         for (Cand c : now) {
@@ -315,7 +327,7 @@ void HfdigWide::configure(double rate, double spanHz, double dialHz, double offs
         }
     }
     if (rtty) {
-        const double half = std::min(m.span, kRttyWideMaxSpanHz) / 2;
+        const double half = std::min(m.span, kRttyWideMaxSpanHz * wideSpanCapHz() / kWideMaxSpanHz) / 2;
         for (int k = (int)std::floor(-half / kRttyStep); k <= (int)std::ceil(half / kRttyStep); k++) {
             auto c = std::make_unique<Chain>();
             c->init(r2, k * kRttyStep);

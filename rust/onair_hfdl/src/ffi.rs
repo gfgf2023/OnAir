@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! C ABI of `onair_hfdl` (core/include/dect2/rs/hfdl.h). Every export is `onair_hfdl_*`; pointers come as (pointer, length) pairs and the caller owns all buffers.
 //! A null pointer with a length is read as an empty input.
 //!
@@ -151,7 +154,7 @@ pub struct StationOut {
     pub nkhz: i32,
     pub lat: f64,
     pub lon: f64,
-    pub khz: [i32; 8],
+    pub khz: [i32; 20],
     pub name: *const c_char,
 }
 
@@ -167,8 +170,8 @@ pub unsafe extern "C" fn onair_hfdl_station_get(i: usize, out: *mut StationOut) 
         return false;
     }
     let s = &stations::STATIONS[i];
-    let mut khz = [0i32; 8];
-    let n = s.khz.len().min(8);
+    let mut khz = [0i32; 20];
+    let n = s.khz.len().min(20);
     khz[..n].copy_from_slice(&s.khz[..n]);
     *out = StationOut { id: s.id, nkhz: n as i32, lat: s.lat, lon: s.lon, khz, name: s.name.as_ptr() as *const c_char };
     true

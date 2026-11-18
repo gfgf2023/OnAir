@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Vaisala RS41: frame decoder from hard symbols, and the frame builder for the test signal.
 // Facts (frame layout, whitening mask, CRC, RS code, field positions, temperature / humidity formulas) are from rs1729/RS
 // (demod/mod/rs41mod.c, rs41/rs41ptu.c, demod/mod/bch_ecc_mod.c) and from the example frame in rs41/rs41.txt there.
@@ -34,6 +37,7 @@ public:
     ~Rs41Decoder() override;
     const char* type() const override { return "RS41"; }
     double symbolRate() const override { return 4800.0; }
+    bool narrowChannel() const override { return true; }
     void push(const uint8_t* sym, size_t n, double timeSec, std::vector<SondeFix>& out) override;
     void reset() override;                               // forgets a half received frame, keeps the calibration of the sonde
     // frame: 320 or 518 bytes, de-whitened, RS parity as received. Returns true when it was a frame (header matched);

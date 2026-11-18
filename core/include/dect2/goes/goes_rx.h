@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GOES-R series HRIT receiver (GOES-16 / 18 / 19 on 1694.1 MHz: BPSK, 927 ksym/s). Needs a dish (about 1 m or more, or a grid) with
 // an LNA / filter at the feed; the carrier is far below the noise of a plain antenna.
 //
@@ -13,6 +16,7 @@
 #pragma once
 #include "dect2/engine/mode_tuning.h"
 #include "dect2/common/ring.h"
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -33,6 +37,11 @@ public:
     void setSymbolRate(double hz);          // default 927 ksym/s (GOES-R HRIT); Elektro-L HRIT is 665.4 ksym/s
     double symbolRate() const;
     void setSignalOffset(double hz);
+    void setOqpsk(bool on);                 // Elektro HRIT 1.15 Msym/s: OQPSK (QPSK with the Q rail half a symbol late)
+    void setQpsk(bool on);                  // GK-2A HRIT: QPSK (G1 on I, G2 on Q) instead of BPSK
+    // 1: the KMA (GK-2A) xRIT files; `tag` heads the log lines ("GK-2A HRIT")
+    void setDialect(int dialect, const std::string& tag);
+    void setKeys(const std::vector<std::pair<int, std::array<uint8_t, 8>>>& keys);   // DES keys for encrypted GK-2A files
     bool ready() const;
     void reset();                               // the demodulator and partial files; the products stay
     void clearProducts();

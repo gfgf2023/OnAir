@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // AX.25 link layer for packet radio: the frame check sequence, HDLC bit handling (flags, bit stuffing, NRZI), frame parsing and building.
 // Plain data in, plain data out; the radio side is in packet_rx.cpp and the test signal in packet_gen.cpp.
 #pragma once
@@ -74,12 +77,15 @@ public:
     void setRawCallback(RawCallback cb) { rawCb_ = std::move(cb); raw_.clear(); rawOk_ = false; }
     void reset() { hdlcReset(st_); raw_.clear(); rawOk_ = false; rprev_ = 0; rpat_ = 0; }
     void bit(int level);
+    // every line bit also goes here: the FX.25 and IL2P receivers listen to the same demodulator
+    void setBitTap(std::function<void(int)> f) { bitTap_ = std::move(f); }
     bool inFrame() const { return st_.inFrame; }
     bool flagSeen() const { return st_.flagRecent > 0; }   // a flag came a short while ago
     bool takeClockResync() { const bool r = st_.resyncClock; st_.resyncClock = false; return r; }
 private:
     Callback cb_;
     RawCallback rawCb_;
+    std::function<void(int)> bitTap_;
     bool nrzi_;
     HdlcState st_;
     std::vector<uint8_t> raw_;
@@ -97,6 +103,13 @@ std::vector<std::vector<int>> fixPatterns(int level, bool scrambled);
 // 1-based index of the pattern that worked (0 = no repair found); out is the frame without FCS.
 int repairFrame(const std::vector<uint8_t>& stuffedBits, const std::vector<std::vector<int>>& patterns, std::vector<uint8_t>& out,
                 const std::function<bool(const std::vector<uint8_t>&)>& sane);
+// Multi-demodulator voting. The demodulators of the receiver (several tone correlators, slicer weights and clock loops) each cut the same
+// transmission into stuffed bits; when none of them gets a good FCS their copies still disagree only where the signal was doubtful. The copies
+// of the same length are voted bit by bit (the majority is the base), the positions where they disagree are the candidates (at most
+// maxContested, the closest votes first), and every combination of flips there is tried, fewest flips first, until the FCS is right and sane()
+// agrees. Returns false when nothing fits. flips: bits changed against the majority; copies: how many copies voted.
+struct VoteResult { std::vector<uint8_t> frame; int flips = 0, copies = 0, contested = 0; };
+bool voteRepair(const std::vector<std::vector<uint8_t>>& copies, const std::function<bool(const std::vector<uint8_t>&)>& sane, VoteResult& r, int maxContested = 8);
 // A plausible AX.25 frame for a repaired one: addresses of capital letters and digits (space padded), a known control field, and an
 // information field without control characters other than CR, LF and tab (Mic-E's 0x1C-0x1F allowed)
 bool plausibleFrame(const std::vector<uint8_t>& frameNoFcs);

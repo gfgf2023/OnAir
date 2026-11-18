@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // MPT 1327 control channel codewords, written from the public signalling standard (MPT 1327, 1997 issue, sections 3 and 5):
 // 64-bit codewords (48 information bits + 15 check bits of a (63,48) cyclic code + 1 parity bit), the codeword
 // synchronisation sequences and the address codeword layouts used on a control channel. Receive and decode only.
@@ -13,12 +16,14 @@ constexpr uint16_t kSynt = 0x3B28;   // traffic channel sequence SYNT (section 3
 // A codeword is held in a uint64_t with codeword bit 1 (the first one transmitted) as bit 63 and bit 64 as bit 0.
 uint64_t encode(uint64_t info48);        // info48: codeword bits 1 .. 48 (bit 1 in bit 47); returns the 64-bit codeword with its check bits
 bool valid(uint64_t cw);                 // the check bits and the parity agree with the information bits
+bool correct(uint64_t& cw);              // a word with exactly one wrong bit (check bits or information) is repaired in place; true when it was
 uint16_t checkBits(uint64_t info48);     // codeword bits 49 .. 64
 
 struct Address {
     int pfix = -1;     // 7-bit prefix, -1 when the message carries no prefix
     int ident = -1;    // 13-bit ident, -1 when absent
 };
+const char* specialIdent(int ident);        // ALLI, TSCI, IPFIXI, SDMI, DIVERTI, INCI, REGI, DNI, PABXI, PSTNGI, DUMMYI; nullptr for an ordinary ident
 std::string addressText(const Address& a);   // "prefix/ident", "ident N" without a prefix, "-" when absent
 
 struct Message {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Automatic gain tests (docs/AUTOGAIN.md): the radio models and the stage planner, the measurements (ADC, floor, intermodulation), the mode
 // targets, and the controller's three modes against a simulated radio (autogain_sim.h) with synthetic scenes. No radio, a simulated clock.
 #include "autogain_sim.h"
@@ -19,7 +22,7 @@ static RadioProfile prof(const char* id) { const RadioProfile* p = radioProfileB
 // ------------------------------------------------------------------------------------------------------------------------------ models
 static void testProfiles() {
     const char* ids[] = {"hackrf", "rtl-r820t", "rtl-blog-v3", "rtl-r828d", "rtl-blog-v4", "rtl-blog-v4l", "rtl-e4000", "rtltcp", "airspy", "airspyhf",
-                         "sdrplay", "pluto", "lime", "usrp", "bladerf", "fobos", "rx888", "spyserver", "kiwisdr", "generic"};
+                         "sdrplay", "pluto", "lime", "usrp", "spectran", "bladerf", "fobos", "rx888", "spyserver", "kiwisdr", "generic"};
     for (const char* id : ids) {
         const RadioProfile* p = radioProfileById(id);
         CHECK(p != nullptr, "profile %s missing", id);
@@ -149,7 +152,7 @@ static void testTargets() {
     CHECK(ad.kind == ModeKind::Pulsed && ad.metric == Metric::Sensitivity && ad.policy == Policy::Sensitivity, "ADS-B: sensitivity");
     const ModeTarget dmr = modeTargetFor(11, 12.5e3, 2.4e6);
     CHECK(dmr.kind == ModeKind::NarrowVoice && dmr.metric == Metric::ChannelSnr, "DMR: SNR in the channel");
-    CHECK(modeTargetFor(44, 10e6, 10e6).metric == Metric::Headroom, "analyser: headroom");
+    CHECK(modeTargetFor(44, 10e6, 10e6).metric == Metric::Sensitivity && modeTargetFor(44, 10e6, 10e6).minHeadroomDb >= 8, "analyser: the floor over the ADC with a headroom floor");
     CHECK(modeTargetFor(7, 200e3, 2.4e6).policy == Policy::Linearity, "FM broadcast: linearity");
     CHECK(dmr.headroomDb > modeTargetFor(1, 8e6, 9.14e6).headroomDb, "narrow in a wide span keeps more headroom than TV");
 }
@@ -211,7 +214,9 @@ static void testAutoConverge() {
                 if (start == mid) { if (sc == 0) weakG = g; else strongG = g; }
             }
         }
-        CHECK(weakG > strongG + 6, "%s: weak signal gets more gain (%.1f) than a strong one (%.1f)", id, weakG, strongG);
+        // a level-compensated radio (AirspyHF+): the gain is the least attenuation that does not clip, so a strong signal only gets less when it clips
+        if (rp.levelCompensated) CHECK(weakG >= strongG, "%s: weak signal gets at least the gain (%.1f) of a strong one (%.1f)", id, weakG, strongG);
+        else CHECK(weakG > strongG + 6, "%s: weak signal gets more gain (%.1f) than a strong one (%.1f)", id, weakG, strongG);
     }
 }
 
@@ -488,6 +493,111 @@ static void testSingleControl() {
     }
 }
 
+// HackRF (separate LNA / VGA / amp), the default Auto (v2) on many modes and signal levels: no hunting at the end, never pinned at the top or bottom
+// of the range by accident, the LNA only in its 8 dB steps and the VGA in 2 dB steps, the amp never switched without permission
+static void testHackrfSweep() {
+    struct M { int std_; double bw, rate; };
+    const std::vector<M> modes = {{11, 12.5e3, 2.4e6}, {13, 2e6, 2.4e6}, {7, 200e3, 2.4e6}, {26, 12.5e3, 2.4e6}, {1, 8e6, 9.14e6}, {0, 8e6, 10e6}, {44, 10e6, 10e6}};
+    const RadioProfile rp = prof("hackrf");
+    for (const M& m : modes) for (double sig : {-115.0, -95.0, -75.0, -50.0}) for (double start : {10.0, 60.0}) {
+        SimRadio sim(rp, start, false);
+        sim.rateHz = m.rate; sim.chanBw = m.bw; sim.sigDbm = sig; if (m.bw < 1e6) sim.chanOff = 100e3;
+        const ModeTarget tg = modeTargetFor(m.std_, m.bw, m.rate);
+        AutoGainController c;
+        AgSettings st; st.mode = AgMode::Auto; c.configure(rp, tg, st);   // the defaults: v2, amp not allowed
+        double now = 0;
+        c.start(now, sim.live.totalDb, false, &sim.live);
+        double prev = sim.live.totalDb, lo = 1e9, hi = -1e9; int changes = 0, late = 0, reversals = 0, dir = 0; bool ampSeen = false, badStep = false;
+        run(c, sim, now, 240, [&](double t) {
+            const StagePlan& p = c.current();
+            if (std::fabs(p.totalDb - prev) > 0.01) {
+                const int d = p.totalDb > prev ? 1 : -1;
+                changes++; if (t > 150) late++;
+                if (t > 150 && dir && d != dir) reversals++;
+                dir = d; prev = p.totalDb;
+            }
+            if (t > 150) { lo = std::min(lo, p.totalDb); hi = std::max(hi, p.totalDb); }
+            ampSeen |= p.ampOn;
+            for (size_t i = 0; i < rp.stages.size(); i++) {
+                if (rp.stages[i].id == "lna" && std::fmod(std::round(p.db[i]), 8.0) != 0) badStep = true;
+                if (rp.stages[i].id == "vga" && std::fmod(std::round(p.db[i]), 2.0) != 0) badStep = true;
+            }
+        });
+        if (verbose) printf("  hackrf std %2d sig %6.1f start %4.0f -> %5.1f dB, %d changes (%d after 150 s, %d reversals), headroom %.1f clip %.3f snr %.1f\n",
+                            m.std_, sig, start, c.current().totalDb, changes, late, reversals, c.meters().headroomDb, sim.lastClip, sim.snrDb());
+        if (verbose && getenv("AGLOG2") && m.std_ == atoi(getenv("AGLOG2")) && sig == atof(getenv("AGSIG")) && start == (getenv("AGSTART") ? atof(getenv("AGSTART")) : 60)) for (const auto& e : c.log()) if (e.t > 150) printf("     %.1f %.1f -> %.1f %s\n", e.t, e.fromDb, e.toDb, e.why.c_str());
+        CHECK(hi - lo <= 4.01, "hackrf std %d sig %.0f start %.0f: still moving after 150 s (%d changes, range %.0f dB)", m.std_, sig, start, late, hi - lo);
+        CHECK(!ampSeen && !badStep, "hackrf std %d sig %.0f: amp %d, a step off the hardware grid %d", m.std_, sig, (int)ampSeen, (int)badStep);
+        CHECK(sim.lastClip <= tg.clipLimit * 3 + 1e-9, "hackrf std %d sig %.0f start %.0f: clipping %.3f at the end", m.std_, sig, start, sim.lastClip);
+        if (sig <= -95) CHECK(c.current().totalDb > rp.minTotal(false) + 10 || m.std_ == 44, "hackrf std %d sig %.0f: weak signal but the gain is only %.0f dB", m.std_, sig, c.current().totalDb);
+        if (sig >= -50 && m.std_ != 44) CHECK(c.current().totalDb < rp.maxTotal(false) - 10, "hackrf std %d sig %.0f: strong signal but the gain is %.0f dB", m.std_, sig, c.current().totalDb);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------------------------------ manual stages (#233)
+static RadioSetting numSet(const char* key, const char* label, double lo, double hi, double step) {
+    RadioSetting r; r.type = RadioSetting::Number; r.key = key; r.label = label; r.minV = lo; r.maxV = hi; r.step = step; r.def = "-1"; r.help = "help";
+    return r;
+}
+static void testManualStages() {
+    // Airspy: LNA / mixer / VGA, the driver's keys (source_airspy.cpp kStages)
+    {
+        DeviceInfo d; d.board = "airspy"; d.name = "Airspy Mini"; d.kind = DeviceInfo::Native;
+        for (const char* k : {"gain.lna", "gain.mixer", "gain.vga"}) d.settings.push_back(numSet(k, k, -1, 15, 1));
+        const RadioProfile p = radioProfileFor(d);
+        const std::vector<int> ms = manualStages(p);
+        CHECK(ms.size() == 3, "airspy: three manual stages (%zu)", ms.size());
+        TuneSettings t;
+        const int mix = p.stageIndex("amix");
+        CHECK(mix >= 0 && p.stages[(size_t)mix].manualKey == "gain.mixer", "airspy mixer -> gain.mixer");
+        CHECK(setManualStage(p, mix, 7.4, t) && t.radio["gain.mixer"] == "7", "airspy mixer 7.4 snaps to 7 (%s)", t.radio["gain.mixer"].c_str());
+        CHECK(setManualStage(p, p.stageIndex("avga"), 99, t) && t.radio["gain.vga"] == "15", "airspy VGA clamps to 15");
+        double v = 0;
+        CHECK(manualStageValue(p, mix, t, v) && v == 7, "reads back 7");
+        CHECK(!manualStageValue(p, p.stageIndex("alna"), t, v), "LNA still follows");
+        CHECK(anyManualStage(p, t), "any manual stage");
+        resetManualStages(p, t);
+        CHECK(!anyManualStage(p, t) && t.radio["gain.mixer"] == "-1" && t.radio["gain.lna"] == "-1", "reset to overall gain");
+        CHECK(p.settableCount() == 1, "the Auto planner still sees one overall gain (%d)", p.settableCount());
+        CHECK(!setManualStage(p, 0, 3, t), "the overall stage has no manual key");
+    }
+    // RTL-SDR E4000: six IF stages with their own step tables (source_rtlsdr.cpp), the tuner gain stays the overall gain
+    {
+        DeviceInfo d; d.board = "rtlsdr"; d.name = "Generic RTL2832U E4000"; d.kind = DeviceInfo::Native;
+        d.settings.push_back(numSet("gain.if1", "Gain stage: IF 1", -3, 6, 9));
+        d.settings.push_back(numSet("gain.if4", "Gain stage: IF 4", 0, 2, 1));
+        d.settings.push_back(numSet("gain.if5", "Gain stage: IF 5", 3, 15, 3));
+        const RadioProfile p = radioProfileFor(d);
+        TuneSettings t;
+        const int s1 = p.stageIndex("gain.if1"), s4 = p.stageIndex("gain.if4"), s5 = p.stageIndex("gain.if5");
+        CHECK(s1 >= 0 && s4 >= 0 && s5 >= 0 && manualStages(p).size() == 3, "E4000 IF stages present");
+        CHECK(p.id == "rtl-e4000", "E4000 profile (%s)", p.id.c_str());
+        CHECK(setManualStage(p, s1, 5, t) && t.radio["gain.if1"] == "6", "IF1 snaps -3 / 6 (%s)", t.radio["gain.if1"].c_str());
+        CHECK(setManualStage(p, s5, 10, t) && t.radio["gain.if5"] == "9", "IF5 snaps to the 3 dB grid (%s)", t.radio["gain.if5"].c_str());
+        CHECK(setManualStage(p, s4, 1.2, t) && t.radio["gain.if4"] == "1", "IF4 0..2");
+        CHECK(p.settableCount() == 1, "tuner gain is the one automatic stage");
+    }
+    // USRP: gain elements named by UHD (source_usrp.cpp: "gain.<element>"); a B200 with one element has no manual stage
+    {
+        DeviceInfo d; d.board = "usrp"; d.name = "USRP N310"; d.kind = DeviceInfo::Native; d.gainMinDb = 0; d.gainMaxDb = 76;
+        d.settings.push_back(numSet("gain.LNA1", "Gain stage: LNA1", -1, 30, 1));
+        d.settings.push_back(numSet("gain.DSA1", "Gain stage: DSA1", -1, 31.5, 0.5));
+        const RadioProfile p = radioProfileFor(d);
+        TuneSettings t;
+        const int lna = p.stageIndex("gain.LNA1"), dsa = p.stageIndex("gain.DSA1");
+        CHECK(lna >= 0 && dsa >= 0, "USRP elements become stages");
+        if (lna >= 0 && dsa >= 0) {
+            CHECK(p.stages[(size_t)lna].kind == StageKind::Lna && p.stages[(size_t)dsa].kind == StageKind::Atten, "kinds from the names");
+            CHECK(p.stages[(size_t)lna].minDb() == 0 && p.stages[(size_t)lna].maxDb() == 30, "the follow value is not a step");
+            CHECK(setManualStage(p, dsa, 10.3, t) && t.radio["gain.DSA1"] == "10.5", "DSA 10.3 -> 10.5 (%s)", t.radio["gain.DSA1"].c_str());
+            CHECK(setManualStage(p, lna, 12, t) && t.radio["gain.LNA1"] == "12", "LNA 12");
+        }
+        CHECK(p.id == "usrp" && p.settableCount() == 1, "overall gain stays the one automatic stage");
+        DeviceInfo b; b.board = "usrp"; b.name = "USRP B200"; b.kind = DeviceInfo::Native; b.gainMinDb = 0; b.gainMaxDb = 76;
+        CHECK(manualStages(radioProfileFor(b)).empty(), "a single-element USRP shows no stage controls");
+    }
+}
+
 int main(int argc, char** argv) {
     verbose = argc > 1 && !strcmp(argv[1], "-v");
     testProfiles();
@@ -503,6 +613,8 @@ int main(int argc, char** argv) {
     testMemory();
     testRunner();
     testSingleControl();
+    testHackrfSweep();
+    testManualStages();
     if (fails) { printf("%d FAILED\n", fails); return 1; }
     printf("autogain: all tests passed\n");
     return 0;

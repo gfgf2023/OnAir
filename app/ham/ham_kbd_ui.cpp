@@ -1,6 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The keyboard-mode half of the Ham view: see ham_kbd_ui.h.
 #include "ham_kbd_ui.h"
+#include "ham_station_ui.h"
+#include "dect2/cw/cw_tel.h"
 #include "../platform/platform.h"
+#include "ham_ops_ui.h"
 #include "dect2/cw/cw_tel.h"
 #include "dect2/hfdig/hfdig_rtty.h"
 #include "dect2/hfdig/hfdig_tel.h"
@@ -107,7 +113,21 @@ void hamKbdPanel(HamKbdCtx& c, int preset) {
     ImGui::SetNextItemWidth(90 * gUi);
     ImGui::SliderFloat(tr("Audio Hz"), &k.hz, 300, 3000, "%.0f");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The middle of your signal in the audio passband. Choose a clear spot on the waterfall."));
-    if (p.kind == ham::KbdKind::Cw) { ImGui::SameLine(); ImGui::SetNextItemWidth(90 * gUi); if (ImGui::SliderFloat(tr("WPM"), &k.wpm, 5, 40, "%.0f")) savePrefs(); }
+    if (p.kind == ham::KbdKind::Cw) {
+        ImGui::SameLine(); ImGui::SetNextItemWidth(90 * gUi); if (ImGui::SliderFloat(tr("WPM"), &k.wpm, 5, 40, "%.0f")) savePrefs();
+        // 4.0: follow the speed of the station in focus (the CW decoder's reading), so you answer as fast as you are called
+        HamStation& st = hamStation();
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Match speed"), &st.cwMatch)) { st.cwm.reset(); hamStationSave(); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Your keyer follows the speed of the CW station in focus (the decoder's WPM), rounded, 5 to 45 WPM."));
+        if (st.cwMatch) {
+            const dect2::CwSignal* f = dect2::cwFocus(a.rx.cw);
+            if (f && f->id != st.cwFocusId) { st.cwm.reset(); st.cwFocusId = f->id; }
+            if (f && f->wpm > 0) st.cwm.heard(f->wpm);
+            const int w = st.cwm.wpm((int)std::lround(k.wpm));
+            if (w != (int)std::lround(k.wpm)) k.wpm = (float)w;
+        }
+    }
     else if (p.kind == ham::KbdKind::Psk) { ImGui::SameLine(); if (ImGui::SmallButton(tr("Focus RX here"))) a.engine.psk().setFocusHz(k.hz); }
     else if (p.kind == ham::KbdKind::Hfdig) {
         ImGui::SameLine();
@@ -147,7 +167,8 @@ void hamKbdPanel(HamKbdCtx& c, int preset) {
     for (size_t i = 0; i < calls.size() && i < 8; i++) {
         ImGui::SameLine();
         const bool w = c.worked.worked(calls[i]);
-        if (ImGui::SmallButton((calls[i] + (w ? " *" : "")).c_str())) { snprintf(k.theirCall, sizeof k.theirCall, "%s", calls[i].c_str()); k.pickedAt = now; }
+        const std::string tag = hamCountryInMessages() ? hamCountryTag(calls[i]) : std::string();
+        if (ImGui::SmallButton((calls[i] + (w ? " *" : "") + (tag.empty() ? "" : " (" + tag + ")")).c_str())) { snprintf(k.theirCall, sizeof k.theirCall, "%s", calls[i].c_str()); k.pickedAt = now; }
     }
 
     // the other station

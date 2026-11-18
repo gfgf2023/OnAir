@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mesh (LoRa) screens: the map of node and station positions, the selected node's card and the chat per channel.
 // Split from mesh_ui.cpp; the shared state is declared in mesh_internal.h.
+#include "map/my_location.h"
 #include "mesh_internal.h"
 #include <algorithm>
 #include <cmath>
@@ -36,10 +40,12 @@ void mapView(App& a, ImVec2 size) {
             const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
             dl->AddCircleFilled(q, 6 * gUi, col, 20);
             dl->AddCircle(q, 6 * gUi, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(20, 24, 26, 220), 20, sel ? 2.f : 1.2f);
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
             const std::string lb = !n.shortName.empty() ? n.shortName : !n.longName.empty() ? n.longName : n.id;
             const ImVec2 ts = ImGui::CalcTextSize(lb.c_str());
             dl->AddRectFilled(ImVec2(q.x + 8 * gUi, q.y - ts.y * 0.5f - 1), ImVec2(q.x + 12 * gUi + ts.x, q.y + ts.y * 0.5f + 1), IM_COL32(10, 12, 14, 190), 2.f);
             dl->AddText(ImVec2(q.x + 10 * gUi, q.y - ts.y * 0.5f), IM_COL32(230, 233, 236, 255), lb.c_str());
+            }
             const float d = std::hypot(q.x - mouse.x, q.y - mouse.y);
             if (d < tipD) { tipD = d; tip = &n; }
             if (clicked && std::hypot(q.x - click.x, q.y - click.y) < 14 * gUi) S.sel = nodeKey(n);
@@ -57,9 +63,11 @@ void mapView(App& a, ImVec2 size) {
             // a diamond: APRS stations and objects, apart from the round mesh nodes
             dl->AddQuadFilled(ImVec2(q.x, q.y - r), ImVec2(q.x + r, q.y), ImVec2(q.x, q.y + r), ImVec2(q.x - r, q.y), col);
             dl->AddQuad(ImVec2(q.x, q.y - r), ImVec2(q.x + r, q.y), ImVec2(q.x, q.y + r), ImVec2(q.x - r, q.y), sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(20, 24, 26, 220), sel ? 2.f : 1.2f);
+            if (adsbmap::labelsAt(S.map.zoom, sel)) {
             const ImVec2 ts = ImGui::CalcTextSize(s.st.call.c_str());
             dl->AddRectFilled(ImVec2(q.x + 8 * gUi, q.y - ts.y * 0.5f - 1), ImVec2(q.x + 12 * gUi + ts.x, q.y + ts.y * 0.5f + 1), IM_COL32(10, 12, 14, 190), 2.f);
             dl->AddText(ImVec2(q.x + 10 * gUi, q.y - ts.y * 0.5f), IM_COL32(230, 233, 236, 255), s.st.call.c_str());
+            }
             const float d = std::hypot(q.x - mouse.x, q.y - mouse.y);
             if (d < tipD) { tipD = d; tipA = &s; tip = nullptr; }
             if (clicked && std::hypot(q.x - click.x, q.y - click.y) < 14 * gUi) S.sel = aprsKey(s);
@@ -67,12 +75,14 @@ void mapView(App& a, ImVec2 size) {
     }
     dl->PopClipRect();
     if (tipA && ImGui::IsWindowHovered()) {
-        ImGui::SetTooltip("%s  %s  %s\n%.5f, %.5f\n%s\nSNR %.1f dB, heard %s ago", tipA->st.call.c_str(), protoName(tipA->protocol), symbolText(tipA->st).c_str(), tipA->st.lat, tipA->st.lon,
-                          tipA->st.comment.c_str(), tipA->lastSnrDb, ago(t.timeSec, tipA->st.lastHeardSec).c_str());
+        const std::string mineA = mylocmap::distanceBearingText(tipA->st.lat, tipA->st.lon);
+        ImGui::SetTooltip("%s  %s  %s\n%.5f, %.5f%s%s\n%s\nSNR %.1f dB, heard %s ago", tipA->st.call.c_str(), protoName(tipA->protocol), symbolText(tipA->st).c_str(), tipA->st.lat, tipA->st.lon,
+                          mineA.empty() ? "" : "  ", mineA.c_str(), tipA->st.comment.c_str(), tipA->lastSnrDb, ago(t.timeSec, tipA->st.lastHeardSec).c_str());
     }
     if (tip && ImGui::IsWindowHovered()) {
-        ImGui::SetTooltip("%s  %s\n%s  %s\n%.5f, %.5f  %.0f m\nSNR %.1f dB, heard %s ago", nodeLabel(*tip).c_str(), tip->id.c_str(), protoName(tip->protocol),
-                          tip->hwModel.c_str(), tip->lat, tip->lon, tip->altM, tip->lastSnrDb, ago(t.timeSec, tip->lastHeard).c_str());
+        const std::string mineN = mylocmap::distanceBearingText(tip->lat, tip->lon);
+        ImGui::SetTooltip("%s  %s\n%s  %s\n%.5f, %.5f  %.0f m%s%s\nSNR %.1f dB, heard %s ago", nodeLabel(*tip).c_str(), tip->id.c_str(), protoName(tip->protocol),
+                          tip->hwModel.c_str(), tip->lat, tip->lon, tip->altM, mineN.empty() ? "" : "  ", mineN.c_str(), tip->lastSnrDb, ago(t.timeSec, tip->lastHeard).c_str());
     }
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 8 * gUi, p0.y + 8 * gUi));
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.06f, 0.07f, 0.08f, 0.85f));

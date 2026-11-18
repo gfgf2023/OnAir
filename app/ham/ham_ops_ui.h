@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The Ham view's operator tools around the operating screen (ham_ui.cpp): the logbook, awards, contest, map, spots, the station setup
 // wizard and the guide. The logic is in core/include/dect2/ham/ham_log.h, ham_dxcc.h and ham_ops.h (tested); these files draw it.
 // Nothing here transmits: the only transmitter is ham_ui.cpp's HamSlotTx behind the Arm button, the licence box and the band gate.
@@ -11,7 +14,7 @@
 #include <string>
 #include <vector>
 
-enum HamTab { HamTabOperate, HamTabLog, HamTabAwards, HamTabMap, HamTabSpots, HamTabContest, HamTabGuide, HamTabCount };
+enum HamTab { HamTabOperate, HamTabLog, HamTabAwards, HamTabMap, HamTabSpots, HamTabCluster, HamTabContest, HamTabActivate, HamTabGuide, HamTabCount };   // 4.0: Cluster (online spots), Activate (POTA / SOTA)
 
 struct HamOps {
     bool loaded = false;
@@ -19,6 +22,7 @@ struct HamOps {
     std::string logPath;
     dect2::ham::DxccDb dxcc;                 // the built-in table, or the user's cty.dat (prefs "ham.ctyPath")
     std::string ctyPath, ctyInfo;
+    bool ctyInMsg = true;                    // country and zone beside decoded messages (prefs "ham.ctyInMsg")
     dect2::ham::WorkedIndex worked;
     bool workedDirty = true;                 // rebuilt from the log on the next frame
     dect2::ham::SpotList spots;
@@ -46,7 +50,13 @@ bool hamLogQso(dect2::ham::LogQso q, std::string& err);
 dect2::ham::LogQso hamFromRecord(const dect2::ham::QsoRecord& r);
 std::string hamDxccKey(const std::string& call);            // the award key of a call's entity, "" when not known
 std::string hamCountry(const std::string& call);            // the entity name, "" when not known
+std::string hamCountryTag(const std::string& call);         // "Germany, CQ 14, ITU 28", "" when not known
+bool hamCountryInMessages();                                 // the setting: show it beside decoded messages
+bool hamCountryLoadFile(const std::string& path, std::string& err);   // cty.dat / wl_cty.dat; the old table stays when it fails
+void hamCountryReset();                                      // back to the built-in table
+void hamCountryUi();                                         // the "Country file" settings block (Load, Download on click, Reset)
 void hamToast(const std::string& s);
+void hamLogChanged();                                        // the book changed outside the Log tab: its filter and the worked marks are redone
 void hamSaveStation();
 
 void hamLogTab(App& a);

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DMR voice: a voice burst carries 3 AMBE+2 (3600x2450) vocoder frames of 72 bits = 60 ms of speech (ETSI TS 102 361-1 clause 9.1 and annex B; the
 // vocoder is TS 102 361-1 / -2 AMBE+2 half rate). The 216 voice bits of a burst (the two 108 bit halves either side of the sync or embedded
 // signalling, joined by dmr::burstVoicePayload) are three consecutive 72 bit frames; each frame is the same 36 dibit AMBE+2 frame as in NXDN and is
@@ -22,6 +25,9 @@ public:
     bool ok() const { return a_.ok(); }
     // 480 samples of 8 kHz audio (60 ms) from one voice burst
     void decodeBurst(const dmr::Bits& vs216, int16_t pcm[480]);
+    // the same with the reliability (0..255) of each of the 216 bits: soft-decision frame correction and concealment (voice/vocoder_fec.h)
+    void decodeBurstSoft(const dmr::Bits& vs216, const uint8_t rel216[216], int16_t pcm[480]);
+    void fecCounts(int* frames, int* repaired, int* concealed) const { a_.fecCounts(frames, repaired, concealed); }
 private:
     NxdnAmbe a_;
 };

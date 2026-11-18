@@ -1,3 +1,5 @@
+#include <map>
+#include <cmath>
 // DVB service information beyond the multiplex being received (see si_tables.h).
 #include "dect2/tv/si_tables.h"
 #include "dect2/tv/ts.h"
@@ -122,6 +124,8 @@ static void parseTransportDescriptors(const uint8_t* d, int len, SiTransponder& 
             if (n >= o + 4) { const uint32_t f = (uint32_t)p[o] << 24 | (uint32_t)p[o + 1] << 16 | (uint32_t)p[o + 2] << 8 | p[o + 3]; t.freqMhz = f * 10.0 / 1e6; }
         } else if (tag == 0x7F && n >= 2 && p[0] == 0x17) {   // extension: S2X satellite delivery system (named, not read in detail)
             t.kind = 5; t.s2 = true;
+        } else if (tag == 0x6C && n > 0) {     // cell list: kept raw, read by smart5::parseCellList (the transmitter from the cell ID)
+            t.cellList.insert(t.cellList.end(), p, p + n);
         } else if (tag == 0x41) {              // service list
             for (int k = 0; k + 3 <= n; k += 3) t.services.push_back(p[k] << 8 | p[k + 1]);
         }
@@ -136,7 +140,7 @@ void SiCollector::nit(const uint8_t* s, int len) {
     if (10 + ndl + 2 > len) return;
     SiNetwork& net = networks_[nid];
     net.id = nid; net.actual = net.actual || actual;
-    descriptors(s + 10, ndl, [&](int tag, const uint8_t* p, int n) { if (tag == 0x40) net.name = dvbText(p, n); });
+    descriptors(s + 10, ndl, [&](int tag, const uint8_t* p, int n) { if (tag == 0x40) net.name = dvbText(p, n, textContext()); });
     const int tll = ((s[10 + ndl] & 0x0F) << 8) | s[11 + ndl];
     int i = 12 + ndl;
     const int end = std::min(len - 4, i + tll);
@@ -162,7 +166,7 @@ void SiCollector::bat(const uint8_t* s, int len) {
     if (10 + bdl + 2 > len) return;
     SiBouquet& b = bouquets_[id];
     b.id = id;
-    descriptors(s + 10, bdl, [&](int tag, const uint8_t* p, int n) { if (tag == 0x47) b.name = dvbText(p, n); });
+    descriptors(s + 10, bdl, [&](int tag, const uint8_t* p, int n) { if (tag == 0x47) b.name = dvbText(p, n, textContext()); });
     const int tll = ((s[10 + bdl] & 0x0F) << 8) | s[11 + bdl];
     int i = 12 + bdl;
     const int end = std::min(len - 4, i + tll);
@@ -203,10 +207,10 @@ void SiCollector::sdt(const uint8_t* s, int len) {
             v.type = p[0];
             const int pl = p[1];
             if (2 + pl + 1 > n) return;
-            v.provider = dvbText(p + 2, pl);
+            v.provider = dvbText(p + 2, pl, textContext());
             const int nl = p[2 + pl];
             if (3 + pl + nl > n) return;
-            v.name = dvbText(p + 3 + pl, nl);
+            v.name = dvbText(p + 3 + pl, nl, textContext());
         });
         i += dl;
         if (others_.size() < 16384) others_[{onid, tsid, v.sid}] = v;
@@ -234,7 +238,7 @@ void SiCollector::eit(const uint8_t* s, int len) {
             if (tag != 0x4D || n < 5) return;
             const int nl = p[3];
             if (4 + nl > n) return;
-            e.nowTitle = dvbText(p + 4, nl);
+            e.nowTitle = dvbText(p + 4, nl, textContext().withLanguage(std::string((const char*)p, 3)));
         });
         i += dl;
     }
@@ -260,7 +264,12 @@ void SiCollector::tot(const uint8_t* s, int len) {
             v.push_back(o);
         }
     });
-    if (!v.empty()) tot_ = v;
+    if (!v.empty()) {
+        tot_ = v;
+        // A multi-country descriptor loop cannot identify one default encoding for the whole input.
+        textCountry_ = v.front().country;
+        for (const auto& zone : v) if (zone.country != textCountry_) { textCountry_.clear(); break; }
+    }
 }
 
 void SiCollector::cat(const uint8_t* s, int len) {
@@ -284,6 +293,19 @@ SiSnapshot SiCollector::snapshot() const {
     for (const auto& c : ca_) o.ca.push_back(c.second);
     o.totUtc = totUtc_; o.sections = sections_;
     return o;
+}
+
+SiOrbitGuess siGuessOrbit(const SiSnapshot& s, const std::vector<double>& found, double tol) {
+    SiOrbitGuess g;
+    std::map<int, int> votes;
+    std::vector<const SiTransponder*> sat;
+    for (const auto& n : s.networks) for (const auto& t : n.transponders) if (t.kind == 1) { votes[(int)std::lround(t.orbitDeg * 10)]++; sat.push_back(&t); }
+    if (sat.empty()) return g;
+    int best = 0, at = 0;
+    for (const auto& kv : votes) if (kv.second > best) { best = kv.second; at = kv.first; }
+    g.valid = true; g.orbitDeg = at / 10.0; g.transponders = best; g.carriers = (int)found.size();
+    for (double f : found) for (const auto* t : sat) if (std::fabs(t->freqMhz - f) <= tol && (int)std::lround(t->orbitDeg * 10) == at) { g.matched++; break; }
+    return g;
 }
 
 } // namespace dect2

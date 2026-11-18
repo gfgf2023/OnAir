@@ -1,13 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DMR screens: the two time slots and the call log, the symbol plots, the receiver counters and the options of the test signal.
 #include "call_filter.h"
+#include "ui/kit/export.h"
 #include "app.h"
+#include "ease/ease_ui.h"
+#include "ui/voice_why_ui.h"
+#include "dect2/voice/voice_why_modes.h"
 #include "ui/kit/session_list.h"
 #include "ui/kit/mode_frame.h"
+#include "ui/kit/mode_panel.h"
 #include "dmr_map.h"
+#include <ctime>
+#include "dect2/trunkpool/tg_activity.h"
 #include "dect2/dmr/dmr_ambe.h"
 #include "../codec/speech_codec_ui.h"
 #include "../voice/voice_monitor_ui.h"
 #include "../voice/radioid_ui.h"
+#include "../voice/tgdir_ui.h"
+#include "../voice/watch_ui.h"
 #include "dect2/codec/codec_registry.h"
 #include "dect2/dmr/dmr_proto.h"
 #include <algorithm>
@@ -30,6 +42,7 @@ bool live(const App& a) { return a.rx.standard == 10; }
 const ImVec4 kDim(0.62f, 0.65f, 0.68f, 1);
 
 void tick(App& a) {
+    watchui::tick(a);
     const bool run = a.engine.running();
     radioidui::tick(dect2::RadioIdKind::Dmr);
     if (live(a)) appcodec::voiceCodecTick("ambe2");   // the user's codec plug-in, loaded whichever tab is shown
@@ -74,7 +87,7 @@ std::string targetText(const DmrCall& c) {
     if (!c.idsKnown || c.dst == 0) return "-";
     if (c.kind == 2 || c.dst == 0xFFFFFF) return "all";
     char b[24]; snprintf(b, sizeof b, c.kind == 0 ? "TG %u" : "%u", c.dst);
-    return b;
+    return c.kind == 0 ? tgdirui::withName(dect2::TgKind::Dmr, b, c.dst) : std::string(b);   // the talkgroup directory's name beside the number
 }
 
 // Voice frames come three to a 60 ms burst, so one is 20 ms: the length of a call that is still going on
@@ -181,6 +194,20 @@ void callTable(App& a, float h) {
         }
         h = std::max(40.f * gUi, h - ImGui::GetFrameHeightWithSpacing());
     }
+    {
+        static std::string note;
+        resexp::Table x; x.cols = {"start_s", "slot", "type", "source", "target", "duration_s", "voice_frames", "fec_errors", "alias", "flags"};
+        if (on) for (const DmrCall* pc : sortedCalls(t)) {
+            const DmrCall& c = *pc;
+            if (!dmrfilter::shown(filter, c.kind)) continue;
+            x.add({resexp::num(c.startSec, 1), c.slot ? std::to_string(c.slot) : "", kindName(c.kind), idText(c.src, c.idsKnown), targetText(c),
+                   c.kind <= 2 || c.endSec > c.startSec ? resexp::num(duration(c), 1) : "", c.kind <= 2 ? std::to_string(c.voiceFrames) : "", std::to_string(c.fecErrors),
+                   !c.alias.empty() ? c.alias : c.note, flagsText(c)});
+        }
+        ImGui::SameLine();
+        kit::exportBar(x, "dmr_calls", note, "dmrxc");
+        h = std::max(40.f * gUi, h - ImGui::GetFrameHeightWithSpacing());
+    }
     if (!ImGui::BeginTable("##dmrcalls", 10 + (wideActive(a) ? 1 : 0), ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit, ImVec2(0, h))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     if (wideActive(a)) ImGui::TableSetupColumn("Carrier", ImGuiTableColumnFlags_WidthFixed, 66 * gUi);
@@ -222,6 +249,16 @@ void callTable(App& a, float h) {
 void messageTable(App& a, float h) {
     const DmrTelemetry& t = a.rx.dmr;
     const bool on = live(a);
+    {
+        static std::string note;
+        resexp::Table x; x.cols = {"time_s", "slot", "from", "to", "format", "crc_ok", "text"};
+        if (on) for (size_t i = t.messages.size(); i-- > 0;) {
+            const DmrMessage& m = t.messages[i];
+            x.add({resexp::num(m.sec, 1), m.slot ? std::to_string(m.slot) : "", idText(m.src, true), (m.group ? "TG " : "") + std::to_string(m.dst), m.format, m.crcOk ? "1" : "0", m.text});
+        }
+        kit::exportBar(x, "dmr_msgs", note, "dmrxm");
+        h = std::max(40.f * gUi, h - ImGui::GetFrameHeightWithSpacing());
+    }
     if (!ImGui::BeginTable("##dmrmsg", 7 + (wideActive(a) ? 1 : 0), ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit, ImVec2(0, h))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     if (wideActive(a)) ImGui::TableSetupColumn("Carrier", ImGuiTableColumnFlags_WidthFixed, 66 * gUi);
@@ -248,6 +285,46 @@ void messageTable(App& a, float h) {
         }
     }
     ImGui::EndTable();
+}
+
+// Talkgroup activity (4.0): airtime per talkgroup over the last 10 minutes, a 5-minute-bucket timeline and the busiest talkgroup right now.
+void tgActivity(const DmrTelemetry& t) {
+    static dect2::TgActivity act; static dect2::TgFollower fol; static double built = -1, nowS = 0; static size_t seenLog = 0;
+    if (t.callLog.size() < seenLog) { act = dect2::TgActivity(); built = -1; }   // the log was cleared or the receiver restarted
+    seenLog = t.callLog.size();
+    const double wall = ImGui::GetTime();
+    if (built < 0 || wall - built > 2.0) {
+        built = wall; act = dect2::TgActivity(); nowS = 0;
+        for (const auto& c : t.callLog) {
+            if (c.kind != 0 && c.kind != 2) continue;   // group voice and all calls
+            const double e = c.active ? std::max(c.endSec, c.startSec) : c.endSec;
+            nowS = std::max(nowS, e);
+            act.add(c.dst, c.src, c.startSec, e);
+        }
+    }
+    const auto rows = act.ranking(nowS, 600);
+    if (rows.empty()) { ImGui::TextDisabled("%s", tr("No group calls yet")); return; }
+    const uint32_t busiest = fol.pick(act, nowS);
+    ImGui::Text("%s: TG %u", tr("Busiest now"), busiest);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The talkgroup with the most airtime in the last 2 minutes. It only changes when another one is clearly busier for a while."));
+    if (ImGui::BeginTable("##dmrtg", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn(tr("Talkgroup")); ImGui::TableSetupColumn(tr("Calls")); ImGui::TableSetupColumn(tr("Airtime s")); ImGui::TableSetupColumn(tr("Radios")); ImGui::TableSetupColumn(tr("Last 50 min"), ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        for (size_t i = 0; i < rows.size() && i < 8; i++) {
+            const auto& r = rows[i];
+            ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("%u", r.tg);
+            ImGui::TableNextColumn(); ImGui::Text("%d", r.calls);
+            ImGui::TableNextColumn(); ImGui::Text("%.0f", r.airtimeS);
+            ImGui::TableNextColumn(); ImGui::Text("%d", r.radios);
+            ImGui::TableNextColumn();
+            const auto tl = act.timeline(r.tg, nowS, 300, 10);
+            std::vector<float> f(tl.begin(), tl.end());
+            ImGui::PushID((int)i);
+            ImGui::PlotHistogram("##tl", f.data(), (int)f.size(), 0, nullptr, 0.f, 300.f, ImVec2(ImGui::GetContentRegionAvail().x, 18 * gUi));
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
 }
 
 void callsView(App& a) {
@@ -296,19 +373,48 @@ void callsView(App& a) {
         if (ImGui::TreeNode("Install helper")) { appcodec::codecInstallHelper("ambe2"); ImGui::TreePop(); }
     }
     if (on && !t.cachInfo.empty() && t.cachInfo != "null") ImGui::TextDisabled("CACH: %s", t.cachInfo.c_str());
+    if (on && t.xpt.seen && ImGui::TreeNode(trw("Hytera XPT"))) {   // recognised from its control blocks: no setting
+        ImGui::TextUnformatted(dect2::xptSummary(t.xpt).c_str());
+        ImGui::TextDisabled("%s", tr("Field positions from DSD-FME's findings; the maker publishes no description."));
+        for (int i = 0; i < 24; i++) {
+            const auto& l = t.xpt.lsn[i];
+            if (l.status < 0) continue;
+            ImGui::Text("LSN %2d: %s %d", i + 1, l.status == 3 ? "group" : l.status == 2 ? "private" : l.status == 0 ? "idle" : "?", l.tg);
+        }
+        for (const auto& c : t.xpt.calls) ImGui::Text("%u > %u  LCN %d", c.source, c.target, c.lcn);
+        for (const auto& a : t.xpt.adjacent) ImGui::TextDisabled("%s %d: %s %d", tr("Adjacent site"), a.site, tr("free LCN"), a.freeLcn);
+        ImGui::TreePop();
+    }
     ImGui::Spacing();
     const float rest = ImGui::GetContentRegionAvail().y;
     const float lh = ImGui::GetTextLineHeightWithSpacing();
     const float msgH = std::max(70.f * gUi, std::min(rest * 0.34f, 150.f * gUi));
+    if (on && ImGui::TreeNode(trw("Talkgroup activity"))) { tgActivity(t); ImGui::TreePop(); }
     ImGui::TextDisabled("Call log (%zu)", on ? t.callLog.size() : (size_t)0);
     callTable(a, std::max(60.f * gUi, rest - msgH - 2 * lh - 8 * gUi));
     { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("Text messages (%zu)", on ? t.messages.size() : (size_t)0); ImGui::PopTextWrapPos(); }
     messageTable(a, std::max(40.f * gUi, ImGui::GetContentRegionAvail().y));
 }
 
+// under a watched entry: the last GPS position (LRRP) of the radio, or of any radio that sent to the talkgroup, and a button for the map
+void watchPosition(App& a, const dect2::voice::WatchEntry& e) {
+    if (!e.mode.empty() && e.mode != "dmr") return;
+    const dect2::voice::IdList ids(e.match);
+    const DmrLocation* best = nullptr;
+    for (const auto& l : a.rx.dmr.locations)
+        if (l.hasFix && (ids.matchId(l.src) || ids.matchId(l.dst)) && (!best || l.unixSec >= best->unixSec)) best = &l;
+    if (!best) { ImGui::TextDisabled("%s", tr("No GPS position heard yet (needs LRRP data)")); return; }
+    const double age = std::max(0.0, (double)std::time(nullptr) - best->unixSec);
+    ImGui::Text("%s %.5f, %.5f  (radio %u, %s)", tr("Last position"), best->lat, best->lon, best->src, age < 90 ? tr("just now") : (std::to_string((int)(age / 60)) + " " + tr("min ago")).c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Show on map##wlmap"))) { dmrMapFocus(best->src, best->lat, best->lon); S.view = 1; }
+}
+
 void tab(App& a) {
     kit::modeHeader({9, "DMR", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("dmrv", S.view, {{tr("Live"), 0}, {tr("Calls"), 3}, {tr("Map"), 1}, {tr("Table"), 2, true}});
+    kit::modeNav("dmrv", S.view, {{tr("Live"), 0}, {tr("Calls"), 3}, {tr("Map"), 1}, {tr("Table"), 2, true}, {tr("Watch"), 90, true}});
+    if (S.view != 0) voiceui::silenceLine(a, "dmr", live(a), dect2::codec::pluginLoaded("ambe2") || dect2::dmrAmbeAvailable(nullptr));   // the Live view's strip has it already
+    if (S.view == 90) { watchui::watchView(a, "dmr", [&a](const dect2::voice::WatchEntry& e) { watchPosition(a, e); }); return; }
     if (S.view == 3) { kit::sessionItems(9, 1, "dmr"); return; }
     if (S.view == 1) { dmrMap(a); return; }
     if (S.view == 2) { dmrTable(a); return; }
@@ -463,10 +569,13 @@ void spectrumPlotDmr(const DmrTelemetry& t, bool on, ImVec2 sz) {
 }
 
 void receiver(App& a) {
+    easeui::repeaterPicker(a, "DMR");
     radioidui::section(dect2::RadioIdKind::Dmr);
+    tgdirui::section(dect2::TgKind::Dmr);
     wideCarriersTable(a, 0);
     const DmrTelemetry& t = a.rx.dmr;
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
+    voiceWhyRow(a, dect2::dmrWhy(t));
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     const float gap = 10 * gUi, cw = (W - 2 * gap) / 3.f;
     const bool stack = cw < 260 * gUi;   // a narrow tab: the three blocks one under the other (the tab scrolls)
@@ -639,6 +748,31 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 
 } // namespace
 
+// ---------------------------------------------------------------- the Simple view (ui/kit/mode_panel.h)
+
+// the signal beside the calls: the channel spectrum and the few numbers a listener looks at
+static void signalPane(App& a) {
+    const DmrTelemetry& t = a.rx.dmr;
+    const bool on = live(a);
+    spectrumPlotDmr(t, on, ImVec2(ImGui::GetContentRegionAvail().x, std::max(120.f * gUi, ImGui::GetContentRegionAvail().y * 0.5f)));
+    if (!on) { ImGui::TextDisabled("%s", a.engine.running() ? tr("starting") : tr("stopped")); return; }
+    static const char* st[5] = {"-", "voice", "data", "idle", "control"};
+    auto kv = [&](const char* k, const char* fmt, auto... v) { ImGui::TextDisabled("%s", k); ImGui::SameLine(110 * gUi); ImGui::PushFont(a.mono, 0); ImGui::Text(fmt, v...); ImGui::PopFont(); };
+    kv("link", "%s", t.state == 0 ? "searching" : t.link.empty() ? "locked" : t.link.c_str());
+    kv("colour code", "%d", t.cc);
+    for (int i = 0; i < 2; i++) kv(i ? "slot 2" : "slot 1", "%s", t.slot[i].active ? st[t.slot[i].state % 5] : "-");
+    kv("deviation", "%.0f Hz", t.devHz);
+    kv("bit errors", "%.2f %%", t.ber * 100.0);
+    kv("calls", "%llu", (unsigned long long)t.calls);
+}
+
+static void command(App& a) {
+    kit::modeHeader({9, "DMR", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    if (live(a)) voiceWhyRow(a, dect2::dmrWhy(a.rx.dmr));
+    modepanel::panes({{"##dmrcalls", nullptr, [&a] { callsView(a); }, 1.8f, 420.f},
+           {"##dmrsignal", tr("Signal"), [&a] { signalPane(a); }, 1.f, 260.f}}, 360.f);
+}
+
 extern const ModeUi kDmrUi;
 const ModeUi kDmrUi = {
     .sideTitle = "CALLS",
@@ -654,4 +788,5 @@ const ModeUi kDmrUi = {
     .synth = synth,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

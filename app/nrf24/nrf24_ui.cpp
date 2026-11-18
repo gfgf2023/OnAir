@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // nRF24L01 screens: the Enhanced ShockBurst frames heard (address, control field, payload as hex and text), the addresses (devices) and the bursts
 // that gave no frame. Receive only. A 2.4 GHz SDR is needed: HackRF (One, Pro), PlutoSDR (extended range), bladeRF, LimeSDR, USRP B200/B210/B205mini.
 #include "app.h"
@@ -28,6 +31,9 @@ void banner(App& a) {
     flowNext(10 * gUi);
     char cl[40]; snprintf(cl, sizeof cl, "%s##nrf", tr("Clear"));
     if (ImGui::Button(cl)) a.engine.nrf24().clearResults();
+    flowNext(10 * gUi);
+    if (ImGui::Button(trw("ESP32 radio..."))) a.esp32Open = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Use an ESP32 board with an nRF24L01+ module on USB instead of an SDR: receive and send nRF24 packets, Bluetooth LE and WiFi networks"));
     flowEnd();
 }
 

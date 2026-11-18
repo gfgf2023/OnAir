@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Wireless M-Bus receiver for the engine (see wmbus_live.h).
 #include "dect2/wmbus/wmbus_live.h"
+#include "dect2/voicekeys/voice_keys.h"
 #include "dect2/wmbus/wmbus_tel.h"
 #include "dect2/common/mathconst.h"
 #include <algorithm>
@@ -37,6 +41,8 @@ constexpr size_t kMaxChips = 1000;
 }
 
 struct WmbusLiveReceiver::Impl {
+    std::atomic<uint32_t> phyMask{0};    // setPhyMask(): 0 every mode
+    std::mutex mfrMu; std::string mfrFilter;   // setMfrFilter(): "" every manufacturer
     // ---- one chip demodulator: clock recovery, sync search and byte assembly for one mode of one channel
     struct Chip {
         Phy phy = Phy::S1;
@@ -55,6 +61,10 @@ struct WmbusLiveReceiver::Impl {
         unsigned symAcc = 0;
         int nib = -1;
         int manPrev = -1;
+        float manPrevSoft = 0;
+        float symSoft[6] = {};
+        int symN = 0, badSym = 0;        // symbols of this frame, and how many needed a soft decision (hard: not a code word)
+        std::vector<float> pendSoft;
         std::vector<uint8_t> bytes;
         size_t need = 0;
         Phy usedPhy = Phy::S1;
@@ -190,6 +200,11 @@ struct WmbusLiveReceiver::Impl {
         Frame f;
         const bool fb = ch.formatB;
         const bool ok = parseFrame(ch.bytes.data(), ch.bytes.size(), fb, f);
+        if (f.encrypted) {
+            voicekeys::CallKeyInfo ki; ki.protocol = voicekeys::Protocol::WMBus;
+            for (const auto& k : voicekeys::KeyStore::instance().candidates(ki))
+                if (k.key.size() == 16 && decryptFrame(f, k.key.data())) break;
+        }
         const Phy ph = ch.tc ? (fb ? Phy::C1B : (ch.coding == Coding::ThreeOfSix ? Phy::T1 : Phy::C1A)) : ch.phy;
         const int64_t now = wallSec();
         WmbusFrameLog lg;
@@ -204,7 +219,13 @@ struct WmbusLiveReceiver::Impl {
             okN++; c.frames++;
             lg.mfr = f.mfr; lg.id = f.id; lg.type = f.typeName; lg.encrypted = f.encrypted;
             std::string s;
-            if (f.encrypted) { s = "encrypted payload"; encN++; }
+            if (f.wize) {
+                char w[160];
+                snprintf(w, sizeof w, "Wize v%d net %d app %d msg %d, time stamp %d, %s", f.wizeVers, f.wizeNetwId, f.wizeApp, f.wizeCpt, f.wizeTStamp,
+                         f.wizeKeySel ? "L7 encrypted" : "L7 in clear");
+                s = w;
+                if (f.encrypted) encN++;
+            } else if (f.encrypted) { s = "encrypted payload"; encN++; }
             else {
                 for (size_t i = 0; i < f.records.size() && i < 4; i++) { if (i) s += "; "; s += f.records[i].quantity + " " + f.records[i].value; }
                 if (f.records.empty()) s = f.payload.empty() ? "no data" : (f.hasManufacturerData ? "manufacturer data" : f.ciName);
@@ -239,25 +260,49 @@ struct WmbusLiveReceiver::Impl {
         if (ch.bytes.size() >= ch.need && ch.need) finish(c, ch);
     }
 
-    void symbolChip(Chan& c, Chip& ch, int bit) {
+    // a coded symbol that was not a code word: decided by the soft values; a frame with too many of them is noise (a false sync)
+    bool softSymbol(Chan& c, Chip& ch) {
+        ch.badSym++;
+        if (ch.badSym * 4 > ch.symN + 8) { abortFrame(c, ch, true); return false; }
+        return true;
+    }
+
+    void symbolChip(Chan& c, Chip& ch, int bit, float soft) {
         switch (ch.coding) {
         case Coding::Nrz:
             ch.symAcc = (ch.symAcc << 1) | (unsigned)bit;
             if (++ch.chipIdx == 8) { const uint8_t b = (uint8_t)ch.symAcc; ch.chipIdx = 0; ch.symAcc = 0; addByte(c, ch, b); }
             break;
-        case Coding::Manchester:
-            if (ch.manPrev < 0) { ch.manPrev = bit; break; }
-            if (ch.manPrev == bit) { abortFrame(c, ch, true); return; }
-            ch.symAcc = (ch.symAcc << 1) | (unsigned)ch.manPrev;
+        case Coding::Manchester: {
+            if (ch.manPrev < 0) { ch.manPrev = bit; ch.manPrevSoft = soft; break; }
+            ch.symN++;
+            int b = ch.manPrev;
+            if (ch.manPrev == bit) {   // 00 or 11: the chip pair says which of 10 / 01 is nearer
+                if (!softSymbol(c, ch)) return;
+                b = ch.manPrevSoft - soft > 0 ? 1 : 0;
+            }
+            ch.symAcc = (ch.symAcc << 1) | (unsigned)b;
             ch.manPrev = -1;
-            if (++ch.chipIdx == 8) { const uint8_t b = (uint8_t)ch.symAcc; ch.chipIdx = 0; ch.symAcc = 0; addByte(c, ch, b); }
+            if (++ch.chipIdx == 8) { const uint8_t v = (uint8_t)ch.symAcc; ch.chipIdx = 0; ch.symAcc = 0; addByte(c, ch, v); }
             break;
+        }
         case Coding::ThreeOfSix:
+            ch.symSoft[ch.chipIdx] = soft;
             ch.symAcc = (ch.symAcc << 1) | (unsigned)bit;
             if (++ch.chipIdx == 6) {
-                const int n = decode36(ch.symAcc);
+                int n = decode36(ch.symAcc);
                 ch.chipIdx = 0; ch.symAcc = 0;
-                if (n < 0) { abortFrame(c, ch, true); return; }
+                ch.symN++;
+                if (n < 0) {   // the code word nearest to the soft chips (largest correlation)
+                        if (!softSymbol(c, ch)) return;
+                    float best = -1e30f;
+                    for (int k = 0; k < 16; k++) {
+                        const int w = encode36((unsigned)k);
+                        float m = 0;
+                        for (int i = 0; i < 6; i++) m += ((w >> (5 - i)) & 1) ? ch.symSoft[i] : -ch.symSoft[i];
+                        if (m > best) { best = m; n = k; }
+                    }
+                }
                 if (ch.nib < 0) ch.nib = n; else { const uint8_t b = (uint8_t)(ch.nib << 4 | n); ch.nib = -1; addByte(c, ch, b); }
             }
             break;
@@ -271,7 +316,11 @@ struct WmbusLiveReceiver::Impl {
             if (ch.seen < 48) return;
             const PhySpec& sp = phySpec(ch.tc ? Phy::T1 : ch.phy);
             const uint64_t w = ch.sh & 0xFFFF;
-            const int e = pop64(w ^ sp.sync), ei = pop64((~w & 0xFFFF) ^ sp.sync);
+            int e = pop64(w ^ sp.sync), ei = pop64((~w & 0xFFFF) ^ sp.sync);
+            bool nB = false;   // mode N format B (Wize): its own sync word
+            if (!ch.tc && (ch.phy == Phy::N1 || ch.phy == Phy::N24) && e > 1 && ei > 1) {
+                e = pop64(w ^ kSyncNFormatB); ei = pop64((~w & 0xFFFF) ^ kSyncNFormatB); nB = true;
+            }
             if (e > 1 && ei > 1) return;
             const bool inv = ei < e;
             uint64_t pre = (ch.sh >> 16) & 0xFFFFFFFFull;
@@ -284,16 +333,19 @@ struct WmbusLiveReceiver::Impl {
             syncN++;
             ch.formatB = false; ch.decided = !ch.tc; ch.coding = ch.tc ? Coding::Nrz : sp.coding;
             if (!ch.tc) ch.coding = sp.coding;
-            if (ch.phy == Phy::N1) ch.coding = Coding::Nrz;
-            ch.pend.clear(); ch.bytes.clear(); ch.need = 0; ch.chipIdx = 0; ch.symAcc = 0; ch.nib = -1; ch.manPrev = -1; ch.soft.clear();
+            if (ch.phy == Phy::N1 || ch.phy == Phy::N24) { ch.coding = Coding::Nrz; ch.formatB = nB; }
+            ch.pend.clear(); ch.pendSoft.clear(); ch.bytes.clear(); ch.need = 0; ch.chipIdx = 0; ch.symAcc = 0; ch.nib = -1; ch.manPrev = -1; ch.soft.clear();
+            ch.symN = 0; ch.badSym = 0;
             ch.rssi = toDb(c.pFast);
             ch.cfoHz = c.dc * c.def.fsOut / (2 * kPi);
             return;
         }
         if (ch.soft.size() < kMaxChips) ch.soft.push_back((float)(ch.invert ? -soft : soft));
         const int b = ch.invert ? !bit : bit;
+        const float sv = (float)(ch.invert ? -soft : soft);
         if (ch.tc && !ch.decided) {
             ch.pend.push_back((uint8_t)b);
+            ch.pendSoft.push_back(sv);
             if (ch.pend.size() < 8) return;
             unsigned v = 0;
             for (size_t i = 0; i < ch.pend.size(); i++) v = (v << 1) | ch.pend[i];
@@ -304,12 +356,13 @@ struct WmbusLiveReceiver::Impl {
             if (ch.pend.size() == 16 && ((v & 0xFF) == 0xCD || (v & 0xFF) == 0x3D)) { ch.coding = Coding::Nrz; ch.formatB = (v & 0xFF) == 0x3D; }
             else {
                 ch.coding = Coding::ThreeOfSix;
-                std::vector<uint8_t> pend = ch.pend;
-                for (uint8_t x : pend) { if (!ch.collecting) return; symbolChip(c, ch, x); }
+                const std::vector<uint8_t> pend = ch.pend;
+                const std::vector<float> ps = ch.pendSoft;
+                for (size_t i = 0; i < pend.size(); i++) { if (!ch.collecting) return; symbolChip(c, ch, pend[i], ps[i]); }
             }
             return;
         }
-        symbolChip(c, ch, b);
+        symbolChip(c, ch, b, sv);
     }
 
     // one working-rate sample of a channel
@@ -338,7 +391,8 @@ struct WmbusLiveReceiver::Impl {
                 ch.prevSlice = s;
             }
             ch.phase += 1.0 / ch.sps;
-            if (ch.phase >= 0.25 && ch.phase < 0.75) { ch.accSum += dn; ch.accN++; }
+            // the chip value: the discriminator averaged over 80 % of the chip (3.9: was the middle half; about 1 dB for T1 and C1)
+            if (ch.phase >= 0.1 && ch.phase < 0.9) { ch.accSum += dn; ch.accN++; }
             if (ch.phase >= 1.0) {
                 ch.phase -= 1.0;
                 const double avg = ch.accN ? ch.accSum / ch.accN : dn;
@@ -371,6 +425,17 @@ bool WmbusLiveReceiver::telemetry(WmbusTelemetry& out, uint64_t lastSeq) {
     std::lock_guard<std::mutex> lk(p_->mu);
     if (p_->pub.seq <= lastSeq) return false;
     out = p_->pub;
+    std::string mfr; { std::lock_guard<std::mutex> ml(p_->mfrMu); mfr = p_->mfrFilter; }
+    if (const uint32_t m = p_->phyMask.load(std::memory_order_relaxed); m || !mfr.empty()) {   // a view onto some modes or one manufacturer: their meters and frames only
+        std::vector<WmbusDevice> dk; std::vector<WmbusFrameLog> lk;
+        uint64_t ok = 0, enc = 0;
+        for (const auto& d : out.devices) if ((!m || ((m >> d.phy) & 1u)) && (mfr.empty() || d.mfr == mfr)) { dk.push_back(d); ok += d.count; }
+        for (const auto& l : out.log) if ((!m || ((m >> l.phy) & 1u)) && (mfr.empty() || l.mfr == mfr)) { lk.push_back(l); if (l.crcOk && l.encrypted) enc++; }
+        out.devices.swap(dk); out.log.swap(lk);
+        out.blocksOk = ok; out.encryptedFrames = enc;
+        out.dataValid = out.dataValid && !out.devices.empty();
+        if (out.state == 2 && out.devices.empty()) out.state = 1;
+    }
     return true;
 }
 
@@ -432,6 +497,9 @@ void WmbusLiveReceiver::feed(const cf32* x, size_t n) {
         }
     }
 }
+
+void WmbusLiveReceiver::setPhyMask(uint32_t m) { p_->phyMask.store(m, std::memory_order_relaxed); }
+void WmbusLiveReceiver::setMfrFilter(const std::string& code) { std::lock_guard<std::mutex> lk(p_->mfrMu); p_->mfrFilter = code; }
 
 ModeTuning wmbusTuning() {
     ModeTuning t;

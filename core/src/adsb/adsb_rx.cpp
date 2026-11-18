@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ADS-B receiver: the pulse demodulator (adsb_demod), the frame checks and the aircraft table (adsb_track), reports four times a second.
 // Everything runs in feed(); telemetry() and the setters only take the lock that protects the table.
 #include "dect2/session/mode_adapters.h"
+#include "dect2/wirecap/wire.h"
 #include "dect2/adsb/adsb_rx.h"
 #include "dect2/adsb/adsb_demod.h"
 #include <atomic>
@@ -21,6 +25,7 @@ struct AdsbReceiver::Impl {
     std::atomic<float> kPulse{3.0f}, kGap{2.0f};    // preamble thresholds: set from any thread, handed to the demodulator by feed()
     std::atomic<float> dSum{-1}, dMin{0}, dData{0}, dWorth{0};
     std::atomic<bool> coherent{true};
+    std::atomic<bool> overlap{true};    // overlapping-reply recovery (AdsbDemod step 6)
     std::atomic<int> effortSet{-1}, effortNow{2};   // setEffort; the effort in use
     double loadWall = 0, loadSig = 0;                // feed() time and signal time of the current half-second window (feed thread)   // setDetector (test knob); dSum < -0.5: the demodulator's defaults
     std::function<void(const std::string&)> log;
@@ -98,6 +103,7 @@ AdsbReceiver::AdsbReceiver() : p_(std::make_unique<Impl>()) {
             std::lock_guard<std::mutex> lk(p->mu);
             ok = p->tracker.accept(raw, f, last);
             if (ok) {
+                if (wire::on(wire::AdsB)) wire::Hub::get().publish(wire::AdsB, f.bytes, (size_t)f.bits / 8);
                 p->lastGood = f.timeSec;
                 cb = p->frameCb;
                 if (f.newAircraft && f.timeSec - p->lastNewLog >= 2.0) {
@@ -164,6 +170,7 @@ void AdsbReceiver::feed(const cf32* x, size_t n) {
     p.demod.setThresholds(p.kPulse, p.kGap);
     if (p.dSum > -0.5f) p.demod.setDetector(p.dSum, p.dMin, p.dData, p.dWorth);
     p.demod.setCoherent(p.coherent);
+    p.demod.setOverlap(p.overlap);
     // the CPU guard: the share of the signal's duration that feed() takes, over windows of half a second of signal
     const int es = p.effortSet;
     p.demod.setEffort(es >= 0 ? es : p.effortNow.load());
@@ -247,6 +254,7 @@ bool AdsbReceiver::loadResults(const std::string& blob) {
 
 void AdsbReceiver::setThresholds(float pulseOverNoise, float pulseOverGap) { p_->kPulse = pulseOverNoise; p_->kGap = pulseOverGap; }
 void AdsbReceiver::setCoherent(bool on) { p_->coherent = on; }
+void AdsbReceiver::setOverlap(bool on) { p_->overlap = on; }
 void AdsbReceiver::setEffort(int e) { p_->effortSet = e < -1 ? -1 : e > 2 ? 2 : e; }
 int AdsbReceiver::effort() const { const int s = p_->effortSet; return s >= 0 ? s : p_->effortNow.load(); }
 void AdsbReceiver::setDetector(float sum, float minPulse, float data, float worthDb) { p_->dMin = minPulse; p_->dData = data; p_->dWorth = worthDb; p_->dSum = sum; }

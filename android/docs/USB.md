@@ -7,11 +7,13 @@ input through `AudioRecord`. The UI screens (`android-ui-030`) draw it; this lay
 
 | Radio | USB id(s) | Driver on the phone | Needs in the build | Notes |
 | --- | --- | --- | --- | --- |
-| RTL-SDR (R820T/R820T2/R828D): generic sticks, RTL-SDR Blog V3, V4, V4L, NooElec NESDR | `0bda:2832`, `0bda:2838` + the DVB-T sticks of librtlsdr's list (Terratec, Compro, GTek, Twintech, Dexatek, Genius, HanfTek) | the core's Rust RTL2832U driver over usbfs ioctls (`rtl_fd_shim.h`, `rust/onair_usb`), no libusb | nothing extra (`DECT2_RUST_USB=ON` is set by `native/CMakeLists.txt`) | up to 2.4 Msps on phones (2.56 max); bias tee on the Blog sticks |
+| RTL-SDR (R820T/R820T2/R828D, E4000, FC0013): generic sticks, RTL-SDR Blog V3, V4, V4L, NooElec NESDR | `0bda:2832`, `0bda:2838` + the DVB-T sticks of librtlsdr's list (Terratec, Compro, GTek, Twintech, Dexatek, Genius, HanfTek) | the core's Rust RTL2832U driver over usbfs ioctls (`rtl_fd_shim.h`, `rust/onair_usb`), no libusb | nothing extra (`DECT2_RUST_USB=ON` is set by `native/CMakeLists.txt`) | up to 2.4 Msps on phones (2.56 max); bias tee on the Blog sticks |
 | HackRF One, HackRF Pro (and Jawbreaker, rad1o) | `1d50:6089`, `1d50:604b`, `1d50:cc15` | OnAir's own HackRF driver (`core/src/source/hackrf_usb.cpp`) on libusb, the descriptor wrapped with `libusb_wrap_sys_device` | `LIBUSB_SRC` (libusb ≥ 1.0.24 source) | the board id tells One from Pro once opened; one gain slider split over LNA/VGA/amp |
+| HydraSDR RFOne | `38af:0001` (firmware 1.0.2 and later; `1d50:60a1` before) | not on Android yet: the desktop driver (`source_hydrasdr.cpp`) would need the descriptor entry point `hydrasdr_open_fd` wired like the Airspy's |
 | Airspy R2 / Mini | `1d50:60a1` | libairspy (`airspy_open_fd`) loaded by `source_airspy.cpp` | `LIBUSB_SRC` + `AIRSPY_SRC` | a libairspy without `airspy_open_fd` is refused on Android |
 | Airspy HF+ (Dual, Discovery) | `03eb:800c` | libairspyhf (`airspyhf_open_fd`) loaded by `source_airspyhf.cpp` | `LIBUSB_SRC` + `AIRSPYHF_SRC` | same rule |
-| SDRplay (RSP1A, RSPdx, ...) | — | **not supported** | — | the SDRplay API is a closed binary service with no Android build; use SpyServer/rtl_tcp... on a computer, or SDRconnect's server |
+| SDRplay RSP1 (and clones), Mirics MSi2500 TV sticks | `1df7:2500`; `2040:d300`, `07ca:8591`, `04bb:0537`, `0511:0037` | OnAir's own MSi2500 + MSi001 driver (`core/src/source/mirics_usb.cpp`) on libusb, the descriptor wrapped like the HackRF's | `LIBUSB_SRC` | **untested on hardware** (#503); isochronous by default, bulk in its radio settings; 12-bit samples up to 8.064 Msps |
+| SDRplay (RSP1A, RSP1B, RSP2, RSPduo, RSPdx) | — | **not supported** | — | other chips behind the closed SDRplay API, which has no Android build; use SpyServer/rtl_tcp... on a computer, or SDRconnect's server |
 
 The table lives in three places that must agree: `res/xml/usb_device_filter.xml` (Android's "open with" filter),
 `usb/UsbCatalog.kt` (names, ranges, power) and `usbFdKindForId()` in `core/src/source/usb_fd.cpp`. `DeviceFilterTest` checks the first
@@ -78,6 +80,7 @@ is listed but refused: it needs SoapySDR, which the app does not have). The list
 (`rtltcp,host,port;kiwisdr,host,port,password`) plus the user's labels (`Settings.netRadios`, `netSelected`), so the format is the one
 the desktop and the Rust parser use. `AddNetworkRadioForm` is the data model of the "Add network radio" dialog (fields, `withType`
 keeps the default port in step, `validate` gives per-field plain-language errors; "host:port" pasted into the host field is split).
+The radio screen's "Add a network radio" dialog offers rtl_tcp, SpyServer and SDR++ server; an SDR++ server is stored in the UI list with source kind NETWORK and type key `sdrpp` (`ui/UiPrefs.kt`), and choosing it adds it to the core's list (`ReceiverViewModel.useNetworkRadio`). Default port 5259; the server takes one client at a time.
 `RadioRepository.addNetworkRadio / removeNetworkRadio / selectNetworkRadio / probe / describe`. The connect timeout is the core's
 8 s (`source_rtltcp.cpp` `kConnectMs`); `probe` uses the same.
 
@@ -110,12 +113,12 @@ LIBUSB_SRC=~/src/libusb AIRSPY_SRC=~/src/airspyone_host AIRSPYHF_SRC=~/src/airsp
 ```
 
 This puts `libusb1.0.so` (+ `libairspy.so`, `libairspyhf.so`) next to `libonair.so` in `jniLibs/arm64-v8a/`. Without `LIBUSB_SRC`
-the APK has the RTL-SDR only; the HackRF/Airspy entries then say "not available in this build" (`nativeUsbFeatures`). The build
+the APK has the RTL-SDR only; the HackRF/Airspy/RSP1 entries then say "not available in this build" (`nativeUsbFeatures`). The build
 machine's `libusb.h` (pkg-config; Homebrew's is 1.0.27) must be ≥ 1.0.24, or the HackRF descriptor path is compiled out.
 
 ## Known limits
 
-- No SDRplay (closed API). No bladeRF, LimeSDR, PlutoSDR (USB), RX888, FOBOS on USB yet (their libraries are not built for Android;
+- No SDRplay except the RSP1 (closed API; the RSP1 is driven by OnAir's own Mirics driver, untested on hardware). No bladeRF, LimeSDR, PlutoSDR (USB), RX888, FOBOS on USB yet (their libraries are not built for Android;
   a PlutoSDR works over the network as on the desktop when the core's network source covers it).
 - Airspy needs a libairspy / libairspyhf source that has `airspy_open_fd` / `airspyhf_open_fd` (check the checkout: older releases
   do not); the core refuses an Airspy library without it on Android rather than letting it scan the bus.

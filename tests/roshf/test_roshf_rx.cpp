@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ROS (HF) detector on the generator's signals (the publicly reported physical layer: one of 144 tones on a 15.625 Hz grid per symbol): 4, 8 and 16 baud,
 // then tuning errors of +-150 Hz, a drift, a symbol clock off by 300 ppm, lower sideband, noise at a few SNRs; and the signals that are not ROS (noise, a 2-tone
 // FSK, a single carrier) must not be reported. Text is never decoded.
@@ -10,6 +13,7 @@
 #include <vector>
 using namespace dect2;
 #include "../common/test_util.h"
+#include "../common/test_long.h"
 
 static const double kRate = 250000;
 
@@ -49,7 +53,10 @@ int main() {
         {"SNR 10 dB in 2.5 kHz", 0, 0, 0, 10, false}, {"SNR 3 dB in 2.5 kHz", 0, 0, 0, 3, false}, {"lower sideband", 0, 0, 0, 99, true},
         {"all: +100 Hz, 0.5 Hz/s, 200 ppm, 6 dB", 100, 0.5, 200, 6, false},
     };
+    // quick run: -150 Hz, 10 dB and the lone drift and clock cases are dropped (the "all" case carries tuning, drift, clock and noise at once);
+    // ONAIR_TEST_LONG=1 runs every case
     for (const Case& k : cs) {
+        if (!testLong() && (k.cfo == -150 || k.snr == 10 || (k.cfo == 0 && (k.drift != 0 || k.ppm != 0)))) continue;
         RoshfGenConfig c; c.baud = 16; c.cfoHz = k.cfo; c.driftHzPerSec = k.drift; c.clockPpm = k.ppm; c.snrDb = k.snr; c.lsb = k.lsb; c.seed = 3;
         const RoshfTelemetry t = run(c, 26, k.lsb ? HfDemodLsb : HfDemodUsb);
         printf("  %-40s state %d %s tones %.0f - %.0f\n", k.name, t.state, t.subId.c_str(), t.loHz, t.hiHz);

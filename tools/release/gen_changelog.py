@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 """Regenerate docs/CHANGELOG-3.0.md, the README mode table/count and docs/I18N-NEW-STRINGS-3.0.md.
 
   python3 tools/release/gen_changelog.py [--base pub/integ-30] [--since v0.2.9] [--issues-json FILE] [--check]
@@ -11,6 +14,8 @@ Source text: tools/release/changelog-3.0.src.md (read its header for the rules).
  - Run from the repository root. Nothing is posted anywhere.
 """
 import argparse, json, os, re, subprocess, sys, datetime
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import mode_families  # noqa: E402
 
 def git(*a):
     return subprocess.run(['git', *a], capture_output=True, text=True).stdout
@@ -29,8 +34,8 @@ def parse_modes(text):
     i = text.index('kBuiltinModes[] = {')
     body = text[i:text.index('\n};', i)]
     rows = []
-    for m in re.finditer(r'^\s*\{(\d+),\s*"((?:[^"\\]|\\.)*)",\s*(\d+),', body, re.M):
-        rows.append((int(m.group(1)), m.group(2), int(m.group(3))))
+    for m in re.finditer(r'^\s*\{\s*(' + mode_families.TOKEN + r')\s*,\s*"((?:[^"\\]|\\.)*)",\s*(\d+),', body, re.M):
+        rows.append((mode_families.family(m.group(1)), m.group(2), int(m.group(3))))
     return rows, groups
 
 def mode_info(ref):
@@ -187,7 +192,7 @@ def main():
         c.append('- **@%s** (%s): %d commit%s since %s.' % (h, n, k, '' if k == 1 else 's', a.since))
     if prs:
         c.append('- Pull requests merged since %s: %s.' % (a.since, '; '.join(sorted({re.sub(r"^Merge pull request ", "", p) for p in prs}))))
-    c.append('- Earlier credits stay in the README: **@ffishman** (mesh clock fix, PR #217, and an offered PR for one engine-wide clock, issue #218), **@frank-1225** (Chinese railway decoders, PR #231), **Arclamp** (DVB-S / DecSAT code, GPL-3.0-or-later; DecSAT-derived work in a commit carries a Co-Authored-By line).')
+    c.append('- Earlier credits stay in the README: **@ffishman** (mesh clock fix, PR #217, and an offered PR for one engine-wide clock, issue #218) and **@frank-1225** (Chinese railway decoders, PR #231).')
     c.append('- Everyone who sent an issue, a recording or a Discord message: the reporter of each fixed issue is named in the table above. Third-party code and credits are in THIRD_PARTY.md and in Help > About.')
     c.append('- Work in this release was written with Claude (Anthropic) as co-author; the commits say so.')
     text = text.replace('{{CONTRIBUTORS}}', '\n'.join(c))
@@ -215,7 +220,7 @@ def main():
     if not a.no_readme and os.path.exists(a.readme):
         r = open(a.readme).read()
         grp = readme_rows(rows_new, groups)
-        trows = ['| Family | Modes | What you get |', '|---|:---:|---|']
+        trows = ['| Family | Modes | Examples |', '|---|:---:|---|']
         # the descriptions stay hand-written in the README; only counts are generated
         desc = dict(re.findall(r'^\| \*\*(.+?)\*\* \| \d+ \| (.*) \|$', r, re.M))
         for name, gn in README_GROUPS:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GNSS receiver: acquisition, tracking, navigation messages and position fix for the satellite navigation systems.
 // Written to the engine's contract: configure() once the sample rate is known, feed() from the analysis thread (never blocks),
 // telemetry() and the setters from the interface thread (they must be safe while feed() runs).
@@ -75,6 +78,7 @@ ModeTuning gnssTuning();
 // The tunes the GNSS screen offers: L1 / E1 (GPS, Galileo, QZSS, SBAS), BeiDou B1I and GLONASS L1 (its fourteen channels, 1598.06 .. 1605.38 MHz),
 // each on its own carrier, and All systems: one tune at 1582 MHz that spans 1559 .. 1606 MHz at 50 Msps. A tune is recognised by its centre within
 // 1 kHz; any other frequency is a custom one.
+
 enum GnssTune { GnssTuneCustom = -1, GnssTuneL1 = 0, GnssTuneB1I = 1, GnssTuneGlo = 2, GnssTuneAll = 3 };
 constexpr double kGnssTuneMhz[4] = {1575.42, 1561.098, 1602.0, 1582.0};
 constexpr double kGnssAllRate = 50e6;          // the All systems tune: B1I's lower lobe to GLONASS k = +6's upper one around 1582 MHz

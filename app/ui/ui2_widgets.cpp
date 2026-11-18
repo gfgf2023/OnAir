@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The new interface: small widgets used by every layout (bordered panes, flat buttons and links, the big frequency
 // digits, the run button, section headings, meters, splitters, tiles and the faceplate modules).
 // Split from ui2.cpp; the shared declarations are in ui2_internal.h.
 #include <functional>
 #include "panel_layout.h"
+#include "freq_digits.h"
 #include "ui2_internal.h"
 #include "setpos_guard.h"
 #include "../state/listen_freq.h"
@@ -44,7 +48,11 @@ void endPane() {
     const PaneH p = gPanes.back();
     gPanes.pop_back();
     // the height of what was drawn: down to the last line, and the padding below it
-    const float need = p.autoH ? ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + ImGui::GetStyle().WindowPadding.y : 0.f;
+    // A row that ends with SameLine (flowNext() with nothing after it: VDL4's "synthetic" with no options) leaves the cursor at the top of
+    // that row, so the bottom of the drawn items counts too: else the pane shrank to its padding and the row was cut off.
+    const ImGuiWindow* w = ImGui::GetCurrentWindow();
+    const float bottom = std::max(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y, w->DC.CursorMaxPos.y - w->Pos.y + w->Scroll.y);
+    const float need = p.autoH ? bottom + ImGui::GetStyle().WindowPadding.y : 0.f;
     ui::closeCursorMove();   // a mode body that ends with SetCursorPos and no item: grow the pane instead of the Debug-build assert (#104)
     ImGui::EndChild();
     if (p.autoH) {
@@ -94,11 +102,14 @@ bool gFreqHovered = false;   // last frame: the mouse was over the digits (the 1
 
 float freqDigitsImpl(App& a, double& mhzRef, double lo, double hi, const std::function<void(double)>& tune, float fontSize) {
     static int kbIdx = -1;               // the digit the keyboard works on after typing or left/right (-1: the one under the mouse)
+    static ImGuiID kbOwner = 0;          // which readout kbIdx belongs to: several readouts (main, TX panel) share these statics, and each one used to act on the same key press (#547: two digits per key)
+    static int keyFrame = -1;            // the frame whose arrow/number keys a readout already took
+    const ImGuiID myId = ImGui::GetID("##freqdigits");
     static ImVec2 kbMouse;               // where the mouse was then: moving it gives the digit back to the mouse
     static double preClickMhz = 0;       // the frequency before the first click of a double click, which the double click undoes
     static char typed[32] = "";
     long long hz = (long long)std::llround(mhzRef * 1e6);
-    constexpr int kD = 13;   // thirteen digits: up to 1000 GHz (10^12 Hz)
+    constexpr int kD = fdigits::kDigits;   // thirteen digits: up to 1000 GHz (10^12 Hz); the arithmetic is ui/freq_digits.h
     char buf[24];
     snprintf(buf, sizeof buf, "%013lld", hz);
     ImGui::PushFont(typo::fonts().monoBold ? typo::fonts().monoBold : a.mono, fontSize);
@@ -113,7 +124,7 @@ float freqDigitsImpl(App& a, double& mhzRef, double lo, double hi, const std::fu
     float digitX[kD];
     for (int i = 0; i < kD; i++) {
         digitX[i] = x;
-        const long long place = (long long)std::llround(std::pow(10.0, kD - 1 - i));
+        const long long place = fdigits::placeOf(i);
         ImGui::SetCursorScreenPos(ImVec2(x, o.y));
         ImGui::PushID(i);
         ImGui::InvisibleButton("##d", ImVec2(cw, ch));
@@ -127,9 +138,8 @@ float freqDigitsImpl(App& a, double& mhzRef, double lo, double hi, const std::fu
         if (hov && ImGui::GetIO().MouseWheel != 0) {
             // a mouse wheel notch is 1.0 (one step of this digit); a trackpad sends many small values, which add up to a step each time they reach 1
             static float wheelAcc = 0;
-            wheelAcc += ImGui::GetIO().MouseWheel;
-            const int steps = (int)wheelAcc;
-            if (steps != 0) { delta = (long long)steps * place; wheelAcc -= (float)steps; }
+            const int steps = fdigits::wheelSteps(wheelAcc, ImGui::GetIO().MouseWheel);
+            if (steps != 0) delta = (long long)steps * place;
             ImGui::GetIO().MouseWheel = 0;
         }
         if (hov) {
@@ -150,22 +160,26 @@ float freqDigitsImpl(App& a, double& mhzRef, double lo, double hi, const std::fu
     ImGui::TextDisabled("%s", tr("Hz"));
     const float endX = ImGui::GetItemRectMax().x;
     ImGuiIO& io = ImGui::GetIO();
-    gFreqHovered = hovIdx >= 0 || (kbIdx >= 0 && io.MousePos.x == kbMouse.x && io.MousePos.y == kbMouse.y);
-    if (kbIdx >= 0 && (io.MousePos.x != kbMouse.x || io.MousePos.y != kbMouse.y)) kbIdx = -1;
-    const int cur = kbIdx >= 0 ? kbIdx : hovIdx;
-    if (cur >= 0 && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper) {
-        const long long place = (long long)std::llround(std::pow(10.0, kD - 1 - cur));
+    if (kbOwner != myId && kbIdx >= 0 && hovIdx >= 0) kbIdx = -1;   // the mouse moved to another readout
+    const bool mineKb = kbIdx >= 0 && kbOwner == myId;
+    gFreqHovered = hovIdx >= 0 || (mineKb && io.MousePos.x == kbMouse.x && io.MousePos.y == kbMouse.y);
+    if (mineKb && (io.MousePos.x != kbMouse.x || io.MousePos.y != kbMouse.y)) kbIdx = -1;
+    const int cur = (kbIdx >= 0 && kbOwner == myId) ? kbIdx : hovIdx;
+    const int frame = ImGui::GetFrameCount();
+    if (cur >= 0 && keyFrame != frame && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper) {
+        keyFrame = frame;
+        kbOwner = myId;
+        const long long place = fdigits::placeOf(cur);
         for (int k = 0; k < 10; k++)
             if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_0 + k), false) || ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_Keypad0 + k), false)) {
-                const int old = (int)((hz / place) % 10);
-                delta = (long long)(k - old) * place;
+                delta = fdigits::typeDelta(hz, cur, k);
                 kbIdx = std::min(kD - 1, cur + 1); kbMouse = io.MousePos;
             }
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) delta = place;
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) delta = -place;
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) { kbIdx = std::max(0, cur - 1); kbMouse = io.MousePos; }
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) { kbIdx = std::min(kD - 1, cur + 1); kbMouse = io.MousePos; }
-        if (kbIdx >= 0 && kbIdx != hovIdx) {   // show where the keyboard is when it is not under the mouse
+        if (kbIdx >= 0 && kbOwner == myId && kbIdx != hovIdx) {   // show where the keyboard is when it is not under the mouse
             const float kx = digitX[kbIdx];
             dl->AddRect(ImVec2(kx, o.y), ImVec2(kx + cw, o.y + ch), u32(T.dim), 2.f);
         }
@@ -191,7 +205,7 @@ float freqDigitsImpl(App& a, double& mhzRef, double lo, double hi, const std::fu
         ImGui::EndPopup();
     }
     if (delta) {
-        const double mhz = std::min(hi, std::max(lo, (double)(hz + delta) / 1e6));
+        const double mhz = fdigits::applyMhz(hz, delta, lo, hi);
         if (std::fabs(mhz - mhzRef) > 1e-9) tune(mhz);
     }
     return endX;

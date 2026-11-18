@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/common/diag.h"
+#include "dect2/common/stage_prof.h"
 #include "dect2/atsc3/atsc3_bootstrap.h"
 #include "dect2/dsp/fftutil.h"
 #include <algorithm>
@@ -173,6 +178,14 @@ Detection detectBootstrap(const cf32* x, size_t n, int seedOnly) {
     long bestPos = -1; int bestSeed = 0; double bestM = 0;
     size_t lastStart = n - (size_t)4 * L;   // keep room for four symbols
     std::vector<cf32> blk(F), prod(F);
+#if defined(__x86_64__) || defined(_M_X64)
+    // x86: the products written out (the complex operator's NaN check keeps that loop scalar) and the metric compared squared (std::abs of a
+    // complex is a hypotf() call in libm there): the same products, the same order of the metric
+    constexpr bool kX86 = true;
+#else
+    constexpr bool kX86 = false;
+#endif
+    double bestM2 = 0;
     for (size_t p0 = 0; p0 <= lastStart; p0 += F - L) {
         size_t m = std::min<size_t>(F, n - p0);
         std::fill(blk.begin(), blk.end(), cf32(0, 0));
@@ -180,16 +193,33 @@ Detection detectBootstrap(const cf32* x, size_t n, int seedOnly) {
         big.forward(blk.data());
         for (int s = s0; s < s1; s++) {
             const cf32* tf = tpl[(size_t)s]->tf.data();
-            for (int i = 0; i < F; i++) prod[i] = blk[i] * tf[i];
+            if (kX86) {
+                const float* a = reinterpret_cast<const float*>(blk.data());
+                const float* b = reinterpret_cast<const float*>(tf);
+                float* o = reinterpret_cast<float*>(prod.data());
+                for (int i = 0; i < F; i++) {
+                    const float ar = a[2 * i], ai = a[2 * i + 1], br = b[2 * i], bi = b[2 * i + 1];
+                    o[2 * i] = ar * br - ai * bi; o[2 * i + 1] = ar * bi + ai * br;
+                }
+            } else
+                for (int i = 0; i < F; i++) prod[i] = blk[i] * tf[i];
             big.inverse(prod.data());   // sum over e^{+j}: with the forward transforms above this is F times the cross-correlation
+            const double ff = (double)F * F;
             for (int i = 0; i + L <= (int)m && i < F - L + 1 && p0 + i <= lastStart; i++) {
                 double ew = csum[p0 + i + L] - csum[p0 + i];
                 if (ew <= 0) continue;
+                if (kX86) {
+                    const double pr = prod[i].real(), pi = prod[i].imag();
+                    const double m2 = (pr * pr + pi * pi) / ff / (Et * ew);
+                    if (m2 > bestM2) { bestM2 = m2; bestPos = (long)(p0 + i); bestSeed = s; }
+                    continue;
+                }
                 double met = std::abs(prod[i]) / F / std::sqrt(Et * ew);
                 if (met > bestM) { bestM = met; bestPos = (long)(p0 + i); bestSeed = s; }
             }
         }
     }
+    if (kX86) bestM = std::sqrt(bestM2);
     d.metric = (float)bestM;
     if (bestM < 0.2 || bestPos < 0) return d;
     d.found = true;
@@ -225,7 +255,10 @@ Detection detectBootstrap(const cf32* x, size_t n, int seedOnly) {
         prevShift = pk;
         prevPeak = peak;
     }
-    if (!ok || nsym < 4) return d;
+    if (!ok || nsym < 4) {
+        DIAG_DEBUG_EVERY(129921, 5.0, "An ATSC 3.0 bootstrap candidate was found but %s, so it is rejected and the search goes on.", !ok ? "the capture ends before its symbols do" : "it has fewer than 4 symbols");
+        return d;
+    }
     d.info.numSymbols = nsym;
     d.valid = true;
     int fields[4][8] = {};
@@ -245,6 +278,7 @@ Detection detectBootstrap(const cf32* x, size_t n, int seedOnly) {
     d.info.bsrCoefficient = bitsToInt(&fields[2][1], 7);
     d.info.preambleStructure = bitsToInt(fields[3], 8);
     if (d.info.bsrCoefficient > 80) d.valid = false;
+    if (!d.valid) DIAG_DEBUG_EVERY(763177, 5.0, "An ATSC 3.0 bootstrap candidate has signalling fields that are out of range (sample rate coefficient %d, at most 80), so it is rejected and the search goes on.", d.info.bsrCoefficient);
     return d;
 }
 

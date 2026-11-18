@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital receiver telemetry, shared by the receiver and the UI: the receiver's own members, then each decoder's telemetry by value
 // (defined in hfdig_rtty.h, hfdig_sstv.h and hfdig_freedv.h).
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
@@ -37,6 +40,9 @@ struct HfdigTelemetry {
     HfdigFtxTelemetry ftx;
     HfdigHamdrmTelemetry hamdrm;
     HfdigKbdTelemetry kbd;
+    std::string rsidMode;        // the last RSID heard (fldigi's mode identifier)
+    double rsidAudioHz = 0;
+    float rsidAgeSec = 0;
     MbStatus multiBand;                     // multi-band monitor (hfdig_multiband.h): what is covered, dropped, the load
     bool multiBandOn = false;
 };

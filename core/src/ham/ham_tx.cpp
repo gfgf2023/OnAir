@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HamSlotTx: one ham burst through a radio. Order on every path: gate (hamTxAllowed: Arm and a number; the rest are warnings), the radio's prepare()
 // (it tunes to the frequency), audio start, PTT on, audio, drain, PTT off. No burst length or duty-cycle limit and no output-stall stop: the operator
 // decides (long bursts and duty cycles are only a warning in the audit log). A radio error stops the burst and releases PTT; every attempt goes to
@@ -11,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <thread>
+#include "dect2/common/diag.h"
 
 namespace dect2::ham {
 
@@ -75,7 +79,7 @@ bool HamSlotTx::send(const HamTxCheck& gateIn, int mode, const std::string& msg,
     auto refuse = [&](const std::string& why) { err = why; au.result = "refused"; au.reason = why; txAuditAdd(au); return false; };
     std::string why;
     if (!hamTxAllowed(gate, why)) return refuse(why);
-    if (!(mode >= 0 && mode <= 5) && mode != 10) return refuse("not a mode the ham transmitter sends");
+    if (!(mode >= 0 && mode <= 8) && mode != 10) return refuse("not a mode the ham transmitter sends");   // 6 Q65, 7 FST4, 8 MSK144 (4.0)
     const int rate = 48000;
     std::vector<float> a((size_t)(slotPeriod(mode) * rate) + rate, 0.f);
     const double amp = level < 0.05 ? 0.05 : level > 0.9 ? 0.9 : level;
@@ -166,7 +170,7 @@ bool HamSlotTx::play(const std::vector<float>& a, size_t n, int rate, std::strin
     bool ok = true;
     while (pos < n && !abort_) {
         const int w = io_.write(a.data() + pos, (int)std::min<size_t>(n - pos, 4800));
-        if (w < 0) { ok = false; err = io_.lastError(); if (err.empty()) err = "the audio output failed"; break; }
+        if (w < 0) { DIAG(359151, "Writing audio to the ham transmit output failed, so the transmission stops."); ok = false; err = io_.lastError(); if (err.empty()) err = "the audio output failed"; break; }
         if (w > 0) { pos += (size_t)w; continue; }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }

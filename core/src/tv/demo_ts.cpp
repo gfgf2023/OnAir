@@ -1,6 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/common/thread_name.h"
 #include "dect2/tv/demo_ts.h"
 #include "dect2/audio/videoin.h"
+#include "dect2/common/diag.h"
+#include "dect2/source/synth_media.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -99,10 +104,10 @@ void drawCard(AVFrame* f, int n, int svc, int picture, const char* name) {
 bool loadFileFrame(const std::string& path, AVFrame* vf, int n) {
     if (path.empty()) return false;
     AVFormatContext* ic = nullptr;
-    if (avformat_open_input(&ic, path.c_str(), nullptr, nullptr) < 0) return false;
-    if (avformat_find_stream_info(ic, nullptr) < 0) { avformat_close_input(&ic); return false; }
+    if (avformat_open_input(&ic, path.c_str(), nullptr, nullptr) < 0) { DIAG_DEBUG(729891, "FFmpeg could not open the demo video file %s, so the demo picture is used instead.", path.c_str()); return false; }
+    if (avformat_find_stream_info(ic, nullptr) < 0) { DIAG_DEBUG(611539, "FFmpeg could not read the streams of the demo video file %s, so the demo picture is used instead.", path.c_str()); avformat_close_input(&ic); return false; }
     const int si = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (si < 0) { avformat_close_input(&ic); return false; }
+    if (si < 0) { DIAG_DEBUG(714846, "The demo video file %s has no video stream, so the demo picture is used instead.", path.c_str()); avformat_close_input(&ic); return false; }
     AVStream* st = ic->streams[si];
     const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
     AVCodecContext* ctx = codec ? avcodec_alloc_context3(codec) : nullptr;
@@ -159,18 +164,32 @@ void fillBeep(AVCodecContext* ax, AVFrame* af, int64_t aPts, int svc) {
     }
 }
 
-bool encode(Clip& clip, const DemoTsIdentity& id) {
+// the user's own sound (Synthetic content) instead of the beep: the looped PCM at 48 kHz stereo
+void fillPcm(AVCodecContext* ax, AVFrame* af, SynthMediaAudio& pcm) {
+    std::vector<float> st((size_t)af->nb_samples * 2);
+    pcm.read(st.data(), af->nb_samples);
+    for (int i = 0; i < af->nb_samples; i++) {
+        const float l = std::max(-1.f, std::min(1.f, st[2 * i])), r = std::max(-1.f, std::min(1.f, st[2 * i + 1]));
+        if (ax->sample_fmt == AV_SAMPLE_FMT_S16) { int16_t* d = (int16_t*)af->data[0]; d[2 * i] = (int16_t)(l * 32767); d[2 * i + 1] = (int16_t)(r * 32767); }
+        else if (ax->sample_fmt == AV_SAMPLE_FMT_S16P) { ((int16_t*)af->data[0])[i] = (int16_t)(l * 32767); ((int16_t*)af->data[1])[i] = (int16_t)(r * 32767); }
+        else if (ax->sample_fmt == AV_SAMPLE_FMT_FLTP) { ((float*)af->data[0])[i] = l; ((float*)af->data[1])[i] = r; }
+        else { float* d = (float*)af->data[0]; d[2 * i] = l; d[2 * i + 1] = r; }
+    }
+}
+
+bool encode(Clip& clip, const DemoTsIdentity& id, const SynthMedia* media = nullptr) {
     const auto progs = programmesOf(id);
     const int nsvc = (int)progs.size();
     AVFormatContext* oc = nullptr;
-    if (avformat_alloc_output_context2(&oc, nullptr, "mpegts", nullptr) < 0 || !oc) return false;
-    if (avio_open_dyn_buf(&oc->pb) < 0) { avformat_free_context(oc); return false; }
+    if (avformat_alloc_output_context2(&oc, nullptr, "mpegts", nullptr) < 0 || !oc) { DIAG_ERROR(785331, "This FFmpeg build cannot write MPEG transport streams, so the demo transport stream is not made."); return false; }
+    if (avio_open_dyn_buf(&oc->pb) < 0) { DIAG_ERROR(874202, "FFmpeg could not allocate the memory buffer for the demo transport stream, so it is not made."); avformat_free_context(oc); return false; }
     const AVCodec* vc = avcodec_find_encoder(AV_CODEC_ID_MPEG2VIDEO);
-    if (!vc) { uint8_t* b; avio_close_dyn_buf(oc->pb, &b); av_free(b); avformat_free_context(oc); return false; }
+    if (!vc) { DIAG_ERROR(847513, "This FFmpeg build has no MPEG-2 video encoder, so the demo transport stream is not made."); uint8_t* b; avio_close_dyn_buf(oc->pb, &b); av_free(b); avformat_free_context(oc); return false; }
 
     struct ProgEnc { AVCodecContext *vx = nullptr, *ax = nullptr; AVStream *vs = nullptr, *as = nullptr; AVFrame *vf = nullptr, *af = nullptr; int64_t aPts = 0; };
     std::vector<ProgEnc> pe((size_t)nsvc);
     bool ok = true;
+    double outSeconds = kSeconds;
     const std::string prov = id.provider.empty() ? "OnAir" : id.provider;
     av_dict_set(&oc->metadata, "service_provider", prov.c_str(), 0);
     av_dict_set(&oc->metadata, "service_name", progs[0].name.c_str(), 0);
@@ -215,21 +234,45 @@ bool encode(Clip& clip, const DemoTsIdentity& id) {
         auto drain = [&](AVCodecContext* cx, AVStream* st) {
             while (avcodec_receive_packet(cx, pk) >= 0) { av_packet_rescale_ts(pk, cx->time_base, st->time_base); pk->stream_index = st->index; av_interleaved_write_frame(oc, pk); }
         };
-        const int frames = kFps * kSeconds;
+        // Synthetic content: the user's picture / video and sound replace the test card and the beep (one pass of the file, looped by the mux)
+        std::unique_ptr<SynthMediaVideo> mv;
+        std::unique_ptr<SynthMediaAudio> ma;
+        double clipSeconds = kSeconds;
+        if (media && media->active()) {
+            std::string err;
+            if (media->kind && !media->path.empty()) {
+                mv = std::make_unique<SynthMediaVideo>();
+                if (!mv->open(media->path, err)) { synthMediaSetStatus("Could not use the picture: " + err + ". The built-in test card is used."); DIAG(333549, "The synthetic content picture could not be loaded (%s), so the built-in test card is used.", err.c_str()); mv.reset(); }
+            }
+            if (!media->audio.empty() || media->kind == 2) {
+                ma = std::make_unique<SynthMediaAudio>();
+                if (!ma->load(*media, kSeconds, err)) { if (!media->audio.empty()) { synthMediaSetStatus("Could not use the sound: " + err + ". The built-in beep is used."); DIAG(936766, "The synthetic content sound could not be loaded (%s), so the built-in beep is used.", err.c_str()); } ma.reset(); }
+            }
+            if (mv && !mv->isStill() && mv->duration() > 0) clipSeconds = std::min<double>(kSeconds, std::max(1.0, mv->duration()));
+            else if (mv && ma) clipSeconds = std::min<double>(kSeconds, std::max(1.0, ma->seconds()));
+            else if (mv) clipSeconds = 4;
+            if (mv || ma) synthMediaSetStatus(std::string("Carrying ") + (mv ? "your picture" : "the built-in test card") + (ma ? " and your sound" : " and the built-in beep") + ".");
+        }
+        const int frames = (int)std::lround(kFps * clipSeconds);
+        outSeconds = (double)frames / kFps;
         std::vector<char> still((size_t)nsvc, 0);
         for (int s = 0; s < nsvc; s++) {
             if (progs[s].file.empty()) continue;
             av_frame_make_writable(pe[s].vf);
             still[s] = loadFileFrame(progs[s].file, pe[s].vf, 0) ? 1 : 0;
         }
+        const bool useVideo = mv != nullptr;
         for (int n = 0; n < frames; n++) {
             for (int s = 0; s < nsvc; s++) {
                 av_frame_make_writable(pe[s].vf);
-                if (!still[s]) drawCard(pe[s].vf, n, s, progs[s].picture, progs[s].name.c_str());
+                bool drawn = false;
+                if (useVideo) drawn = mv->yuv420((double)n / kFps, kW, kH, pe[s].vf->data[0], pe[s].vf->linesize[0], pe[s].vf->data[1], pe[s].vf->linesize[1], pe[s].vf->data[2], pe[s].vf->linesize[2]);
+                if (!drawn && !still[s]) drawCard(pe[s].vf, n, s, progs[s].picture, progs[s].name.c_str());
                 pe[s].vf->pts = n;
                 avcodec_send_frame(pe[s].vx, pe[s].vf); drain(pe[s].vx, pe[s].vs);
                 while ((double)pe[s].aPts / kRate < (double)(n + 1) / kFps) {
                     av_frame_make_writable(pe[s].af);
+                    if (ma) fillPcm(pe[s].ax, pe[s].af, *ma); else
                     fillBeep(pe[s].ax, pe[s].af, pe[s].aPts, s);
                     pe[s].af->pts = pe[s].aPts; pe[s].aPts += pe[s].af->nb_samples;
                     avcodec_send_frame(pe[s].ax, pe[s].af); drain(pe[s].ax, pe[s].as);
@@ -246,7 +289,7 @@ bool encode(Clip& clip, const DemoTsIdentity& id) {
     uint8_t* buf = nullptr;
     const int sz = avio_close_dyn_buf(oc->pb, &buf);
     oc->pb = nullptr;
-    if (ok && sz > 188 * 100) { clip.ts.assign(buf, buf + sz / 188 * 188); clip.seconds = kSeconds; }
+    if (ok && sz > 188 * 100) { clip.ts.assign(buf, buf + sz / 188 * 188); clip.seconds = outSeconds; }
     else ok = false;
     av_free(buf);
     for (auto& p : pe) {
@@ -257,8 +300,8 @@ bool encode(Clip& clip, const DemoTsIdentity& id) {
     return ok;
 }
 
-std::string clipKey(const DemoTsIdentity& id) {
-    std::string k = id.provider + "|" + id.network + "|" + std::to_string(id.serviceId);
+std::string clipKey(const DemoTsIdentity& id, const SynthMedia* media) {
+    std::string k = (media && media->active() ? "media:" + media->key() + "|" : std::string()) + id.provider + "|" + id.network + "|" + std::to_string(id.serviceId);
     const auto p = programmesOf(id);
     for (const auto& s : p) k += "|" + s.name + ":" + std::to_string(s.picture) + ":" + s.file + ":" + s.camera + (s.liveCamera ? ":cam" : "");
     return k;
@@ -268,8 +311,18 @@ const Clip& clip(const DemoTsIdentity& id) {
     static std::mutex mu;
     static std::map<std::string, Clip> clips;
     std::lock_guard<std::mutex> lk(mu);
-    Clip& c = clips[clipKey(id)];
-    if (c.ts.empty()) encode(c, id);
+    const SynthMedia* media = SynthMediaScope::current();
+    Clip& c = clips[clipKey(id, media)];
+    if (c.ts.empty()) {
+        if (media && media->active()) {
+            if (!encode(c, id, media)) {   // FFmpeg could not make it: the built-in programme carries on, and the user is told
+                synthMediaSetStatus("Your file could not be encoded to MPEG-2 here, so the built-in test card and beep are used.");
+                DIAG(178592, "The synthetic content could not be encoded to a transport stream, so the built-in test card and beep are used.");
+                c.ts.clear();
+                encode(c, id);
+            }
+        } else encode(c, id);
+    }
     return c;
 }
 
@@ -358,6 +411,7 @@ struct LiveMux {
                 for (size_t s = 0; s < progs.size(); s++) {
                     av_frame_make_writable(pe[s].vf);
                     bool got = false;
+                    if (s < cams.size() && cams[s]) cams[s]->setClock((double)n / kFps);   // a file programme plays at its own speed
                     if (s < cams.size() && cams[s])
                         got = cams[s]->copyYuv420(kW, kH, pe[s].vf->data[0], pe[s].vf->data[1], pe[s].vf->data[2],
                                                  pe[s].vf->linesize[0], pe[s].vf->linesize[1], pe[s].vf->linesize[2]);

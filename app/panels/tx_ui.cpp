@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The transmitter: the RX / TX switch at the top left of the interface and the Transmit panel that fills the main area in TX view. What can be sent is the
 // table in core/include/dect2/tx/tx.h; the session, the radios' sinks and the rules are in core/src/tx/tx.cpp and the radios' sources.
 //
@@ -9,7 +12,9 @@
 // view itself opens as RX), and stops when it is stopped, the radio fails or the program ends. Nothing is limited here: frequency and gain go to the
 // driver as typed, and the driver's own refusal is shown as it came.
 #include "../app.h"
+#include "dect2/common/diag.h"
 #include "dect2/hfdig/hfdig_sstv.h"
+#include "dect2/tv/videogen.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +24,8 @@
 using namespace dect2;
 
 #include "tx_state.h"
+#include "dect2/source/rig_control.h"
+#include <ctime>
 #include "dect2/hfdig/hfdig_sstv.h"
 #include <algorithm>
 #include <cmath>
@@ -76,7 +83,14 @@ void ensureTxMode(App& a, TxUi& s) {
     const SubMode* t = subModes(n);
     if (a.sub >= 1 && a.sub <= n) snprintf(s.subId, sizeof s.subId, "%s", t[a.sub - 1].id);
     const TxModeSpec* m = txModeForList(s.family, s.subId[0] ? s.subId : nullptr, s.dvbVariant);
-    if (m) { s.modeId = m->id; s.synth = (rxMode(a) == m) ? a.tune.synth : SynthConfig(); s.freqMhz = a.freqMhz; }
+    if (m) { s.modeId = m->id; s.synth = (rxMode(a) == m) ? txSynthFromRx(*m, a.tune.synth) : SynthConfig(); s.freqMhz = a.freqMhz; }
+}
+
+// The generator settings a transmitter takes from the receiver's test signal: all of them for a test-scene generator (its table has scene.options),
+// none for a mode whose settings are rows of its table (the receiver's fading, mistuning or noise must never be sent; the table sets the rest)
+SynthConfig txSynthFromRx(const TxModeSpec& m, const SynthConfig& rx) {
+    TxParamCtx c;
+    return txParamFind(txParams(m, c), "scene.options") ? rx : SynthConfig();
 }
 
 // the mode chosen for transmitting: its options and frequency start from the receiver's when it is the receiver's own mode
@@ -85,11 +99,12 @@ void chooseMode(App& a, TxUi& s, const TxModeSpec& m) {
     s.modeId = m.id;
     s.bwIdx = 0;
     const TxModeSpec* rm = rxMode(a);
-    if (rm && rm == &m) { s.synth = a.tune.synth; s.freqMhz = a.freqMhz; }
+    s.armed = false;   // a new signal is armed again on purpose
+    if (rm && rm == &m) { s.synth = txSynthFromRx(m, a.tune.synth); s.freqMhz = a.freqMhz; }
     else {
         s.synth = SynthConfig();
-        const ModeTuning* mt = modeTuning(m.stdMode);
-        s.freqMhz = mt && mt->defMhz > 0 ? mt->defMhz : a.freqMhz;
+        const double def = txModeDefaultMhz(m);
+        s.freqMhz = def > 0 ? def : a.freqMhz;
     }
 }
 
@@ -116,6 +131,15 @@ void loadPayloadPrefs(TxUi& s) {
     snprintf(s.callsign, sizeof s.callsign, "%s", p.getS("tx.callsign", "").c_str());
     snprintf(s.grid, sizeof s.grid, "%s", p.getS("tx.grid", "").c_str());
     snprintf(s.text, sizeof s.text, "%s", p.getS("tx.text", "").c_str());
+    snprintf(s.meshLong, sizeof s.meshLong, "%s", p.getS("tx.meshLong", "OnAir").c_str());
+    snprintf(s.meshShort, sizeof s.meshShort, "%s", p.getS("tx.meshShort", "ONAR").c_str());
+    snprintf(s.meshNode, sizeof s.meshNode, "%s", p.getS("tx.meshNode", "").c_str());
+    snprintf(s.meshChan, sizeof s.meshChan, "%s", p.getS("tx.meshChan", "LongFast").c_str());
+    snprintf(s.meshPsk, sizeof s.meshPsk, "%s", p.getS("tx.meshPsk", "default").c_str());
+    snprintf(s.meshPreset, sizeof s.meshPreset, "%s", p.getS("tx.meshPreset", "LongFast").c_str());
+    s.meshHop = (int)std::max(0L, std::min(7L, (long)p.getI("tx.meshHop", 3)));
+    s.meshCallInMsg = p.getB("tx.meshCallInMsg", false);
+    s.meshNodeInfo = p.getB("tx.meshNodeInfo", true);
     s.offsetMhz = p.getD("tx.offsetMhz", 0);
     s.dryRun = p.getB("tx.dryRun", false);
     s.destKind = std::max(0, std::min(2, (int)p.getI("tx.destKind", 0)));
@@ -185,7 +209,17 @@ TxRequest makeReq(const TxUi& s, const TxModeSpec& mode, bool carrier) {
     r.tune.channel = s.txCh < 0 ? 0 : s.txCh;
     r.callsign = s.callsign;
     r.grid = s.grid;
-    r.text = s.text[0] ? s.text : s.rdsRt;
+    r.text = s.text[0] ? std::string(s.text) : s.rdsRt;
+    if (std::string(mode.id) == "mesh") {
+        r.mesh.longName = s.meshLong; r.mesh.shortName = s.meshShort; r.mesh.nodeId = s.meshNode; r.mesh.channelName = s.meshChan;
+        r.mesh.psk = s.meshPsk; r.mesh.preset = s.meshPreset; r.mesh.hopLimit = s.meshHop;
+        r.mesh.callsign = s.callsign; r.mesh.callsignInMessage = s.meshCallInMsg; r.mesh.sendNodeInfo = s.meshNodeInfo;
+    }
+    if (std::string(mode.id) == "dmr") {
+        r.opt["dmr.slotSync"] = s.dmrSlotSync ? 1.0 : 0.0;
+        r.opt["dmr.aligned"] = s.dmrAligned ? 1.0 : 0.0;
+        r.opt["dmr.latencyMs"] = s.dmrLatencyMs;
+    }
     if (std::string(mode.id) == "kaal") {
         r.text = r.text.substr(0, 100);
         r.opt["kaal.powerDbm"] = s.kaalPower;
@@ -264,9 +298,11 @@ TxRequest makeReq(const TxUi& s, const TxModeSpec& mode, bool carrier) {
         p.picture = i % 3;
         if (s.svcSrc[i] == 1) p.file = s.svcFile[i];
         if (s.svcSrc[i] == 2) { p.liveCamera = true; p.camera = s.svcCam[i]; }
+        if (s.svcSrc[i] == 3) { p.generator = std::max(1, std::min(dect2::vgen::kMaxInstances, s.svcGen[i])); p.name = s.svc[i]; }   // empty name: the generator's own
         r.mux.push_back(std::move(p));
     }
     paramsApply(s, r);
+    controlApply(s, r);   // the radio's filter, gain stages and calibration (tx_control_ui.cpp)
     return r;
 }
 
@@ -315,14 +351,15 @@ bool startTx(App& a, TxUi& s, const DeviceInfo* radio, const TxModeSpec* mode, b
         sink = makeNullTxSink();
         if (radio) lim = TxRateLimits{radio->txMinRateHz, radio->txMaxRateHz};
     } else {
-        if (!txClaimRadio(*radio, err)) { s.error = err; return false; }
+        if (!txClaimRadio(*radio, err)) { DIAG(505722, "The transmit radio could not be claimed (%s), so transmitting did not start.", err.c_str()); s.error = err; return false; }
         s.claimed = true;
         sink = makeTxSink(*radio);
-        if (!sink) { s.error = txUnavailableReason(*radio); if (s.error.empty()) s.error = tr("This radio has no transmit driver in OnAir."); release(s); return false; }
+        if (!sink) { DIAG(971405, "This radio has no transmit driver in OnAir, so transmitting did not start."); s.error = txUnavailableReason(*radio); if (s.error.empty()) s.error = tr("This radio has no transmit driver in OnAir."); release(s); return false; }
         lim = TxRateLimits{radio->txMinRateHz, radio->txMaxRateHz};
         mapPauseForTransmit(a);   // before the radio is keyed, so this frame cannot post what the receiver hears from it
     }
     txIqStreamSetConfig(txIqStreamFromPrefs());
+    txExternalPtt(a, s, true);   // the amplifier / sequencer first, then the radio's RF
     if (s.session.start(std::move(sink), req, lim, err)) {
         s.radioName = toFile ? std::string("IQ file ") + s.ifPathUsed : toUdp ? (std::string("UDP ") + s.udpHost + ":" + std::to_string(s.udpPort)) : s.dryRun ? std::string(tr("test (no RF)")) : radio->name;
         s.modeName = mode->name; s.freqSent = req.tune.centerHz;
@@ -332,22 +369,78 @@ bool startTx(App& a, TxUi& s, const DeviceInfo* radio, const TxModeSpec* mode, b
         s.sessionFile = toFile;
         s.startedAt = ImGui::GetTime();
         s.appliedMhz = s.freqMhz; s.appliedGain = s.gainDb;
+        s.doneShown = false;
+        s.wasRunning = true;
+        {   // the TX log entry, finished by txSessionEnded
+            s.current = TxUi::Sent();
+            const time_t now = time(nullptr);
+            struct tm u;
+#ifdef _WIN32
+            gmtime_s(&u, &now);
+#else
+            gmtime_r(&now, &u);
+#endif
+            char tb[16]; strftime(tb, sizeof tb, "%H:%M:%S", &u);
+            s.current.utc = tb;
+            s.current.mode = carrier ? std::string(tr("Carrier tune")) : std::string(mode->name);
+            s.current.mhz = s.freqMhz;
+            s.current.rf = !s.dryRun && !toFile && !toUdp;
+            std::string what = !req.callsign.empty() ? req.callsign : "";
+            if (!req.text.empty()) what += (what.empty() ? "" : ": ") + req.text.substr(0, 40);
+            if (what.empty() && !req.file.empty()) what = req.file.substr(req.file.find_last_of("/\\") == std::string::npos ? 0 : req.file.find_last_of("/\\") + 1);
+            if (toFile) what += (what.empty() ? "" : ", ") + std::string("into ") + s.ifPathUsed;
+            if (toUdp) what += (what.empty() ? "" : ", ") + std::string("to UDP ") + s.udpHost + ":" + std::to_string(s.udpPort);
+            s.current.what = what;
+        }
         if (!carrier) pushRecent(s, mode->id, s.freqMhz, s.gainDb);
         a.engine.log(std::string(toFile ? "transmit into an IQ file: " : toUdp ? "transmit into GNU Radio UDP: " : s.dryRun ? "transmit test (no RF): " : "transmit: ") + (carrier ? "carrier tune " : "") + mode->name + " on " + s.radioName + " at " + std::to_string(s.freqMhz) + " MHz");
         return true;
     }
     s.error = err;
+    txExternalPtt(a, s, false);
     if (!s.session.running()) { release(s); if (!s.dryRun && !toFile && !toUdp) mapTransmitAbort(a); }
     return false;
 }
 
 // stops whatever is running (a transmission or a test), gives the radio back and says why in the engine log
+// the external PTT: keyed just before the radio starts sending, released right after it stopped. Never a block: a rig that does not answer is a note.
+void txExternalPtt(App& a, TxUi& s, bool on) {
+    if (!on) {
+        if (!s.pttKeeper) return;
+        std::string err;
+        if (!s.pttKeeper->ptt(false, err)) a.engine.log("transmit: the rig's PTT could not be released: " + err);
+        else a.engine.log("transmit: rig PTT released");
+        s.pttKeeper->disconnect();
+        s.pttKeeper.reset();
+        return;
+    }
+    if (!s.pttRigOn || noRadio(s) || s.pttKeeper) return;
+    if (s.pttRigIdx < 0 || s.pttRigIdx >= (int)a.hamlibRigs.size()) { s.info = tr("External PTT: the chosen rig is not in the radio list any more; sending without it."); return; }
+    const HamlibRig& rig = a.hamlibRigs[(size_t)s.pttRigIdx];
+    auto k = std::make_shared<RigKeeper>();
+    k->setProfile(rig);
+    std::string err;
+    if (!k->connect(err) || !k->ptt(true, err)) {
+        s.info = std::string(tr("External PTT: the rig could not be keyed; the transmission goes on without it. ")) + hamlibErrorHint(err);
+        a.engine.log("transmit: external PTT failed: " + err);
+        return;
+    }
+    s.pttKeeper = k;
+    a.engine.log(std::string("transmit: rig PTT keyed (") + rigPttName(rig.pttType) + ")");
+}
+
 void stopTx(App& a, TxUi& s, const char* why) {
     const bool was = s.session.running() || s.claimed;
     s.session.stop();
+    txExternalPtt(a, s, false);
     release(s);
     s.radioName.clear(); s.carrierOnly = false; s.carrierHeld = false; s.sessionDry = false; s.sessionFile = false; s.pendingStart = false; s.pendingCarrier = false;
+    if (s.schedArmed) a.engine.log("transmit: the schedule is cancelled");
+    s.schedArmed = false; s.schedRunning = false;   // Stop also cancels a schedule
     if (was) a.engine.log(std::string("transmit: stopped ") + why);
+    if (was) txSessionEnded(s, why);
+    s.armed = false;   // after a transmission the next one is armed again on purpose
+    s.wasRunning = false;
 }
 
 // the chosen transmit radio (the first free one when none is chosen) and the receiver that holds it
@@ -398,7 +491,7 @@ void txShutdown() {
 }
 
 // every frame (the first call of a frame does the work): a transmission that ended by itself or failed gives its radio back; the on-screen indicator
-void txTick(App&) {
+void txTick(App& a) {
     TxUi& s = ui();
     if (s.tickFrame == ImGui::GetFrameCount()) return;
     s.tickFrame = ImGui::GetFrameCount();
@@ -413,10 +506,11 @@ void txTick(App&) {
         s.sessionDry = false;
         s.sessionFile = false;
     }
+    scheduleTick(a, s);   // a planned start, or the next one after a scheduled transmission has ended
     if (!s.session.running()) return;
     char b[220];
     const TxSession::Stats st = s.session.stats();
-    snprintf(b, sizeof b, "%s   %s   %.6f MHz   %.0f s", s.sessionFile ? "WRITING IQ FILE" : s.sessionDry ? tr("TEST - NO RF") : tr("TRANSMITTING"), s.modeName.c_str(), s.freqSent / 1e6, st.seconds);
+    snprintf(b, sizeof b, "%s   %s   %.6f MHz   %.0f s", s.sessionFile ? "WRITING IQ FILE" : s.destKind == 2 && s.sessionDry ? "STREAMING UDP" : s.sessionDry ? tr("TEST - NO RF") : tr("TRANSMITTING"), s.modeName.c_str(), s.freqSent / 1e6, st.seconds);
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     const ImVec2 ts = ImGui::CalcTextSize(b);
     const float pad = 8 * gUi;

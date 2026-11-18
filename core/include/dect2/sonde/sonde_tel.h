@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Radiosonde receiver telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 //
@@ -12,7 +15,7 @@
 
 namespace dect2 {
 
-enum SondeKind { SondeUnknown = 0, SondeRs41, SondeRs92, SondeDfm, SondeM10, SondeM20, SondeLms6 };
+enum SondeKind { SondeUnknown = 0, SondeRs41, SondeRs92, SondeDfm, SondeM10, SondeM20, SondeLms6, SondeImet, SondeImet54, SondeMrz, SondeMeisei, SondeGth };
 
 inline const char* sondeKindName(int k) {
     switch (k) {
@@ -22,6 +25,11 @@ inline const char* sondeKindName(int k) {
     case SondeM10: return "M10";
     case SondeM20: return "M20";
     case SondeLms6: return "LMS6";
+    case SondeImet: return "iMet";
+    case SondeImet54: return "iMet-54";
+    case SondeMrz: return "MRZ";
+    case SondeMeisei: return "iMS-100";
+    case SondeGth: return "GTH";
     default: return "?";
     }
 }
@@ -46,6 +54,7 @@ struct SondeInfo {
     int frame = -1;              // frame counter of the last frame
     bool hasTime = false;
     double unixTime = 0;         // UTC seconds since 1970 sent by the sonde
+    double sondeAheadS = 0;      // how far the sonde's own time runs ahead of unixTime (RS41: GPS - UTC = 18 s), for the SondeHub upload only
     bool hasPos = false;
     double lat = 0, lon = 0, altM = 0;
     bool hasVel = false;

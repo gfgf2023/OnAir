@@ -65,6 +65,11 @@ private:
 };
 } // namespace
 
+namespace {
+inline bool oqpskRate(int r) { return r == 10500 || r == 8400; }
+inline double rrcAlpha(int r) { return r == 8400 ? 0.6 : 1.0; }     // JAERO oqpskdemodulator.cpp: rrc.design(0.6, ..) for 8400, 1.0 otherwise
+}
+
 double aeroRrc(double t, double a) {
     const double eps = 1e-8;
     if (std::fabs(t) < eps) return 1.0 - a + 4.0 * a / kPi;
@@ -233,6 +238,7 @@ uint64_t AeroFramer::uwBitErrors() const { return p_->nUwErr; }
 uint64_t AeroFramer::falseSyncs() const { return p_->nFalse; }
 
 // ======================= demodulator =======================
+static constexpr int kAcqMinBlocks = 4, kAcqMaxBlocks = 32;   // carrier search: first look after 4 averaged FFTs, last after 32
 struct AeroDemod::Impl {
     int rate;
     bool msk;
@@ -249,7 +255,7 @@ struct AeroDemod::Impl {
     std::vector<cf32> acqBuf;
     std::vector<float> acqPow;
     std::unique_ptr<Fft> fft;
-    bool acq = false;
+    bool acq = false, everyBlock = false;
     float acqMetric = 0;
     uint64_t bitsSinceAcq = 0;
     // timing
@@ -267,8 +273,10 @@ struct AeroDemod::Impl {
     double amp = 0, mu = 0, m2 = 0;
     AeroFramer framer;
     std::function<void(AeroFrameEvent&)> userCb;
+    std::function<void(float)> bitSink;        // 8400 bit/s (C channel): the soft bits go to the caller's framer
+    std::function<bool()> syncProbe;
 
-    Impl(int r, double fs, double sh) : rate(r), msk(r != 10500), fsIn(fs), searchHz(sh), framer(r) {
+    Impl(int r, double fs, double sh) : rate(r), msk(!oqpskRate(r)), fsIn(fs), searchHz(sh), framer(r) {
         if (msk) {
             decim = std::max(1, (int)std::floor(fsIn / (8.0 * rate)));
             fsD = fsIn / decim;
@@ -286,7 +294,7 @@ struct AeroDemod::Impl {
             const double sps = 2.0 * fsD / rate;              // samples per arm symbol
             const int L = 2 * (int)std::floor(4 * sps) + 1;
             std::vector<float> h(L);
-            for (int n = 0; n < L; n++) h[n] = (float)aeroRrc((n - (L - 1) / 2.0) / sps, 1.0);
+            for (int n = 0; n < L; n++) h[n] = (float)aeroRrc((n - (L - 1) / 2.0) / sps, rrcAlpha(rate));
             mf.setTaps(h);
         }
         step = fsD / rate;
@@ -295,7 +303,7 @@ struct AeroDemod::Impl {
         acqN = 1;
         const double binWanted = msk ? 2.5 : 6.0;          // Hz
         while (acqN < 1 << 16 && fsD / acqN > binWanted) acqN <<= 1;
-        acqK = 4;
+        acqK = kAcqMinBlocks;
         acqBuf.resize(acqN);
         acqPow.assign(acqN, 0.f);
         fft = std::make_unique<Fft>(acqN);
@@ -354,7 +362,13 @@ struct AeroDemod::Impl {
             if (m > best) { best = m; bc = c; }
         }
         acqMetric = (float)(best / (2 * med));
-        if (acqMetric < 12) { startAcq(); acqMetric = (float)(best / (2 * med)); return; }
+        // the noise ratio spreads less the more blocks are averaged, so the threshold falls with them (4 blocks: 12, 32 blocks: 5.5)
+        const double thr = 2.2 + 9.8 * std::sqrt((double)kAcqMinBlocks / std::max(1, acqDone));
+        if (acqMetric < thr) {
+            // below: integrate longer (up to kAcqMaxBlocks) before giving the power up; the evaluations double in blocks
+            if (acqDone >= kAcqMaxBlocks) { startAcq(); acqMetric = (float)(best / (2 * med)); }
+            return;
+        }
         // each line to a fraction of a bin
         auto refine = [&](double x) {
             int i0 = (int)std::floor(x);
@@ -399,7 +413,7 @@ struct AeroDemod::Impl {
                 fft->forward(acqBuf.data());
                 for (int i = 0; i < acqN; i++) acqPow[i] += std::norm(acqBuf[i]);
                 acqFill = 0;
-                if (++acqDone == acqK) acqEvaluate();
+                if (++acqDone >= acqK && (everyBlock || (acqDone & (acqDone - 1)) == 0)) acqEvaluate();
             }
             return;
         }
@@ -474,7 +488,8 @@ struct AeroDemod::Impl {
         }
         k++;
         bitsSinceAcq++;
-        framer.push(soft / (float)ampF);
+        if (rate == 8400) { if (bitSink) bitSink(soft / (float)ampF); }
+        else framer.push(soft / (float)ampF);
         // move a large loop frequency into the mixer; the loop gives it up when the moved samples arrive
         if (pendBits > 0) {
             if (--pendBits == 0) { omega -= pendOmega; pendOmega = 0; }
@@ -486,7 +501,8 @@ struct AeroDemod::Impl {
         }
         // no frame after a few frame lengths: search the carrier again
         const AeroFrameFormat* f = aeroFrameFormat(rate);
-        if (!framer.synced() && bitsSinceAcq > (uint64_t)(4 * f->totalBits())) startAcq();
+        const bool isSynced = rate == 8400 ? (syncProbe && syncProbe()) : framer.synced();
+        if (!isSynced && bitsSinceAcq > (uint64_t)(4 * (f ? f->totalBits() : 4200))) startAcq();
         return adv;
     }
 };
@@ -498,8 +514,11 @@ void AeroDemod::feed(const cf32* x, size_t n) { p_->feed(x, n); }
 void AeroDemod::setCallback(std::function<void(AeroFrameEvent&)> cb) { p_->userCb = std::move(cb); }
 int AeroDemod::bitRate() const { return p_->rate; }
 bool AeroDemod::acquired() const { return p_->acq; }
-bool AeroDemod::synced() const { return p_->acq && p_->framer.synced(); }
+void AeroDemod::setEveryBlock(bool on) { p_->everyBlock = on; }
+bool AeroDemod::synced() const { return p_->acq && (p_->rate == 8400 ? (p_->syncProbe && p_->syncProbe()) : p_->framer.synced()); }
 bool AeroDemod::dataLock() const { return p_->acq && p_->framer.dataLock(); }
+void AeroDemod::setBitSink(std::function<void(float)> sink, std::function<bool()> synced) { p_->bitSink = std::move(sink); p_->syncProbe = std::move(synced); }
+float AeroDemod::ampLevel() const { return (float)p_->mu; }
 double AeroDemod::freqHz() const { return p_->freq(); }
 float AeroDemod::ebn0Db() const { return p_->acq ? p_->ebn0() : 0.f; }
 float AeroDemod::acqMetric() const { return p_->acqMetric; }
@@ -515,11 +534,11 @@ struct AeroModulator::Impl {
     uint64_t base = 0;
     int8_t lastA = 0;                  // MSK: differential state
     std::vector<float> rrcTab;         // 10500: pulse in steps of 1/64 bit over +-8 bits
-    Impl(int r, double f, double ppm) : rate(r), msk(r != 10500), fs(f) {
+    Impl(int r, double f, double ppm) : rate(r), msk(!oqpskRate(r)), fs(f) {
         du = rate * (1 + ppm * 1e-6) / fs;
         if (!msk) {
             rrcTab.resize(16 * 64 + 2);
-            for (size_t i = 0; i < rrcTab.size(); i++) rrcTab[i] = (float)(aeroRrc((i / 64.0 - 8) / 2.0, 1.0) / std::sqrt(2.0));
+            for (size_t i = 0; i < rrcTab.size(); i++) rrcTab[i] = (float)(aeroRrc((i / 64.0 - 8) / 2.0, rrcAlpha(rate)) / std::sqrt(2.0));
         }
     }
     int8_t s(int64_t i) const {

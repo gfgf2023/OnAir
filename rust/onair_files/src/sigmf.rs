@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! SigMF meta files (https://sigmf.org, `.sigmf-meta`): reading what OnAir needs to play a recording (data type, sample rate, centre frequency, where the samples
 //! start, the end trimmed by `core:trailing_bytes`, annotation count, description, data file name) and the two writers (the recorder's and the test tool's).
 //! Finding the data file and its size is file system work and stays in C++ (`core/src/source/iq_file.cpp`).
@@ -66,6 +69,7 @@ fn span_of(v: &Option<Val>) -> Span {
 pub fn datatype(dt: &[u8]) -> Option<(i32, bool)> {
     let mut buf = [0u8; 16];
     if dt.len() > buf.len() {
+        onair_common::diag_debug!(889497, "The SigMF data type is {} bytes long, which is too long to be a known type, so the recording is not read.", dt.len());
         return None;
     }
     for (i, &c) in dt.iter().enumerate() {

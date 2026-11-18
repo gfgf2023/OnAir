@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // RDS / RBDS data layer (IEC 62106, NRSC-4-B): block synchronisation, error correction and the group decoder.
 //
 // The bits come from the FM receiver's 1187.5 bit/s demodulator (after the differential decoding), each with its reliability. The decoder
@@ -28,6 +31,9 @@ struct RtPlusTag {
 struct RdsEon {
     int pi = 0;
     std::string ps;      // 8 characters once complete, "" before
+    int tp = -1;         // its traffic programme flag (14A / 14B), -1 not received
+    int ta = -1;         // its traffic announcement flag (14B, 14A variant 13), -1 not received
+    int pty = -1;        // its programme type (14A variant 13), -1 not received
 };
 
 // What the decoder knows about the station, filled into FmTelemetry.
@@ -45,10 +51,21 @@ struct RdsInfo {
     bool rtPlusRunning = false;         // RT+ "item running" flag
     std::string ert;                    // enhanced RadioText (UTF-8)
     std::vector<RdsEon> eon;            // other networks
+    std::string longPs;                 // long programme service name (group 15A, UTF-8, up to 32 bytes), "" when not received
+    int diKnown = 0, di = 0;            // decoder identification (group 0, one bit per segment): bits 0 stereo, 1 artificial head, 2 compressed, 3 dynamic PTY; diKnown says which have arrived
     std::string psPartial;              // the name being collected, '_' where nothing has come yet ("" when nothing has)
     uint64_t blocksGood = 0, blocksCorrected = 0, blocksBad = 0;
     uint64_t blocksVoted = 0;   // blocks rebuilt by voting over repeated copies (a subset of blocksCorrected)
 };
+
+// Language of the programme (group 1A variant 3), the codes of EN 50067 annex J as best known; "unknown" for the others
+inline const char* rdsLanguageName(int code) {
+    static const char* const n[] = {"unknown", "Albanian", "Breton", "Catalan", "Croatian", "Welsh", "Czech", "Danish", "German", "English", "Spanish", "Esperanto",
+        "Estonian", "Basque", "Faroese", "French", "Frisian", "Irish", "Gaelic", "Galician", "Icelandic", "Italian", "Lappish", "Latin", "Latvian", "Luxembourgian",
+        "Lithuanian", "Hungarian", "Maltese", "Dutch", "Norwegian", "Occitan", "Polish", "Portuguese", "Romanian", "Romansh", "Serbian", "Slovak", "Slovene",
+        "Finnish", "Swedish", "Turkish", "Flemish", "Walloon"};
+    return code >= 0 && code < (int)(sizeof n / sizeof n[0]) ? n[code] : "unknown";
+}
 
 // Content type names of RadioText+ (the RT+ specification, 64 classes)
 const char* rtPlusTypeName(int type);
@@ -71,6 +88,8 @@ public:
     void setCorrection(bool burst, bool soft) { ecBurst_ = burst; ecSoft_ = soft; ecVote_ = soft; }   // voting (repeated copies of a block) comes with the top level
 
     void setVoting(bool on) { ecVote_ = on; }   // after setCorrection; on by default
+    // Tests: 1 the plain vote of three or more copies, 2 (default) also two copies and the repair on the summed reliabilities
+    void setVoteDepth(int d) { voteDepth_ = d; }
 
     // state
     bool synced = false;
@@ -105,6 +124,7 @@ private:
     uint16_t blk_[4] = {};
     uint8_t err_[4] = {2, 2, 2, 2};
     bool ecBurst_ = true, ecSoft_ = true, ecVote_ = true;
+    int voteDepth_ = 2;
     // Voting: the bad blocks of one position (A, B, C, D) are kept with their bit reliabilities. Groups repeat (block A is the PI in every
     // group, a PS or RT segment comes again every few seconds), so three or more copies that lie close together vote bit by bit (weighted
     // by reliability), and the result is taken only when its checkword is right.
@@ -113,6 +133,12 @@ private:
     VoteCopy vote_[4][kVote] = {};
     int nVote_[4] = {}, votePos_[4] = {};
     bool voteBlock(uint32_t& w, int pos);
+    // Keyed combining: blocks C and D of a group whose block B is good are the same segment again and again (block B holds its address), so their
+    // copies need no closeness test: their reliabilities are summed per value of block B, as long as they keep failing.
+    struct KeyedSum { uint16_t b = 0; int n = 0; float sum[26] = {}; uint64_t at = 0; };
+    static constexpr int kKeyed = 40;
+    KeyedSum keyed_[2][kKeyed] = {};
+    bool keyedBlock(uint32_t& w, int pos);
     GroupTap tap_;
     // group decoder
     char psBuf_[9] = "        ";
@@ -127,6 +153,8 @@ private:
     char ptynBuf_[9] = "        ";
     uint8_t ptynSeen_ = 0;
     int ptynAb_ = -1;
+    uint8_t lpsBuf_[33] = {};
+    uint8_t lpsSeen_ = 0;
     int rtPlusGroup_ = -1, ertGroup_ = -1;   // the group type codes carrying RT+ / eRT (from 3A), -1 none
     int ertUtf8_ = 1;
     uint8_t ertBuf_[128] = {};
@@ -134,7 +162,7 @@ private:
     int rtPlusToggle_ = -1;
     struct RawTag { int type, start, len; };
     RawTag rtPlusRaw_[2] = {{0, 0, 0}, {0, 0, 0}};
-    struct EonBuf { int pi; char ps[9]; uint8_t seen; };
+    struct EonBuf { int pi; char ps[9]; uint8_t seen; int tp, ta, pty; };
     std::vector<EonBuf> eonBuf_;
     struct Sig { uint16_t b, c, d; uint8_t cOk; uint32_t raw; };   // raw: a hash of the received words of the corrected blocks, 0 = clean
     uint32_t rawHash_ = 0;

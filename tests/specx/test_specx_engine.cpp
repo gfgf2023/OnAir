@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Spectrum explorer through the engine (setStandard(43)): the synthetic source plays a QPSK carrier and a tone in noise; the spectrum
 // comes back through latestRx() and the region maths find the carrier's symbol rate.
 #include "dect2/specx/specx_rx.h"
@@ -24,7 +27,7 @@ int main() {
     FileOptions fo;
     e.setStandard(43);
     e.specx().setFftSize(4096);
-    e.specx().setAveraging(8);
+    e.specx().setAveraging(32);   // 8 frames leave the -3 dB edge noisy enough to miss the 5 % symbol-rate band on a slow runner
     CHECK(e.start(dev, t, fo), "engine start");
     CHECK(e.activeStandard() == 42, "active standard %d", e.activeStandard());
     RxTelemetry rx;

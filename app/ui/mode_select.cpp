@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Choosing a receiver mode: selectMode(), the highlight and search tests on a kModes row, the search box of the
 // mode drop-downs and the segmented mode selector of the top bar. The table itself is in mode_table.cpp.
 // Search matches the name, the sub line, the blurb and the extra search words of a kModes row.
@@ -30,6 +33,8 @@ void selectMode(App& a, int fam, const char* subId) {
     if (wasRunning) a.engine.stop();
     setMode(a, fam, sub);
     presetsapp::applyModeDefault(a);   // the mode's default preset, when the user set one
+    firstBandPick(a);                 // E9: a shortwave mode's first opening goes to a band that is open now
+    stationAutoPick(a);                // My station: a better free radio when this one cannot do the mode
     savePrefs(a);
     if (wasRunning) {
         a.engine.log("switching receiver mode");
@@ -62,7 +67,7 @@ const char* modeSearchBox() {
 }
 
 // Mode selector: the modes in their groups (kGroupNames) as one segmented control each; a drop-down when the window is too narrow for them all
-void standardSwitch(App& a) {
+void standardSwitch(App& a, float reserve) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float h = ImGui::GetFrameHeight() - 2 * gUi;
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -82,7 +87,7 @@ void standardSwitch(App& a) {
         x += 18 * gUi;
     }
     const float total = x - 18 * gUi - p.x;
-    const float room = ImGui::GetContentRegionAvail().x - 150 * gUi;   // keep the right-hand buttons clear
+    const float room = ImGui::GetContentRegionAvail().x - std::max(150 * gUi, reserve);   // keep the right-hand buttons clear (reserve: their width, #139 #424)
     if (total > room || getenv("DECT2_NARROW")) {   // too narrow: one drop-down with the same groups
         gSwitchWidth = 170 * gUi;
         ImGui::SetNextItemWidth(gSwitchWidth);
@@ -102,8 +107,11 @@ void standardSwitch(App& a) {
             ImGui::EndCombo();
         }
         ImGui::SameLine(0, 14 * gUi);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("%s", cur->blurb);
+        // the blurb only where it leaves the right-hand buttons their room; text under a button would hide it
+        if (reserve <= 0 || ImGui::CalcTextSize(cur->blurb).x <= ImGui::GetContentRegionAvail().x - reserve) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%s", cur->blurb);
+        } else ImGui::Dummy(ImVec2(0, 0));
         return;
     }
     gSwitchWidth = total;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Reception Doctor on synthetic IQ: clipped, weak, noise only, off-centre, too narrow, adjacent interferer, drops, DC spike, I/Q imbalance, healthy.
 #include "dect2/doctor/reception_doctor.h"
 #include "dect2/common/stable_random.h"
@@ -61,6 +64,11 @@ int main() {
         r = diagnose(x.data(), x.size(), c);
         f = get(r, Code::WeakSignal);
         CHECK(f && f->fix == Fix::None, "weak at max gain should offer no fix");
+    }
+    {   // gain cut on purpose: low overall level but a strong carrier above the noise: no 'raise the gain'
+        auto x = make(0.0005, {{0, 0.02, 100e3}});
+        Report r = diagnose(x.data(), x.size(), live());
+        CHECK(!has(r, Code::WeakSignal), "doctor nags about low gain although a strong signal is present");
     }
     {   // noise only at a sane level: no signal
         auto x = make(0.05, {});

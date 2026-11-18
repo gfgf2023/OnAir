@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ASTERIX screens: the track table, the map (the shared slippy map of ADS-B), the data sources and the record viewer, and the input controls (UDP port,
 // multicast group, a file, demo traffic, the radar's position). The data comes from a network or a file, not from the radio: the receiver (in the engine
 // object) runs by itself. Receive only; the UDP port is closed until Listen is pressed and listens on this computer only unless the box is ticked.
@@ -178,7 +181,7 @@ void mapView(App& a) {
             dl->AddCircleFilled(q, (sel ? 6.f : 4.5f) * gUi, col);
             dl->AddCircle(q, (sel ? 6.f : 4.5f) * gUi, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 150), 0, 1.2f);
         }
-        if (S.labels) {
+        if (S.labels && adsbmap::labelsAt(S.map.zoom, false)) {
             char b[96];
             if (k.hasLevel) snprintf(b, sizeof b, "%s  FL%03.0f", label(k).c_str(), k.flightLevel); else snprintf(b, sizeof b, "%s", label(k).c_str());
             dl->AddText(ImVec2(q.x + 9 * gUi, q.y - 7 * gUi), IM_COL32(255, 255, 255, 230), b);

@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/common/thread_name.h"
+#include "dect2/common/diag.h"
 #include "dect2/automation/engine.h"
 #include "dect2/automation/expr.h"
 #include "dect2/automation/script.h"
@@ -58,8 +62,10 @@ std::string describe(const std::string& kind, const std::map<std::string, std::s
 int familyOf(const std::string& type) {
     const size_t d = type.find('.');
     const std::string f = type.substr(0, d);
-    static const char* const names[kFamilies] = {"adsb", "acars", "vdl2", "hfdl", "pager", "ais", "aprs", "sonde", "gnss", "lora", "ble", "rid", "dsc", "signal", "receiver", "satellite", "time", "plugin", "voice", "session", "msg"};
+    static const char* const names[kFamilies] = {"adsb", "acars", "vdl2", "hfdl", "pager", "ais", "aprs", "sonde", "gnss", "lora", "ble", "rid", "dsc", "signal", "receiver", "satellite", "time", "plugin", "voice", "session", "msg", "sensor", "ham", "broadcast", "image"};
     for (int i = 0; i < kFamilies; i++) if (f == names[i]) return i;
+    if (f == "sferics") return FSignal;   // "sferics.storm" is sent under the signal family (sferics_rx.cpp)
+    if (f == "insight") return FSignal;   // "insight.<kind>": the smart insights (core/include/dect2/insight/live.h)
     return -1;
 }
 
@@ -162,11 +168,11 @@ struct Engine::Impl::ScriptRt final : ScriptApi {
         const double now = e->clock();
         {
             std::lock_guard<std::mutex> lk(e->mu);
-            if (!e->allowAction(now)) { detail = "throttled: too many actions per minute"; acts.push_back(kind + ": throttled"); return false; }
+            if (!e->allowAction(now)) { detail = "throttled: too many actions per minute"; acts.push_back(kind + ": throttled"); DIAG_DEBUG_EVERY(350411, 30.0, "A script action '%s' was refused because too many actions ran in the last minute.", kind.c_str()); return false; }
         }
         if (kind == "webhook") {
             const std::string url = p.count("url") ? p.at("url") : "";
-            if (url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0) { detail = "the webhook address must start with http:// or https://"; return false; }
+            if (url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0) { DIAG(403069, "A script asked for a webhook with the address %s, which does not start with http:// or https://, so the webhook was not sent.", url.c_str()); detail = "the webhook address must start with http:// or https://"; return false; }
         }
         if (kind == "log") {   // log_row(file, ...): the engine writes it
             std::string d;
@@ -236,7 +242,7 @@ bool Engine::Impl::doLog(const std::map<std::string, std::string>& raw, const Ev
     const bool fresh = !fs::exists(p, ec);
     if (!fresh && fs::file_size(p, ec) > (5u << 20)) { desc = "log: " + name + ".csv is full (5 MB)"; return false; }
     std::ofstream f(p, std::ios::app | std::ios::binary);
-    if (!f) { desc = "log: cannot write " + name + ".csv"; return false; }
+    if (!f) { DIAG(531427, "The automation log file %s.csv could not be opened for writing (the folder may be read-only), so the row was not saved.", name.c_str()); desc = "log: cannot write " + name + ".csv"; return false; }
     if (fresh && !fromScript && rowT.empty()) f << "time,rule,type,mode,freq_mhz,fields\n";
     f << line << "\n";
     return true;
@@ -394,8 +400,19 @@ void Engine::setPublisher(std::function<void(const Event&)> f, FamilyMask family
     publishMask_.store(publish_ ? familyMask : 0);
 }
 
+void Engine::setAnalyser(std::function<void(const Event&)> f, FamilyMask familyMask) {
+    std::lock_guard<std::mutex> lk(analyseMu_);
+    analyse_ = std::move(f);
+    analyseMask_.store(analyse_ ? familyMask : 0);
+}
+
 void Engine::submit(Event&& ev) {
     const int fam = familyOf(ev.type);
+    if (fam >= 0 && (analyseMask_.load(std::memory_order_relaxed) >> fam & 1)) {
+        std::function<void(const Event&)> t;
+        { std::lock_guard<std::mutex> lk(analyseMu_); t = analyse_; }
+        if (t) t(ev);
+    }
     if (fam >= 0 && (tapMask_.load(std::memory_order_relaxed) >> fam & 1)) {
         std::function<void(const Event&)> t;
         { std::lock_guard<std::mutex> lk(tapMu_); t = tap_; }

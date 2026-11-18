@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // P25 on a wide capture (3.4): a HackRF at 5, 10 and 20 Msps. Three P25 carriers sit far from the centre (each with its own tuning error, 6 dB
 // apart, in noise); the whole-span bank must find and lock every one, and in follow-only mode (the trunking follower) a call granted on the farthest
 // carrier must start exactly one decoder that locks. The rate is the user's: nothing here clamps it.
@@ -10,6 +13,7 @@
 #include <memory>
 using namespace dect2;
 #include "../common/test_util.h"
+#include "../common/test_long.h"
 
 static void scene(int a, double fs) {
     const double centre = 419.2e6;
@@ -69,6 +73,10 @@ static void scene(int a, double fs) {
 
 int main() {
     const char* only = getenv("WIDE_ONLY");   // debugging: WIDE_ONLY=10 runs one mode
-    for (int a : {51, 10, 39, 46}) for (double fs : {5e6, 10e6, 20e6}) if (!only || atoi(only) == a) scene(a, fs);
+    // the quick run takes each mode at one rate (every rate still met, P25 with the follower at 5 Msps, 20 Msps for mode 39); ONAIR_TEST_LONG=1: every mode at every rate
+    for (int a : {51, 10, 39, 46}) for (double fs : {5e6, 10e6, 20e6}) {
+        const bool quick = (a == 51 && fs == 5e6) || (a == 10 && fs == 10e6) || (a == 39 && fs == 20e6) || (a == 46 && fs == 5e6);
+        if ((!only || atoi(only) == a) && (testLong() || quick)) scene(a, fs);
+    }
     return testSummary("p25 wide rates");
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // USB radios that the platform opened for us and handed over as a file descriptor (Android: UsbManager.openDevice().getFileDescriptor(), no root,
 // no bus scan). The app registers each opened radio here; the drivers list and open them from this registry instead of scanning the USB bus.
 // The descriptor stays owned by the app (UsbDeviceConnection); detach before closing it.
@@ -7,6 +10,7 @@
 //  - HackRF:  OnAir's own driver (hackrf_usb.cpp) on libusb built with LIBUSB_OPTION_NO_DEVICE_DISCOVERY, the descriptor wrapped with
 //             libusb_wrap_sys_device (usbFdOpen below).
 //  - Airspy R2 / Mini, HF+: libairspy / libairspyhf when the app ships them, through their airspy_open_fd / airspyhf_open_fd.
+//  - SDRplay RSP1 / Mirics MSi2500: OnAir's own driver (mirics_usb.cpp) on libusb, wrapped like the HackRF's.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -16,7 +20,7 @@ namespace dect2 {
 
 struct UsbFdRadio {
     std::string name;          // the platform's device name (Android: "/dev/bus/usb/001/004"), the key for detach
-    std::string kind;          // which driver: "rtlsdr", "hackrf", "airspy", "airspyhf"
+    std::string kind;          // which driver: "rtlsdr", "hackrf", "airspy", "airspyhf", "mirics"
     int fd = -1;               // usbfs descriptor, read/write
     int vid = 0, pid = 0;
     std::string manufacturer, product, serial;   // the strings the platform read (may be empty)

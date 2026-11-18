@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ISM sensors receiver: everyday 315 / 345 / 390 / 433.92 / 868 / 915 MHz devices (weather stations, tyre pressure sensors, remotes, energy and water
 // meters), the rtl_433 idea.
 //
@@ -36,6 +39,8 @@ public:
     void reset();                                        // after a retune: forget the signal (the devices and the logs stay: clearResults)
     void clearDevices();               // the user's Clear button
     void feed(const cf32* x, size_t n);
+    void setRealtime(bool on);         // true (a radio): feed() never waits, a backlog drops input; false (default, files and tests): feed() waits, nothing is lost
+    void flush();                      // waits for the bursts handed to the analysis thread and publishes them (tests, end of a file); feed() never waits
     bool telemetry(IsmTelemetry& out, uint64_t lastSeq);
     // The device table, the log and the unknown bursts stay through reset(), configure() and retunes: only clearResults() empties them
     void clearResults();
@@ -43,6 +48,7 @@ public:
     bool loadResults(const std::string& blob);           // false: not this build's format, nothing changes
     void setLogCallback(std::function<void(const std::string&)> cb);
     void setThresholdDb(float db);     // burst detection over the floor, per bin, 8 .. 25 dB (default 13)
+    void setNarrowRetry(bool on);      // 4.0: a burst no protocol reads is sliced again with 40 / 80 / 160 us envelope filters (default on; false = the 3.9 path)
     void setReadingTap(std::function<void(const IsmReading&, double freqHz)> cb);   // tests: every reading (repeats too), from the receiver thread
 
 private:

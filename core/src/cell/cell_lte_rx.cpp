@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Cell towers, LTE receiver: cell search (PSS / SSS), the MIB on the PBCH, and the system information on SI-RNTI (PCFICH, the common
 // search space of the PDCCH, PDSCH). 3GPP TS 36.211 / 36.212 / 36.213. A DCI is accepted only when its CRC matches SI-RNTI: paging
 // (P-RNTI), random access and every UE-specific channel are never decoded.
@@ -24,7 +27,7 @@ void lteCancelKnown(LteGrid& y, const LteChan& ch, const LteCellCfg& c, int sf, 
     if (sf == 0 && mibNRb > 0 && lteRbToBwIndex(mibNRb) >= 0) {
         Bits mib;
         auto put = [&](int v, int n) { for (int i = n - 1; i >= 0; i--) mib.push_back((uint8_t)((v >> i) & 1)); };
-        put(lteRbToBwIndex(mibNRb), 3); put(c.phichDur, 1); put(c.phichRes, 2); put((sfn >> 2) & 0xff, 8); put(0, 10);
+        put(lteRbToBwIndex(mibNRb), 3); put(c.phichDur, 1); put(c.phichRes, 2); put((sfn >> 2) & 0xff, 8); put(c.mibTail & 0x3ff, 10);
         appendCrc(mib, kCrc16, 16, mibMask(c.ports));
         const int M = ltePbchBits(c.extCp), per = M / 4, seg = (sfn & 1023) % 4;
         Bits e = convRateMatch(convEncode(mib), (size_t)M);

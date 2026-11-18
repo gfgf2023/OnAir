@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Front end of one GNSS signal band (see gnss_front.h).
 #include "dect2/gnss/gnss_front.h"
+#include "dect2/common/diag.h"
 #include "dect2/common/window.h"
 #include <algorithm>
 #include <cmath>
@@ -96,6 +100,7 @@ void GnssBand::excise() {
 }
 
 void GnssBand::process(const cf32* x, size_t n) {
+    if (!valid() && n != 0) DIAG_DEBUG_EVERY(561916, 10.0, "A GNSS band front end received %zu samples before it was set up with a sample rate, so they are dropped.", n);
     if (!valid() || n == 0) return;
     // mix into the tail of hist_
     const size_t old = hist_.size();

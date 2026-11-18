@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Analog TV receiver, picture side. See atv_video.h. The state is in atv_video_impl.h; the bigger member functions are in
 // atv_video_{sync,colour,picture}.cpp; this file holds the public AtvVideo class.
 #include "atv_video_impl.h"
@@ -11,6 +14,7 @@ AtvVideo::AtvVideo() : p_(std::make_unique<Impl>()) {}
 AtvVideo::~AtvVideo() = default;
 void AtvVideo::configure(double r, bool c) { p_->configure(r, c); p_->owner = this; }
 void AtvVideo::reset() { Impl& s = *p_; std::fill(s.rv.begin(), s.rv.end(), 0.f); s.nAbs = 0; s.fullReset(); }
+void AtvVideo::setSampleCount(uint64_t n) { p_->nAbs = n; }
 void AtvVideo::setParams(const AtvVideoParams& p) {
     Impl& s = *p_;
     const bool re = p.forceSys != s.prm.forceSys || p.forceColour != s.prm.forceColour || p.setupMode != s.prm.setupMode || p.chromaDelayNs != s.prm.chromaDelayNs;

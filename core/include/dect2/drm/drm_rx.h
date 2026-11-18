@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DRM receiver: DRM30 (long, medium and short wave, robustness modes A to D) and DRM+ (mode E, 100 kHz, VHF bands I, II and III) digital radio;
 // the mode is found by itself (DRM+ needs an input rate of 100 ksps or more).
 // Written to the engine's contract: configure() once the sample rate is known, feed() from the analysis thread (never blocks),
@@ -31,6 +34,9 @@ public:
     void setMuted(bool m);
     void setSilent(bool s);                              // decode but do not open the sound device (tests, command line)
     void setAudioTap(std::function<void(const float* left, const float* right, size_t n)> cb);   // tests: the 48 kHz sound, called from feed()
+    // Channel filter on the DRM30 input: keeps +-passHz around the channel (0 = off, the default; 7000 suits a 10 kHz channel, 12000 a 20 kHz one). Forgets the signal when changed.
+    void setChannelFilterHz(int passHz);
+    int channelFilterHz() const;
     // Which audio service plays (short id 0 .. 3); -1: the first audio service of the multiplex
     void selectService(int shortId);
     // Tests and tools: every logical frame of every stream as it comes out of the channel decoder (part A then part B), called from feed()

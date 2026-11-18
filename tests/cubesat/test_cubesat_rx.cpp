@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // CubeSat telemetry: the test signal (cubesat_gen.h) through the receiver (cubesat_rx.h): each framing alone and all together, with a
 // carrier offset (Doppler) and noise, at two radio rates; every frame sent comes out with the bytes sent and the right framing; frames
 // are named from the satellite table (callsign, frequency, the tracked satellite); noise alone gives no frame.
@@ -48,7 +51,7 @@ static void framings(int mode, double rate, double snr, double cfo, const char* 
     for (const CubeFrame& f : t.frames) {
         bool ok = false;
         for (const CubeGenFrame& s : sent) ok |= f.framing == s.framing && f.data == s.data;
-        if (!ok) wrong++;
+        if (!ok) { wrong++; printf("    wrong: %s %d baud, %zu bytes, rs %d\n", framingName(f.framing), f.baud, f.data.size(), f.rsErrors); }
     }
     printf("%-34s %5.2f Msps SNR %4.1f cfo %+6.0f: %3zu frames (%zu sent x2), bad %llu, rs fixed %llu, SNR %.1f dB, cfo %+.0f Hz\n", what, rate / 1e6, snr, cfo,
            t.frames.size(), sent.size(), (unsigned long long)t.blocksBad, (unsigned long long)t.rsFixed, t.snrDb, t.cfoHz);
@@ -63,6 +66,10 @@ int main() {
     framings(0, 2.4e6, 22, 8000, "every framing, 2.4 Msps, Doppler");
     framings(0, R, 18, -1500, "every framing, weaker");
     framings(0, R, 25, -11000, "every framing, 11 kHz Doppler");
+    // 4.0 (docs/SENSITIVITY-4.0-A3.md): the Bell 202 path has a 4.5 kHz channel of its own; 3.9 lost frames from 8 dB down (every frame twice)
+    framings(1, R, 6, 0, "AX.25 AFSK 1200, weak");
+    framings(1, R, 6, 3000, "AX.25 AFSK 1200, weak, +3 kHz");
+    framings(1, R, 6, -11000, "AX.25 AFSK 1200, weak, -11 kHz Doppler");
 
     {   // naming: the ISS by its callsign, the others from the tracked satellite
         CubesatReceiver r;

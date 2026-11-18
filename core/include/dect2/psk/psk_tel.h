@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // PSK31 / PSK63 receiver telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -8,10 +11,11 @@
 
 namespace dect2 {
 
-constexpr int kPskModes = 7;                 // 0 BPSK31, 1 BPSK63, 2 QPSK31, 3 QPSK63, 4 BPSK125, 5 BPSK250, 6 QPSK125 (new ones at the end: saved prefs keep their meaning)
-inline const char* pskModeName(int m) { static const char* n[kPskModes] = {"BPSK31", "BPSK63", "QPSK31", "QPSK63", "BPSK125", "BPSK250", "QPSK125"}; return m >= 0 && m < kPskModes ? n[m] : "?"; }
-inline double pskBaud(int m) { static const double b[kPskModes] = {31.25, 62.5, 31.25, 62.5, 125, 250, 125}; return m >= 0 && m < kPskModes ? b[m] : 31.25; }
+constexpr int kPskModes = 9;                 // 0 BPSK31, 1 BPSK63, 2 QPSK31, 3 QPSK63, 4 BPSK125, 5 BPSK250, 6 QPSK125, 7 8PSK125, 8 8PSK250 (new ones at the end: saved prefs keep their meaning)
+inline const char* pskModeName(int m) { static const char* n[kPskModes] = {"BPSK31", "BPSK63", "QPSK31", "QPSK63", "BPSK125", "BPSK250", "QPSK125", "8PSK125", "8PSK250"}; return m >= 0 && m < kPskModes ? n[m] : "?"; }
+inline double pskBaud(int m) { static const double b[kPskModes] = {31.25, 62.5, 31.25, 62.5, 125, 250, 125, 125, 250}; return m >= 0 && m < kPskModes ? b[m] : 31.25; }
 inline bool pskQpsk(int m) { return m == 2 || m == 3 || m == 6; }
+inline bool psk8psk(int m) { return m == 7 || m == 8; }   // fldigi 8PSK125 / 8PSK250 without FEC: 3 bits a symbol, MFSK varicode
 
 // One line of a signal's chat log: the characters between two line ends (or a pause)
 struct PskLine {
@@ -51,6 +55,8 @@ struct PskTelemetry {
     uint64_t blocksBad = 0;      // codes not in the table
     // details
     int mode = 0;                // the modulation looked for (kPskModes)
+    bool autoOn = false, autoLocked = false;   // Auto is on / it found a modulation that gives text
+    int autoMode = -1;           // what it found (kPskModes), -1 none yet
     double timeSec = 0;
     double inputRate = 0;
     double loHz = 0, hiHz = 0;   // the window: dial + loHz .. dial + hiHz (the audio passband of an upper sideband receiver)

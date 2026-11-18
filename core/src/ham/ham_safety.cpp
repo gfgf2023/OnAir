@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The safety layer of the ham transmitter: country band plans, duty-cycle limits, the TX audit log. See ham_safety.h.
 #include "dect2/ham/ham_safety.h"
+#include "dect2/common/diag.h"
 #include "dect2/bandplan/bandplan.h"
 #include "dect2/ham/ham.h"
 #include <algorithm>
@@ -125,7 +129,7 @@ void txAuditAdd(const TxAuditEntry& in) {
             const std::string line = txAuditLine(e) + "\n";
             fwrite(line.data(), 1, line.size(), f);
             fclose(f);
-        }
+        } else DIAG_DEBUG_EVERY(567413, 60.0, "The transmit audit file %s could not be opened for appending, so the entry is kept in memory only.", gAuditFile.c_str());
     }
 }
 

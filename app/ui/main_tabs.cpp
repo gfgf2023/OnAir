@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The classic interface's main tabs (Overview, Receiver, Stream and the mode's own tab) and the small helpers they share.
 // Split from main.cpp; mainTabs() is called by drawUI() in draw_ui.cpp.
 // The tab bodies are small; the larger panels they show live in analysis_tabs.cpp, tv.cpp and the mode folders.
@@ -5,8 +8,10 @@
 #include <unistd.h>
 #endif
 #include "app.h"
+#include "ease/ease_ui.h"
 #include "imgui_internal.h"
 #include "ui/kit/kit.h"
+#include "ui/kit/mode_panel.h"
 #include "adsb/adsb_map.h"
 #include "ui/contrast.h"
 #include "dect2/source/iq_file.h"
@@ -65,6 +70,9 @@ void receiverTab(App& a) {
         row("fields decoded", "%llu", (unsigned long long)at.fields);
         row("Reed-Solomon", "%llu clean, %llu corrected, %llu failed", (unsigned long long)at.rsClean, (unsigned long long)at.rsCorrected, (unsigned long long)at.rsFailed);
         row("lock losses", "%llu (field sync misses %llu)", (unsigned long long)at.lockLosses, (unsigned long long)at.fieldSyncMisses);
+        row("decoder load", "%.0f%% of real time%s", 100 * at.decodeLoad, at.fieldsDropped ? "" : "  (no field dropped)");
+        if (at.fieldsDropped || at.packetsDropped)
+            row("dropped", "%llu fields (decoder too slow), %llu packets (player or recorder too slow)", (unsigned long long)at.fieldsDropped, (unsigned long long)at.packetsDropped);
         return;
     }
     subNav("rx", a.subRx, {"Sync", "Signalling", "FEC", "Frame map", "Channel"});
@@ -107,6 +115,7 @@ ImU32 scoreColour(double sc) {
 }
 
 static void mainTabsInner(App& a, bool unified);
+#include "ui/input_map.h"
 #include "main_tabs_unified.inc"
 
 void mainTabs(App& a) {
@@ -131,6 +140,21 @@ static void mainTabsInner(App& a, bool unified) {
     if (unified && gForceTab == "Overview") gForceTab.clear();
     // a narrow pane: the tabs get less padding (the bar takes it from the style when it begins, each tab when it is added), so that they keep
     // their whole names instead of being cut short or scrolled out of view
+    // a mode with a Simple view: the switch above, then either the one Command view (Simple) or the tabs below (Advanced)
+    if (const ModeUi* mu = modeUi(a.family); mu && modepanel::available(a)) {
+        if (modepanel::simple(a)) {
+            if (!unified) {   // the Overview tab (the spectrum) is not a tab here: the spectrum stays above the Command view
+                const float h = std::floor(std::min(330 * gUi, std::max(210 * gUi, ImGui::GetContentRegionAvail().y * 0.32f)));
+                ImGui::BeginChild("##simpleSpec", ImVec2(0, h), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                overviewTab(a);
+                ImGui::EndChild();
+            }
+            adsbmap::FullScope fs(&a, [&a, mu]{ modepanel::commandView(a, *mu); });
+            modepanel::commandView(a, *mu);   // in the window of the tabs (it scrolls like a tab body), not in a child of its own
+            return;
+        }
+    }
+    modeActionBar(a);   // 3.7: the same row (next step, Auto setup, Reset this mode) above the tabs of every mode; 4.0: one row, Simple / Advanced at its right end
     gTightTabs = ImGui::GetContentRegionAvail().x < 760 * gUi;
     if (gTightTabs) ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3 * gUi, ImGui::GetStyle().FramePadding.y));
     const bool bar = pal::dev() ? kit::beginTabs("tabs") : ImGui::BeginTabBar("tabs", 0);
@@ -139,7 +163,7 @@ static void mainTabsInner(App& a, bool unified) {
         gMainTabBar = ImGui::GetCurrentTabBar();
         if (!unified && tabItem(N_("Overview"), Ic::Grid)) { adsbmap::FullScope fs(&a, [&a]{ overviewTab(a); }); overviewTab(a); ImGui::EndTabItem(); }
         if (const ModeUi* mu = modeUi(a.family)) {   // a mode added after FM: its own tabs
-            if (mu->tab && tabItem(mu->tabName ? mu->tabName : "Mode", mu->tabIcon)) { adsbmap::FullScope fs(&a, [&a, mu]{ mu->tab(a); }); mu->tab(a); ImGui::EndTabItem(); }
+            if (mu->tab && tabItem(mu->tabName ? mu->tabName : "Mode", mu->tabIcon)) { adsbmap::FullScope fs(&a, [&a, mu]{ mu->tab(a); }); easeui::codecNotice(a); mu->tab(a); ImGui::EndTabItem(); }
             else if (!mu->tab && mu->stream && tabItem(N_("TV"), Ic::Tv)) { adsbmap::FullScope fs(&a, [&a]{ tvTab(a); }); tvTab(a); ImGui::EndTabItem(); }
             if (mu->receiver && tabItem(N_("Receiver"), Ic::Antenna)) { adsbmap::FullScope fs(&a, [&a]{ receiverTab(a); }); receiverTab(a); ImGui::EndTabItem(); }
             if (mu->stream && tabItem(N_("Stream"), Ic::Layers)) { adsbmap::FullScope fs(&a, [&a]{ streamTab(a); }); streamTab(a); ImGui::EndTabItem(); }

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # OnAir voice codec build helper for macOS and Linux.
 # Run it yourself:  bash tools/codec-builder/build-codecs.sh
 # It asks which plug-ins you want, shows a patent/licence notice, and fetches the upstream source ONLY after you type "yes".
@@ -46,6 +49,7 @@ echo "  ambe2  AMBE+2 for DMR, NXDN, dPMR"
 echo "  ambe   AMBE for D-STAR"
 echo "  imbe   IMBE for P25"
 echo "  ysf    Yaesu System Fusion (only the 7-byte V/D mode 2 frames)"
+echo "Not made by this helper: aeroambe (build tools/addons/aeroambe, docs/CODECS.md), iridium and tetrapol (no source in OnAir: bring your own plug-in)."
 echo
 if [ -n "$ARG_IDS" ]; then CHOICE="$ARG_IDS"; else
 printf 'Which ones? Type ids separated by spaces, or "all": '
@@ -126,8 +130,9 @@ for id in $LIST; do
   OUT="$WORK/onair-codec-$id.$EXT"
   UPPER="$(echo "$id" | tr '[:lower:]' '[:upper:]')"
   echo "Building plug-in $id ..."
+  # MBE_STATIC: the static mbelib-neo is linked in, so on Windows (MSYS2) its header must not mark the functions dllimport (#468)
   # shellcheck disable=SC2086
-  if cc $SHARED -fPIC -O2 -DCODEC_"$UPPER" -I"$WORK/src/include" -I"$GENINC" "$WRAPPER" "$LIB" -lm -o "$OUT" 2>"$WORK/cc-$id.log"; then
+  if cc $SHARED -fPIC -O2 -DMBE_STATIC=1 -DCODEC_"$UPPER" -I"$WORK/src/include" -I"$GENINC" "$WRAPPER" "$LIB" -lm -o "$OUT" 2>"$WORK/cc-$id.log"; then
     cp "$OUT" "$OUTDIR/" && DONE="$DONE $id"
   else
     tail -n 20 "$WORK/cc-$id.log"; echo "  plug-in $id failed (see above)"

@@ -1,8 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // card.js - the track info card (slide-in panel on desktop, bottom sheet on phones), FlightRadar24 style.
 // build once per selection, then update() rewrites only the text of changed fields (call it at most 1 Hz).
 // Pure helpers live in geo.js / types.js; this file is the only part that touches the DOM for the card.
 
+import { sparkline, seriesOfTrail } from "./view.js";
 import { SHAPES } from "./shapes.js";
+import { parseShowcase } from "./badges/defs.js";
+import { badgeSvg } from "./badges/art.js";
 import { airportByCode } from "./airports.js";
 import {
   distanceNm, eta, progress, estimateDeparture, squawkMeaning, formatDuration, vrateArrow, flagEmoji,
@@ -98,6 +104,11 @@ export function createCard(host, api) {
           <img class="pic-photo" data-f="photo" alt="" hidden referrerpolicy="no-referrer" decoding="async">
           <figcaption><span data-f="picName"></span><span class="pic-credit" data-f="credit" hidden></span></figcaption>
         </figure>
+        <section class="spark" data-f="spark" hidden>
+          <h3><span data-f="sparkName">History</span><em data-f="sparkNow"></em></h3>
+          <div data-f="sparkSvg"></div>
+          <div class="ax"><span data-f="sparkT0"></span><span data-f="sparkRange"></span><span>now</span></div>
+        </section>
         <dl class="rows" data-f="rows"></dl>
         <p class="c-extra" data-f="extra" hidden></p>
         <section class="c-msgs" data-f="msgsBox" hidden>
@@ -329,7 +340,7 @@ export function createCard(host, api) {
   /** Data rows for any track. Rebuilt only when their text changes. */
   function updateRows(t, m, now) {
     const rows = [];
-    const add = (k, v, cls, title) => { if (v !== "" && v != null) rows.push([k, String(v), cls || "", title || ""]); };
+    const add = (k, v, cls, title, raw) => { if (v !== "" && v != null) rows.push([k, String(v), cls || "", title || "", raw || ""]); };
     const src = (t.src || "").toLowerCase();
     const dv = t.dv ? "~" : "";   // speed, track and vertical rate derived from position reports, not broadcast by the aircraft
     const dvTip = t.dv ? "Derived from position reports (distance between two fixes divided by the time); the aircraft did not broadcast it." : "";
@@ -362,11 +373,13 @@ export function createCard(host, api) {
     add("Position", fmtLat(t.lat) + "  " + fmtLon(t.lon));
     add("Position age", ageText((now - posMs(t)) / 1000));
     if (t.by) add("Last heard by", t.by + " " + ageText((now - (t.heard_at || t.t)) / 1000));   // optional public name of the station; shown as text only
+    const sc = t.by ? parseShowcase(t.bb) : null;   // that station's top badge (signed in, public profile): our own art and a link to the profile
+    if (sc) add("Station badge", sc.title, "", "Badges earned by sharing to this map", badgeSvg(sc.badge.icon, sc.tier, { size: 18, title: sc.title }) + ` <a href="/u/${esc(sc.login)}" target="_blank" rel="noopener">${esc(sc.title)}</a>`);
     if (t.kind === "aircraft" || t.kind === "flarm") add("Source", SRC_NAME[src] || t.sub || "");
     if (t.cat && t.kind !== "aircraft") add("Category", t.cat);
     else if (t.cat && /^[AB][0-7]$/.test(t.cat)) add("Emitter category", t.cat);
     // geometric altitude, Mach, IAS and "seen by N stations" are not in the data the hub receives, so they are not shown
-    const html = rows.map(([k, v, c, tip]) => `<div class="${c}"${tip ? ` title="${esc(tip)}"` : ""}><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+    const html = rows.map(([k, v, c, tip, raw]) => `<div class="${c}"${tip ? ` title="${esc(tip)}"` : ""}><dt>${esc(k)}</dt><dd>${raw || esc(v)}</dd></div>`).join("");
     if (f.rows._html !== html) { f.rows.innerHTML = html; f.rows._html = html; }
     if (t.extra) { f.extra.hidden = false; set("extra", t.extra); } else f.extra.hidden = true;
     const alertRow = rows.some((r) => r[2] === "alert");
@@ -390,6 +403,26 @@ export function createCard(host, api) {
     set("picName", [nm, m.registration].filter(Boolean).join(" · "));
     maybeLoadPhoto(t);
     maybeLoadMsgs(t);
+    updateSpark(t);
+  }
+
+  /** History plot under the picture: altitude (or the distance from the first fix) over the time the page has the trail for. */
+  function updateSpark(t) {
+    const ser = seriesOfTrail(t.tpts);
+    const sp = ser && sparkline(ser.points, 300, 56, 3);
+    show("spark", !!sp);
+    if (!sp) return;
+    const key = sp.n + ":" + sp.last + ":" + sp.x1;
+    if (f.sparkSvg.dataset.k === key) return;
+    f.sparkSvg.dataset.k = key;
+    f.sparkSvg.innerHTML = `<svg viewBox="0 0 300 56" preserveAspectRatio="none" role="img" aria-label="${esc(ser.name)} history"><path class="sa" d="${sp.area}"/><path class="sl" d="${sp.line}"/></svg>`;
+    set("sparkName", ser.name);
+    const u = ser.unit === "ft" ? " ft" : " km";
+    const fmt = (v) => (ser.unit === "ft" ? Math.round(v).toLocaleString() : v.toFixed(1)) + u;
+    set("sparkNow", fmt(sp.last));
+    set("sparkRange", fmt(sp.min) + " to " + fmt(sp.max));
+    const mins = Math.max(1, Math.round((sp.x1 - sp.x0) / 60000));
+    set("sparkT0", mins < 90 ? mins + " min ago" : Math.round(mins / 60) + " h ago");
   }
 
   function close() { host.hidden = true; host.classList.remove("open", "emergency"); cur = null; photoFor = ""; msgsFor = ""; }

@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+// Test signals of the ham science modes (hamsci_gen.h).
+#include "dect2/hamsci/hamsci_gen.h"
+#include "dect2/hamsci/hamsci_dsp.h"
+#include "dect2/hamsci/hamsci_evt.h"
+#include "dect2/hamsci/hamsci_tel.h"
+#include "hamsci_int.h"
+#include <algorithm>
+#include <cmath>
+#include <random>
+
+namespace dect2 {
+
+namespace {
+using hamsci::detail::kPi;
+
+class HamsciSynth final : public ModeSynth {
+public:
+    HamsciSynth(const SynthConfig& c, double rate, int kind) : cfg_(c), rate_(rate), kind_(kind), rng_(1234u + (unsigned)kind) { prepare(); }
+    double sampleRate() const override { return rate_; }
+    void generate(cf32* out, size_t n) override {
+        if (hamsciEvtKind(kind_)) { genEvt(out, n); return; }
+        if (kind_ == kHsPulsar) { genPulsar(out, n); return; }
+        if (kind_ == kHsSid) { genSid(out, n); return; }
+        if (kind_ == kHsRiometer) { genRio(out, n); return; }
+        genAudio(out, n);
+    }
+private:
+    // the event monitors: a looped stretch of the test signal of hamsci_evt.h (the loop length keeps the buffer under 8 million samples)
+    void prepareEvt() {
+        // above 4 Msps (a custom wide capture) the stretch is made at rate_ / hold_ and each sample is held hold_ times: made at the full
+        // rate, the burst and beacon signals took longer than an engine waits for its first signal (custom_bandwidth_all, 6 MHz wide)
+        hold_ = rate_ > 4e6 ? (int)std::ceil(rate_ / 2e6) : 1;
+        const double gr = rate_ / hold_;
+        hamsci::EvtGenOpt o;
+        o.seconds = std::clamp(8e6 / gr, 4.0, 60.0);
+        o.offsetHz = cfg_.cfoHz;
+        const double L = o.seconds;
+        switch (kind_) {
+        case kHsSchumann: evt_ = hamsci::evtGenSchumann(gr, o); break;
+        case kHsWhistler: evt_ = hamsci::evtGenWhistler(gr, o, {0.07 * L, 0.5 * L}, {0.03 * L, 0.2 * L, 0.35 * L, 0.65 * L, 0.85 * L}); break;
+        case kHsEme: o.seconds = std::max(L, 16.0); evt_ = hamsci::evtGenEme(gr, o, {2.0, 9.0}, 1.5, 2.55, 120.0, 4.0, 10.0); break;
+        case kHsJove: o.offsetHz = 0; evt_ = hamsci::evtGenBursts(gr, o, {0.2 * L, 0.55 * L}, 0.15 * L, 0, 0.8 * gr); break;
+        case kHsCallisto: o.offsetHz = -0.25 * gr; evt_ = hamsci::evtGenBursts(gr, o, {0.2 * L, 0.6 * L}, 0.25 * L, 0.2 * gr / (0.25 * L), 0.2 * gr); break;
+        default: o.seconds = std::max(L, 30.0); o.level = 30.0; evt_ = hamsci::evtGenBeacon(gr, o, {5.0, 40.0}, 18.0, kind_ == kHsAurora ? 120.0 : 0.0, 3.0); break;
+        }
+        if (evt_.empty()) evt_.assign(1024, cf32(0, 0));
+    }
+    void genEvt(cf32* out, size_t n) {
+        for (size_t i = 0; i < n; i++) { out[i] = evt_[evtPos_]; if (++evtSub_ >= hold_) { evtSub_ = 0; if (++evtPos_ >= evt_.size()) evtPos_ = 0; } }
+    }
+
+    void prepare() {
+        if (hamsciEvtKind(kind_)) { prepareEvt(); return; }
+        const double fs = hamsci::kAudioRate;
+        const double snr = cfg_.snrDb >= 99 ? 30.0 : cfg_.snrDb;
+        const double off = cfg_.cfoHz;
+        switch (kind_) {
+        case kHsQrss: audio_ = hamsci::qrssGenerate("CQ", 3.0, fs, 1000 + off, false, 0, 0.3, 5.0); break;
+        case kHsDfcw: audio_ = hamsci::qrssGenerate("CQ", 6.0, fs, 1000 + off, true, 1.5, 0.3, 5.0); break;
+        case kHsFsk441: {
+            audio_.assign((size_t)(24 * fs), 0.f);
+            const double starts[] = {2.0, 8.5, 14.0, 19.5};
+            for (double s : starts) {
+                auto b = hamsci::fsk441Generate("W9XYZ K1JT 26", fs, 1 + (int)(s) % 3, off, 0.3);
+                b.resize(std::min(b.size(), (size_t)(0.5 * fs)));
+                for (size_t i = 0; i < b.size(); i++) audio_[(size_t)(s * fs) + i] += b[i];
+            }
+            break;
+        }
+        case kHsIscat: audio_ = hamsci::iscatGenerate("CQ DX K1JT FN20", std::clamp(cfg_.modeOpt[0], 0, 1), fs, 30.0, off, 0.3, 0.0); break;
+        case kHsPi4: { audio_ = hamsci::pi4Generate("PI4ABC", fs, 1200 + off, 0.3, 0.0, 30.0); break; }
+        case kHsThrob: audio_ = hamsci::throbGenerate("CQ CQ DE W1AW K", std::clamp(cfg_.modeOpt[0], 0, 5), fs, 1500 + off, 0.3, 4); break;
+        case kHsJt6m: {   // three pings of 0.6 to 1.6 s in 24 s of noise, then the loop repeats
+            audio_.assign((size_t)(24 * fs), 0.f);
+            const double starts[] = {3.0, 10.4, 17.7}, lens[] = {0.8, 1.6, 0.6};
+            for (int k = 0; k < 3; k++) {
+                auto b = hamsci::jt6mGenerate("K1JT W9XYZ 26", fs, lens[k], off, 0.3);
+                for (size_t i = 0; i < b.size(); i++) audio_[(size_t)(starts[k] * fs) + i] += b[i];
+            }
+            break;
+        }
+        default: break;
+        }
+        if (audio_.empty() && hamsciAudioKind(kind_)) audio_.assign((size_t)fs, 0.f);
+        double p = 0;
+        for (float v : audio_) p += (double)v * v;
+        p /= std::max<size_t>(1, audio_.size());
+        // the signal power in the 2500 Hz reference band is the audio power over two (the real signal has two sidebands, the receiver keeps one); the keyed modes are off part of
+        // the time, so the figure is a mean power, not the key-down power
+        double on = 0;
+        size_t cnt = 0;
+        for (float v : audio_) if (std::fabs(v) > 1e-4f) { on += (double)v * v; cnt++; }
+        const double sigPow = cnt ? on / (double)cnt / 2.0 : 0.05;
+        sigma_ = std::sqrt(sigPow / std::pow(10.0, snr / 10.0) * (rate_ / 2.0) / 2500.0);
+        (void)p;
+    }
+
+    void genAudio(cf32* out, size_t n) {
+        std::normal_distribution<float> g(0.f, 1.f);
+        const double step = hamsci::kAudioRate / rate_;
+        for (size_t i = 0; i < n; i++) {
+            size_t i0 = (size_t)pos_;
+            const double fr = pos_ - (double)i0;
+            const size_t i1 = (i0 + 1) % audio_.size();
+            i0 %= audio_.size();
+            const float a = (float)((1.0 - fr) * audio_[i0] + fr * audio_[i1]);
+            out[i] = cf32(a + (float)sigma_ * g(rng_) / 1.4142f, (float)sigma_ * g(rng_) / 1.4142f);
+            pos_ += step;
+            if (pos_ >= (double)audio_.size()) pos_ -= (double)audio_.size();
+        }
+    }
+
+    void genSid(cf32* out, size_t n) {
+        // stations around a dial at 22 kHz: NAA +2 kHz, NLK +2.8 kHz, NPM -0.6 kHz, DHO38 +1.4 kHz; noise 1.0 per complex sample, carriers 20 / 16 / 12 / 10 dB over
+        // the noise per sample; the flare option steps NAA by 3 dB at 17 minutes
+        struct C { double off, amp; };
+        static const C cs[] = {{2000, 10.0}, {2800, 6.3}, {-600, 4.0}, {1400, 3.2}};
+        std::normal_distribution<float> g(0.f, 1.f);
+        for (size_t i = 0; i < n; i++) {
+            cf32 v(g(rng_) / 1.4142f, g(rng_) / 1.4142f);
+            const double t = (double)total_ / rate_;
+            for (size_t c = 0; c < 4; c++) {
+                double a = cs[c].amp * 0.05;
+                if (c == 0 && cfg_.modeOpt[0] == 1 && t >= 17 * 60) a *= 1.41;
+                const double ph = 2 * kPi * cs[c].off * t;
+                v += cf32((float)(a * std::cos(ph)), (float)(a * std::sin(ph)));
+            }
+            out[i] = v;
+            total_++;
+        }
+    }
+
+    void genRio(cf32* out, size_t n) {
+        std::normal_distribution<float> g(0.f, 1.f);
+        std::uniform_real_distribution<double> u(0, 1);
+        const size_t blk = std::max<size_t>(1, (size_t)(rate_ * 0.02));
+        for (size_t i = 0; i < n; i++) {
+            if (total_ % blk == 0) burst_ = u(rng_) < 0.03;
+            const double t = (double)total_ / rate_;
+            double a = 0.1;
+            if (std::fmod(t, 600.0) > 300.0) a *= std::pow(10.0, -0.5 / 20.0);   // 0.5 dB steps down every five minutes: shows in the power trace
+            if (burst_) a *= 3.0;
+            out[i] = cf32((float)(a * g(rng_)), (float)(a * g(rng_)));
+            total_++;
+        }
+    }
+
+    void genPulsar(cf32* out, size_t n) {
+        for (size_t i = 0; i < n; i++) {
+            if (pos2_ >= chunk_.size()) {
+                hamsci::PulsarConfig c;
+                c.rateHz = rate_; c.centreHz = 408e6; c.channels = 64; c.periodS = 0.714520; c.dm = 26.76;
+                const double snr = cfg_.modeVal[0] > 0 ? cfg_.modeVal[0] : 0.1;
+                chunk_ = hamsci::pulsarRender(c, 5.0, snr, 99 + (uint32_t)block_, 0.03, 26.76, 0.714520);
+                block_++;
+                pos2_ = 0;
+            }
+            out[i] = chunk_[pos2_++] * 0.2f;
+        }
+    }
+
+    SynthConfig cfg_;
+    double rate_;
+    int kind_;
+    std::mt19937 rng_;
+    std::vector<float> audio_;
+    double pos_ = 0, sigma_ = 0.1;
+    uint64_t total_ = 0;
+    bool burst_ = false;
+    std::vector<cf32> chunk_;
+    std::vector<cf32> evt_;
+    size_t evtPos_ = 0;
+    int hold_ = 1, evtSub_ = 0;
+    size_t pos2_ = 0;
+    uint64_t block_ = 0;
+};
+}
+
+std::unique_ptr<ModeSynth> makeHamsciSynth(const SynthConfig& cfg, double sampleRate, int kind) { return std::make_unique<HamsciSynth>(cfg, sampleRate, kind); }
+
+}  // namespace dect2

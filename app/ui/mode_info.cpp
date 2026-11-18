@@ -1,8 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mode Browser data derived from the mode table: tags (from the group, then a few by name), what a mode needs, its minimum radio rate, and
 // whether the selected radio fits it. Nothing is parsed from the blurbs; the rows stay as they are (mode_picker_logic.h has the rules).
 #include "../app.h"
 #include "dect2/engine/mode_tuning.h"
 #include "mode_picker_logic.h"
+#include "dect2/codec/codec_registry.h"
+#include "dect2/dstar/dstar_ambe.h"
+#include "dect2/nxdn/nxdn_ambe.h"
+#include "dect2/p25/p25_imbe.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -26,7 +33,7 @@ void modeInfoFill() {
             m.minRateMsps = (float)(t->minSampleRate / 1e6);
             m.bandMinMhz = m.bandMaxMhz = t->defMhz;
         }
-        if (inList(m.name, {"GOES HRIT", "Elektro-L", "DVB-S/S2"})) m.needs |= modepick::NDish;
+        if (inList(m.name, {"GOES HRIT", "Elektro-L", "GK-2A LRIT", "GK-2A HRIT", "DVB-S/S2", "FY-4 LRIT", "FY-4A HRIT-II/III", "FY-2 S-VISSR"})) m.needs |= modepick::NDish;
         if (inList(m.name, {"GNSS", "Inmarsat-C", "Inmarsat Aero", "Iridium"})) m.needs |= modepick::NActiveAnt;
         if (inList(m.name, {"DVB-C"})) m.needs |= modepick::NCable;
         if (m.minRateMsps >= 8) m.needs |= modepick::NWideRadio;
@@ -49,11 +56,23 @@ static modepick::Radio radioOf(const App& a) {
 }
 
 ModeFit modeFit(const App& a, const ModeDef& m) {
+    if (ModeFit st; stationFit(a, m, st)) return st;   // the whole station when the user entered one
     modepick::ModeNeed n;
     n.minRateHz = m.minRateMsps * 1e6;
     n.defMhz = m.bandMinMhz;
     const modepick::Fit f = modepick::fit(radioOf(a), n);
-    return {f.ok, f.reason};
+    return {f.ok, f.reason, modeGeoNote(m), modeAntennaNote(m)};
 }
 
-bool modeCodecMissing(const ModeDef&) { return false; }   // wired to the codec check (docs/CODECS.md) later
+// a voice mode whose vocoder the user has to install (docs/CODECS.md) and has not: the calls and data still decode, the sound stays off.
+// Called for every visible row each frame: pluginLoaded is a map lookup and the mbelib scan is done once.
+bool modeCodecMissing(const ModeDef& m) {
+    if (!m.name) return false;
+    const std::string n = m.name;
+    if (n == "DMR" || n == "NXDN" || n == "P25 Phase 2" || n.rfind("dPMR", 0) == 0) return !dect2::nxdnAmbeAvailable(nullptr);
+    if (n == "P25") return !dect2::p25ImbeAvailable(nullptr);
+    if (n == "D-STAR") return !dect2::dstarAmbeAvailable(nullptr);
+    if (n == "Yaesu Fusion") return !dect2::codec::pluginLoaded("ysf") && !dect2::nxdnAmbeAvailable(nullptr);   // fusion_rx: the plug-in, else the DMR/NXDN one
+    if (n == "TETRA") return !dect2::codec::pluginLoaded("tetra");
+    return false;
+}

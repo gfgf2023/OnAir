@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Local elevation data for the propagation tool: SRTM .hgt tiles and simple GeoTIFF files the user already has (nothing is downloaded),
 // height lookups, path profiles and the delta-Bullington terrain diffraction (ITU-R P.526 section 4.5 / P.1812 section 4.3, simplified).
 #pragma once
@@ -33,6 +36,14 @@ bool parseHgt(const std::string& fileName, const std::vector<uint8_t>& bytes, El
 bool parseGeoTiff(const std::vector<uint8_t>& bytes, ElevTile& t, std::string& err);
 // By extension and content; adds the tile to t. err says why not (compressed, projected coordinates, ...)
 bool loadElevationFile(const std::string& path, Terrain& t, std::string& err);
+
+// 4.0: opt-in tile download. The tiles are the public "Terrain Tiles" on AWS (Mapzen / Linux Foundation, open data; 1 arc-second, mostly
+// SRTM, see THIRD_PARTY.md), one gzip SRTM .hgt per 1 x 1 degree, named after the south-west corner. loadElevationFile reads them
+// (".hgt.gz", kept at 3 arc-seconds).
+std::string demTileName(int latSouth, int lonWest);              // "N54E025"
+std::string demTileUrl(int latSouth, int lonWest);               // https://s3.amazonaws.com/elevation-tiles-prod/skadi/N54/N54E025.hgt.gz
+// the tiles that cover a circle of radiusKm around a point, and the straight path to a second point when lat2 / lon2 are finite; at most maxTiles
+std::vector<std::pair<int, int>> demTilesFor(double lat, double lon, double radiusKm, double lat2, double lon2, int maxTiles = 9);
 
 struct Profile {
     std::vector<double> dKm, hM;   // distance from the transmitter, ground height above sea level

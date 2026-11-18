@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // OnAir Web settings: the web_* keys of the server's settings file (docs/ONAIR-WEB.md lists them) to the hub's limits, the policy and the
 // network server's config, and back (the admin API's policy and invite changes).
 #pragma once
 #include "web_directory.h"
 #include "web_hub.h"
+#include "web_relay.h"
 #include "web_server.h"
 #include <string>
 #include <vector>
@@ -18,6 +22,7 @@ struct WebSettings {
     bool logIp = false;
     std::string name = "OnAir Web", location, antenna;
     DirectoryConfig directory;
+    RelayConfig relay;               // web_relay=1: an outbound connection to a relay service gives this server a public address with no port forwarding
     std::vector<std::string> warnings;   // printed at start (plain HTTP on the network, missing admin token, ...)
 };
 

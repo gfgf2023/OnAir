@@ -1,8 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GOES HRIT screens: the product list (full disk, mesoscale, CONUS and relayed images, EMWIN text, admin messages) on the right; the
 // selected product in the Products tab: an image that grows as its lines arrive (Rice and plain images; JPEG / GIF once complete) or
 // its text (EMWIN ZIP files unpacked); Save, and Save automatically into <data folder>/goes/. The receiver's state and the constellation.
 // A dish (about 1 m, or a grid) with an LNA at the feed is needed: a note says so while nothing is received.
+#include "dect2/goes/emwin_parse.h"
+#include "ui/kit/mode_panel.h"
 #include "app.h"
+#include "ease/ease_ui.h"
 #include "panels/gallery.h"
 #include "gfx/gfx.h"
 #include "map/wx_overlay.h"
@@ -39,6 +45,7 @@ struct State {
     bool autoSave = true;
     bool saveCadu = false;                // write the good frames to <data folder>/goes/frames.cadu
     int filter = 0;
+    int link = 0, appliedLink = -1;       // 0 GOES-R HRIT 927 ksym/s, 1 GOES-N / O / P LRIT 293.883 ksym/s
     bool follow = true;                   // show the newest image as it comes
     uint64_t selId = 0;
     // the texture of the shown product
@@ -58,6 +65,7 @@ void loadState() {
     S.autoSave = plat::prefs().getB("goesAutoSave", true);
     S.filter = std::clamp((int)plat::prefs().getI("goesFilter", 0), 0, 2);
     S.saveCadu = plat::prefs().getB("goesSaveCadu", false);
+    S.link = std::clamp((int)plat::prefs().getI("goesLink", 0), 0, 1);
 }
 
 // good frames as 1024 byte CADUs (sync word, then the derandomised 1020 bytes), the file other decoders write too: compare or feed it back
@@ -252,6 +260,14 @@ void showProduct(App& a, const Product& p) {
     { std::lock_guard<std::mutex> lk(p.mu); txt = p.text; if (!p.innerName.empty()) txt = p.innerName + ":\n" + txt; }
     if (txt.empty()) { ImGui::TextDisabled("%s", complete ? "no text in this product (it can still be saved)" : "receiving"); return; }
     for (char& c : txt) if (c == '\r') c = ' '; else if ((unsigned char)c < 32 && c != '\n' && c != '\t') c = '.';
+    {   // an NWS bulletin: what it is and where it applies
+        const dect2::EmwinBulletin b = dect2::emwinParse(txt);
+        if (b.ok) {
+            ImGui::Text("%s  %s", b.awips.empty() ? b.wmoHeader.c_str() : b.awips.c_str(), b.headline.c_str());
+            if (!b.vtec.empty()) { ImGui::SameLine(); ImGui::TextColored(b.severity >= 3 ? ImVec4(1, 0.4f, 0.3f, 1) : ImVec4(0.9f, 0.75f, 0.3f, 1), "%s.%s %s", b.vtec[0].phenomenon.c_str(), b.vtec[0].significance.c_str(), b.vtec[0].action.c_str()); }
+            if (!b.ugc.empty()) ImGui::TextDisabled("%zu %s, %zu %s", b.ugc.size(), tr("areas"), b.polygon.size(), tr("polygon points"));
+        }
+    }
     ImGui::BeginChild("##goestxt", ImVec2(0, 0), ImGuiChildFlags_Borders);
     ImGui::PushFont(a.mono, 0); ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(txt.c_str()); ImGui::PopTextWrapPos(); ImGui::PopFont();
     ImGui::EndChild();
@@ -336,6 +352,7 @@ void list(App& a) {
 }
 
 void receiver(App& a) {
+    easeui::alignButton(a, "goes", a.rx.goes.snrDb, live(a) && a.rx.goes.snrDb > 0);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     const GoesTelemetry& t = a.rx.goes;
     kvRow(a, "state", "%s", dect2::goesSummary(t).c_str());
@@ -361,6 +378,7 @@ void receiver(App& a) {
         for (size_t i = 0; i < t.log.size() && i < 40; i++) { ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(t.log[i].c_str()); ImGui::PopTextWrapPos(); }
         ImGui::PopFont();
     }
+    smart5GeoCard(a);   // round-5 smart checks (app/smart5, docs/SMART5-UI-3.9.md)
 }
 
 void panels(App& a) {
@@ -413,8 +431,13 @@ void galleryPublish(const GoesTelemetry& t) {
     }
 }
 
+// The GOES-N / O / P LRIT broadcast (1691.0 MHz) uses the same CCSDS frames and LRIT files as the GOES-R HRIT, at 293.883 ksym/s
+double linkSymbolRate(int link) { return link == 1 ? 293883.0 : 927000.0; }
+double linkMhz(int link) { return link == 1 ? 1691.0 : 1694.1; }
+
 void tick(App& a) {
     loadState();
+    if (S.appliedLink != S.link) { a.engine.goes().setSymbolRate(linkSymbolRate(S.link)); S.appliedLink = S.link; }
     if (live(a)) autoSave(a.rx.goes);
     if (live(a)) galleryPublish(a.rx.goes);
 }
@@ -422,9 +445,21 @@ void tick(App& a) {
 void tuner(App& a, bool& retune) {
     ImGui::TextDisabled("Frequency");
     sameLineIf(90 * gUi, 5 * gUi);
-    if (ImGui::Button("1694.1 MHz")) { tuneFreq(a, 1694.1); retune = true; }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("GOES-16 / 18 / 19 HRIT and EMWIN (BPSK 927 ksym/s). Point a dish (about 1 m, or a grid antenna) at the\n"
-                                                  "satellite with an LNA and a 1.7 GHz filter at the feed; the signal is far below the noise of a plain antenna.");
+    loadState();
+    if (ImGui::Button(S.link == 1 ? "1691.0 MHz" : "1694.1 MHz")) { tuneFreq(a, linkMhz(S.link)); retune = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", S.link == 1 ? tr("GOES-N / O / P LRIT (BPSK 293.883 ksym/s): the older series, now retired or stored; recordings and spare satellites.")
+                                                                   : tr("GOES-16 / 18 / 19 HRIT and EMWIN (BPSK 927 ksym/s). Point a dish (about 1 m, or a grid antenna) at the satellite with an LNA and a 1.7 GHz filter at the feed; the signal is far below the noise of a plain antenna."));
+    flowEnd();
+    ImGui::TextDisabled("%s", tr("Link"));
+    sameLineIf(90 * gUi, 5 * gUi);
+    const char* links[2] = {tr("GOES-R HRIT, 927 ksym/s"), tr("GOES-N/O/P LRIT, 293.883 ksym/s")};
+    ImGui::SetNextItemWidth(230 * gUi);
+    if (ImGui::Combo("##goeslink", &S.link, links, 2)) {
+        plat::prefs().setI("goesLink", S.link); plat::prefs().flush();
+        a.engine.goes().setSymbolRate(linkSymbolRate(S.link)); S.appliedLink = S.link;
+        tuneFreq(a, linkMhz(S.link)); retune = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Both links carry the same CCSDS frames and LRIT files; only the symbol rate and the frequency differ."));
     flowEnd();
 }
 
@@ -436,6 +471,12 @@ void meters(const App& a, std::vector<ModeMeter>& out) {
 }
 
 } // namespace
+
+// Simple view: the picture with its controls, and the signal and the products / channels beside it
+static void command(App& a) {
+    modepanel::panes({{"##goescpic", nullptr, [&a] { tab(a); }, 2.2f, 300.f},
+                      {"##goescsig", tr("Signal"), [&a] { receiver(a); ImGui::Spacing(); list(a); }, 1.f, 240.f}}, 340.f);
+}
 
 extern const ModeUi kGoesUi;
 const ModeUi kGoesUi = {
@@ -451,4 +492,5 @@ const ModeUi kGoesUi = {
     .tuner = tuner,
     .tick = tick,
     .meters = meters,
+    .command = command,
 };

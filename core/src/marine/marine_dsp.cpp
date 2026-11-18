@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/marine/marine_dsp.h"
 #include "dect2/common/window.h"
 #include "dect2/dsp/fftutil.h"
@@ -39,6 +42,10 @@ void Front::configure(double inputRate) {
     r1_ = fs_ / dec_;
     step_ = r1_ / kBaseRate;
     cicScale_ = 1.0 / (std::pow((double)dec_, 4.0) * 1048576.0);
+    // Input limit of the fixed-point CIC: the largest value whose filter output still fits in int64 (gain dec^4, 2^20 per unit, half the
+    // range kept free). It was 8, which clipped float recordings with a larger scale and wide captures whose noise alone is several units
+    // (the noise of a 2 MHz capture is 26 times the power in the 300 Hz NAVTEX channel): about 3 dB of NAVTEX sensitivity was lost there.
+    clip_ = (float)std::min(4096.0, 4.0e18 / (std::pow((double)dec_, 4.0) * 1048576.0));
     const double fc = 9000.0 / r1_;
     table_.assign((size_t)(kPhases + 1) * kTaps, 0.f);
     for (int ph = 0; ph <= kPhases; ph++) {
@@ -80,8 +87,8 @@ void Front::process(const cf32* x, size_t n, std::vector<cf32>& out) {
         float zr = xr * rr - xi * ri, zi = xr * ri + xi * rr;
         const float nr = rr * sr - ri * si; ri = rr * si + ri * sr; rr = nr;
         if (++rotCount_ >= 1024) { rotCount_ = 0; const float g = 1.f / std::sqrt(rr * rr + ri * ri); rr *= g; ri *= g; }
-        zr = std::max(-8.f, std::min(8.f, zr)); zi = std::max(-8.f, std::min(8.f, zi));
-        uint64_t a = (uint64_t)(int64_t)std::lrintf(zr * SC), b = (uint64_t)(int64_t)std::lrintf(zi * SC);
+        zr = std::max(-clip_, std::min(clip_, zr)); zi = std::max(-clip_, std::min(clip_, zi));
+        uint64_t a = (uint64_t)(int64_t)std::llrintf(zr * SC), b = (uint64_t)(int64_t)std::llrintf(zi * SC);   // llrint: long is 32 bits on Windows
         integ_[0][0] += a; integ_[0][1] += integ_[0][0]; integ_[0][2] += integ_[0][1]; integ_[0][3] += integ_[0][2];
         integ_[1][0] += b; integ_[1][1] += integ_[1][0]; integ_[1][2] += integ_[1][1]; integ_[1][3] += integ_[1][2];
         if (++cnt_ >= dec_) {
@@ -213,12 +220,30 @@ bool FskSlicer::step(cf32 x, cf32& y) {
 // ---------------------------------------------------------------------------------------------------------------------------------
 VhfSlicer::VhfSlicer() : slicer_(kBaseRate, 1300.0, 2100.0, 20) {}
 
-void VhfSlicer::reset() { prev_ = cf32(0, 0); lp1_ = lp2_ = 0; slicer_.reset(); }
+void VhfSlicer::reset() { prev_ = cf32(0, 0); lp1_ = lp2_ = 0; for (auto& a : zi_) a[0] = a[1] = 0; for (auto& a : zq_) a[0] = a[1] = 0; afcHz_ = afcPh_ = afcMean_ = 0; slicer_.reset(); }
 
 float VhfSlicer::disc(cf32 x) {
+    if (narrow_) {
+        // 2 pole Butterworth low-pass at 4.5 kHz for a 24 kHz stream (bilinear transform), direct form II transposed, two sections
+        static const float b0 = 0.186694f, b1 = 0.373389f, b2 = 0.186694f, a1 = -0.462938f, a2 = 0.209715f;
+        afcPh_ += 2 * kPi * afcHz_ / kBaseRate;
+        if (afcPh_ > kPi) afcPh_ -= 2 * kPi; else if (afcPh_ < -kPi) afcPh_ += 2 * kPi;
+        x *= cf32((float)std::cos(afcPh_), (float)-std::sin(afcPh_));
+        float xr = x.real(), xi = x.imag();
+        for (int k = 0; k < 2; k++) {
+            const float yr = b0 * xr + zi_[k][0]; zi_[k][0] = b1 * xr - a1 * yr + zi_[k][1]; zi_[k][1] = b2 * xr - a2 * yr; xr = yr;
+            const float yi = b0 * xi + zq_[k][0]; zq_[k][0] = b1 * xi - a1 * yi + zq_[k][1]; zq_[k][1] = b2 * xi - a2 * yi; xi = yi;
+        }
+        x = cf32(xr, xi);
+    }
     const cf32 d = x * std::conj(prev_);
     prev_ = x;
     const float hz = std::atan2(d.imag(), d.real()) * (float)(kBaseRate / (2 * kPi));
+    if (narrow_) {
+        // the mean of the discriminator is the carrier error (mark and space are equally often on the air): 50 ms average, followed by a slow integrator
+        afcMean_ += (hz - afcMean_) * (1.0 / 1200.0);
+        afcHz_ = std::max(-4000.0, std::min(4000.0, afcHz_ + afcMean_ * (1.0 / 12000.0)));
+    }
     lp1_ += 0.5f * (hz - lp1_);
     lp2_ += 0.5f * (lp1_ - lp2_);
     return lp2_ * 0.0003f;                    // about +-1 for a deviation of +-3 kHz

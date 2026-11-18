@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Gain control tests: the stage split, ADC classification, and AutoGain / GainSweep closed loop on the synthetic source
 // (whose level follows the LNA/VGA/amp gains and clips like an 8-bit ADC).
 #include "dect2/engine/engine.h"
@@ -137,7 +140,7 @@ int main() {
         for (auto& x : sw.entries()) jprintf("  LNA %2d VGA %2d amp %d: SNR %6.1f dB (%d samples) level %6.1f dBFS clip %.3f%%\n", x.g.lna, x.g.vga, x.g.amp, x.snrDb, x.n, x.rms, x.clip * 100);
         jprintf("sweep %s\n", sw.summary().c_str());
         double bs = -1e9;
-        for (auto& x : sw.entries()) if (x.clip <= 0.001f) bs = std::max(bs, x.snrDb);
+        for (auto& x : sw.entries()) if (x.clip <= 0.001f && !x.overload) bs = std::max(bs, x.snrDb);   // the same rule as GainSweep::best()
         for (auto& x : sw.entries()) if (x.g == sw.best()) { CHECK(x.clip <= 0.001f, "winner clips"); CHECK(x.snrDb >= bs - 0.01, "winner is not the best SNR"); }
         e.stop();
     });

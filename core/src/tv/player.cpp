@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
+#include "dect2/tv/cc_decode.h"
 #include "dect2/common/thread_name.h"
 #include "dect2/tv/player.h"
 #include "dect2/tv/hw_guard.h"
@@ -5,6 +9,9 @@
 #include "dect2/tv/tv_dra.h"
 #include <functional>
 #include "dect2/tv/avsplus_dec.h"
+#include "dect2/audio/dolby_audio.h"
+#include "dect2/audio/ac4_dec.h"
+#include "dect2/common/diag.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -103,6 +110,7 @@ struct Player::Impl {
     int wantTrack = 0;
     std::atomic<int> trackChange{-1};
     std::shared_ptr<Subtitle> sub;
+    std::mutex ccMu; CaptionDecoder cc;      // CEA-608 / 708 captions from the video's user data
     std::mutex submu;
     std::atomic<bool> lossFlag{false};   // set when the demuxer has read past a transport-stream loss on the video PID
 
@@ -265,6 +273,13 @@ void Player::setBufferMB(int mb) {
     pcrIdx_.clear(); cursor_ = 0;
 }
 
+std::string Player::latestCaption(size_t* count) const {
+    Impl& I = *p_;
+    std::lock_guard<std::mutex> lk(I.ccMu);
+    if (count) *count = I.cc.cues().size();
+    return I.cc.cues().empty() ? std::string() : I.cc.cues().back().text;
+}
+
 void Player::pause() {
     std::lock_guard<std::mutex> lk(mu_);
     if (sid_ < 0 || paused_) return;
@@ -317,9 +332,9 @@ bool Player::recDue() const {
 bool Player::startRecording(const std::string& path, double stopAfterSec, int64_t stopAtUnix) {
     std::lock_guard<std::mutex> lk(mu_);
     recWriter_.close();
-    if (sid_ < 0) return false;
+    if (sid_ < 0) { DIAG_DEBUG(991865, "A recording of the playing service was requested but no service is playing, so no recording is started."); return false; }
     recFilter_.select(sid_);
-    if (!recWriter_.open(path)) return false;
+    if (!recWriter_.open(path)) { DIAG_ERROR(357592, "The recording file %s could not be created, so the recording of the playing service is not started.", path.c_str()); return false; }
     recStart_ = std::chrono::steady_clock::now(); recStopAfter_ = stopAfterSec; recStopAt_ = stopAtUnix;
     return true;
 }
@@ -464,8 +479,8 @@ void Player::threadMain() {
             if (f) { AVIOContext* pb = f->pb; avformat_close_input(&f); if (pb) { av_freep(&pb->buffer); avio_context_free(&pb); } }
             else { av_freep(&iobuf); }
         };
-        if (rc < 0 || stop_ || restart_) { cleanup(fmt); if (rc < 0 && !stop_ && !restart_) std::this_thread::sleep_for(std::chrono::milliseconds(200)); continue; }
-        if (avformat_find_stream_info(fmt, nullptr) < 0 || restart_) { cleanup(fmt); continue; }
+        if (rc < 0 || stop_ || restart_) { if (rc < 0 && !stop_ && !restart_) DIAG_DEBUG_EVERY(142335, 10.0, "FFmpeg could not open the transport stream input (error %d), so opening is retried every 200 ms.", rc); cleanup(fmt); if (rc < 0 && !stop_ && !restart_) std::this_thread::sleep_for(std::chrono::milliseconds(200)); continue; }
+        { const int sr = avformat_find_stream_info(fmt, nullptr); if (sr < 0 && !restart_) DIAG_DEBUG_EVERY(498634, 10.0, "FFmpeg could not find the streams in the input (error %d), so the input is opened again.", sr); if (sr < 0 || restart_) { cleanup(fmt); continue; } }
 
         if (getenv("DECT2_PLAYDEBUG")) fprintf(stderr, "[play] streams found: %u\n", fmt->nb_streams);
         int vIdx = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
@@ -510,6 +525,24 @@ void Player::threadMain() {
             }
         }
         int curTrack = std::min(std::max(0, I.wantTrack), std::max(0, (int)aIdx.size() - 1));
+        // Dolby sound: each AC-3 / E-AC-3 track's own headers say what it is (Atmos JOC flag, bed); read from every packet, cheap
+        std::vector<DolbyStreamInfo> dInfo(aIdx.size());
+        std::vector<char> aDolby(aIdx.size(), 0);
+        for (size_t k = 0; k < aIdx.size(); k++) {
+            const AVCodecID id = fmt->streams[aIdx[k]]->codecpar->codec_id;
+            aDolby[k] = !aDra[k] && (id == AV_CODEC_ID_AC3 || id == AV_CODEC_ID_EAC3);
+        }
+        auto noteDolby = [&](size_t k) {
+            const DolbyStreamSummary& sm = dInfo[k].summary();   // the same bits FFmpeg 7.1+ reports as AV_PROFILE_EAC3_DDP_ATMOS
+            const std::string line = dolbyFormatLine(sm);
+            std::lock_guard<std::mutex> lk(I.smu);
+            if (k < I.tracks.size()) {
+                AudioTrackInfo& t = I.tracks[k];
+                t.format = line; t.bed = sm.bed; t.atmos = sm.atmos ? 1 : 0; t.complexity = sm.complexity;
+                if (sm.channels > 0) t.channels = sm.channels;
+            }
+            if ((int)k == curTrack) { I.st.audioFormat = line; I.st.audioBed = sm.bed; I.st.atmos = sm.atmos ? 1 : 0; I.st.jocComplexity = sm.complexity; }
+        };
 
         // ---- video decoder
         AVCodecContext* vctx = nullptr;
@@ -555,6 +588,7 @@ void Player::threadMain() {
                 if (!hw) { vctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT; vctx->flags2 |= AV_CODEC_FLAG2_SHOW_ALL; }
                 vctx->thread_count = hw ? 2 : 4;
                 if (avcodec_open2(vctx, c, nullptr) < 0) {
+                    DIAG(283841, "The %s video decoder %s did not open, so this service plays without a picture.", hw ? "hardware" : "software", c->name);
                     avcodec_free_context(&vctx);
                     vctx = nullptr;
                     hw = false;
@@ -566,26 +600,68 @@ void Player::threadMain() {
         SwrContext* swr = nullptr;
         TvDraDecoder draDec;
         bool draOn = false;
+        // what goes to the sound device (dolby_audio.h): the channel count for the device's speakers and the user's layout choice, or the
+        // untouched AC-3 / E-AC-3 as an IEC 61937 bitstream (passthrough, experimental)
+        int wantCh = 2, passKind = 0;
+        bool matrixStereo = false;
+        std::string passNote;
+        Iec61937Packer packer;
+        std::vector<IecBurst> bursts;
+        DolbyOutputConfig& dcfg = DolbyOutputConfig::global();
         auto openAudio = [&](int track) {
             if (actx) avcodec_free_context(&actx);
             if (swr) swr_free(&swr);
             draOn = false;
+            wantCh = 2; passKind = 0; matrixStereo = false; passNote.clear(); packer.reset();
             if (track < 0 || track >= (int)aIdx.size()) return;
             if (aDra[track]) { draDec.reset(); draOn = draDec.usable(); return; }
             AVStream* s = fmt->streams[aIdx[track]];
             const AVCodec* c = avcodec_find_decoder(s->codecpar->codec_id);
-            if (!c) return;
+            if (!c) {
+                DIAG_DEBUG(678258, "This FFmpeg build has no decoder for audio codec id %d, so that audio track is not played.", (int)s->codecpar->codec_id);
+                // DVB AC-4 (descriptor 0x7F / 0x15): the FFmpeg inside OnAir has no AC-4 decoder; the receiver tab says what is needed
+                if (s->codecpar->codec_id == AV_CODEC_ID_AC4) { ac4NoteSeen("AC-4 (DVB)"); ac4NoteDropped(); }
+                return;
+            }
             actx = avcodec_alloc_context3(c);
             avcodec_parameters_to_context(actx, s->codecpar);
-            if (avcodec_open2(actx, c, nullptr) < 0) avcodec_free_context(&actx);
+            if (avcodec_open2(actx, c, nullptr) < 0) { DIAG(753637, "The %s audio decoder did not open, so that audio track is not played.", c->name); avcodec_free_context(&actx); return; }
+            const int layout = dcfg.layout.load();
+            const bool dolby = s->codecpar->codec_id == AV_CODEC_ID_AC3 || s->codecpar->codec_id == AV_CODEC_ID_EAC3;
+            if (dcfg.passthrough.load() && dolby) {
+                if (s->codecpar->sample_rate == 48000 || s->codecpar->sample_rate == 0) passKind = s->codecpar->codec_id == AV_CODEC_ID_EAC3 ? 2 : 1;
+                else passNote = "passthrough needs 48 kHz sound; this track is decoded";
+            }
+            wantCh = dolbyOutputChannels(layout, s->codecpar->ch_layout.nb_channels, layout == 0 ? AudioOut::deviceChannels(audio_.device().empty() ? AudioOut::defaultDevice() : audio_.device()) : 0);
+            matrixStereo = wantCh == 2 && layout == 2 && s->codecpar->ch_layout.nb_channels > 2;
+        };
+        auto startAudio = [&]() {
+            if (!(actx || draOn)) return;
+            bool pass = false;
+            if (passKind && actx) {
+                std::string err;
+                // the output: the one set for passthrough, else (Windows, macOS) the TV sound's own; Linux names an ALSA device ("hdmi" when empty)
+                std::string bdev = dcfg.device();
+#if defined(_WIN32) || defined(__APPLE__)
+                if (bdev.empty()) bdev = audio_.device().empty() ? AudioOut::defaultDevice() : audio_.device();
+#endif
+                pass = audio_.startBitstream(48000, passKind == 2 ? 192000 : 48000, passKind, bdev, &err);
+                if (!pass) passNote = "passthrough: " + err + "; playing the decoded sound";
+            }
+            if (!pass) audio_.start(48000, draOn ? 2 : wantCh);
+            std::lock_guard<std::mutex> lk(I.smu);
+            I.st.passthrough = pass;
+            I.st.passthroughNote = passNote;
+            I.st.audioOutChannels = audio_.channels();
+            I.st.matrixStereo = !pass && matrixStereo;
         };
         openAudio(curTrack);
-        if (actx || draOn) audio_.start(48000);
+        startAudio();
         // ---- subtitle decoder
         AVCodecContext* sctx = nullptr;
         if (sIdx >= 0) {
             const AVCodec* c = avcodec_find_decoder(AV_CODEC_ID_DVB_SUBTITLE);
-            if (c) { sctx = avcodec_alloc_context3(c); avcodec_parameters_to_context(sctx, fmt->streams[sIdx]->codecpar); if (avcodec_open2(sctx, c, nullptr) < 0) avcodec_free_context(&sctx); }
+            if (c) { sctx = avcodec_alloc_context3(c); avcodec_parameters_to_context(sctx, fmt->streams[sIdx]->codecpar); if (avcodec_open2(sctx, c, nullptr) < 0) { DIAG_DEBUG(978603, "The FFmpeg DVB subtitle decoder did not open, so subtitles are not shown."); avcodec_free_context(&sctx); } }
         }
         {
             std::lock_guard<std::mutex> lk(I.smu);
@@ -621,7 +697,7 @@ void Player::threadMain() {
         SwsContext* sws = nullptr;
         SwsContext* nv12ctx = nullptr;
         std::vector<float> abuf;
-        int swrRate = 0; AVSampleFormat swrFmt = AV_SAMPLE_FMT_NONE; int swrCh = 0;
+        int swrRate = 0; AVSampleFormat swrFmt = AV_SAMPLE_FMT_NONE; int swrCh = 0, swrOutCh = 0;
         bool vSusValid = false; double vSusNext = 0;   // the same for picture timestamps
         bool susValid = false; double susD = 0, susNext = 0;   // an audio timestamp jump waiting for the next frame to confirm it
         bool firstVideo = true;
@@ -700,6 +776,7 @@ void Player::threadMain() {
                 }
             }
             lastVPts = vf->pts; haveVPts = true;
+            if (AVFrameSideData* cc = av_frame_get_side_data(f, AV_FRAME_DATA_A53_CC)) { std::lock_guard<std::mutex> lk(I.ccMu); I.cc.feed(cc->data, (int)(cc->size / 3), vf->pts); }
             // DVB subtitle overlay: only frames that carry a subtitle are converted to RGBA on the CPU
             std::shared_ptr<Subtitle> sb;
             if (subsOn_) { std::lock_guard<std::mutex> lk(I.submu); sb = I.sub; }
@@ -825,15 +902,21 @@ void Player::threadMain() {
         std::function<void(const float*, int, double)> emitAudio;
         auto pushAudio = [&](AVFrame* f) {
             if (!actx) return;
-            if (!swr || swrRate != f->sample_rate || swrFmt != (AVSampleFormat)f->format || swrCh != f->ch_layout.nb_channels) {
+            const int outCh = audio_.channels();
+            if (!swr || swrRate != f->sample_rate || swrFmt != (AVSampleFormat)f->format || swrCh != f->ch_layout.nb_channels || swrOutCh != outCh) {
                 if (swr) swr_free(&swr);
+                // the bed as 5.1 / 7.1 when the device has the speakers (FFmpeg's order is AudioOut's), else a stereo downmix; 7.1 from a
+                // 5.1 stream is never asked for (dolbyOutputChannels)
                 AVChannelLayout out = AV_CHANNEL_LAYOUT_STEREO;
+                if (outCh == 6) out = AV_CHANNEL_LAYOUT_5POINT1;
+                else if (outCh == 8) out = AV_CHANNEL_LAYOUT_7POINT1;
                 swr_alloc_set_opts2(&swr, &out, AV_SAMPLE_FMT_FLT, 48000, &f->ch_layout, (AVSampleFormat)f->format, f->sample_rate, 0, nullptr);
+                if (swr && outCh == 2 && matrixStereo && !audio_.bitstream()) av_opt_set_int(swr, "matrix_encoding", AV_MATRIX_ENCODING_DOLBY, 0);   // Lt/Rt
                 if (!swr || swr_init(swr) < 0) { swr_free(&swr); return; }
-                swrRate = f->sample_rate; swrFmt = (AVSampleFormat)f->format; swrCh = f->ch_layout.nb_channels;
+                swrRate = f->sample_rate; swrFmt = (AVSampleFormat)f->format; swrCh = f->ch_layout.nb_channels; swrOutCh = outCh;
             }
             int maxOut = swr_get_out_samples(swr, f->nb_samples) + 64;
-            abuf.resize((size_t)maxOut * 2);
+            abuf.resize((size_t)maxOut * (size_t)outCh);
             uint8_t* o[1] = {(uint8_t*)abuf.data()};
             int n = swr_convert(swr, o, maxOut, (const uint8_t**)f->extended_data, f->nb_samples);
             if (n <= 0) return;
@@ -885,7 +968,7 @@ void Player::threadMain() {
             if (gapSec > 0) {
                 if (getenv("DECT2_PLAYDEBUG")) fprintf(stderr, "[play] audio gap %.3f s filled with silence\n", gapSec);
                 size_t gf = (size_t)(gapSec * 48000.0);
-                std::vector<float> zeros((size_t)4800 * 2, 0.f);
+                std::vector<float> zeros((size_t)4800 * 8, 0.f);
                 while (gf > 0 && !stop_ && !restart_) {
                     size_t c = std::min<size_t>(gf, 4800), dn = 0;
                     while (dn < c && !stop_ && !restart_) {
@@ -898,7 +981,7 @@ void Player::threadMain() {
             }
             int done = 0;
             while (done < n && !stop_ && !restart_) {
-                done += audio_.write(pcmData + (size_t)done * 2, n - done);
+                done += audio_.write(pcmData + (size_t)done * (size_t)audio_.channels(), n - done);
                 if (done < n) std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         };
@@ -922,24 +1005,47 @@ void Player::threadMain() {
                 openAudio(curTrack);
                 audio_.flush();
                 { std::lock_guard<std::mutex> lk(I.cmu); I.baseValid = false; }
-                std::lock_guard<std::mutex> lk(I.smu);
-                if (actx) { I.st.audioCodec = avcodec_get_name(actx->codec_id); I.st.audioChannels = actx->ch_layout.nb_channels; }
-                else if (draOn) { I.st.audioCodec = "DRA"; I.st.audioChannels = 2; }
-                I.st.hasAudio = actx != nullptr || draOn;
-                if (actx || draOn) audio_.start(48000);
+                {
+                    std::lock_guard<std::mutex> lk(I.smu);
+                    if (actx) { I.st.audioCodec = avcodec_get_name(actx->codec_id); I.st.audioChannels = actx->ch_layout.nb_channels; }
+                    else if (draOn) { I.st.audioCodec = "DRA"; I.st.audioChannels = 2; }
+                    I.st.hasAudio = actx != nullptr || draOn;
+                    if (curTrack < (int)I.tracks.size()) { const AudioTrackInfo& t = I.tracks[(size_t)curTrack]; I.st.audioFormat = t.format; I.st.audioBed = t.bed; I.st.atmos = t.atmos; I.st.jocComplexity = t.complexity; }
+                }
+                startAudio();
+            } else if (reopenAudio_.exchange(false)) {   // Settings > Audio changed the layout or passthrough: the same track, opened again
+                openAudio(curTrack);
+                audio_.flush();
+                { std::lock_guard<std::mutex> lk(I.cmu); I.baseValid = false; }
+                startAudio();
             }
             if (!draOn && curTrack < (int)aDra.size() && aDra[curTrack] && draDec.usable()) {   // the add-on was installed while this service played
                 draDec.reset(); draOn = true;
-                audio_.start(48000);
+                wantCh = 2; passKind = 0;
+                startAudio();
                 std::lock_guard<std::mutex> lk(I.smu);
                 I.st.hasAudio = true; I.st.audioCodec = "DRA"; I.st.audioChannels = 2;
             }
             int r = av_read_frame(fmt, pkt);
             if (getenv("DECT2_PLAYDEBUG")) { static int n = 0; if ((n++ % 100) == 0 || r < 0) fprintf(stderr, "[play] read r=%d idx=%d pts=%lld vq=%zu abuf=%d decoded=%llu\n", r, pkt->stream_index, (long long)pkt->pts, I.vq.size(), audio_.bufferedFrames(), (unsigned long long)I.st.decoded); }
             if (r < 0) break;
+            for (size_t k = 0; k < aIdx.size(); k++) {
+                if (pkt->stream_index != aIdx[k] || !aDolby[k]) continue;
+                const DolbyStreamSummary before = dInfo[k].summary();
+                dInfo[k].feed(pkt->data, (size_t)pkt->size);
+                const DolbyStreamSummary& now = dInfo[k].summary();
+                if (now.valid != before.valid || now.atmos != before.atmos || now.speakers != before.speakers || now.complexity != before.complexity) noteDolby(k);
+                // passthrough: the packet as it came, framed for IEC 61937, beside the decoded sound that keeps the clock
+                if ((int)k == curTrack && audio_.bitstream()) {
+                    bursts.clear();
+                    packer.push(pkt->data, (size_t)pkt->size, bursts);
+                    for (const IecBurst& b : bursts) audio_.writeIec(b.words.data(), (int)(b.words.size() / 2));
+                }
+                break;
+            }
             auto openAddon = [&]() {   // true when the picture is now decoded by the add-on
                 auto d = std::make_unique<AvsPlusDecoder>();
-                if (!d->open()) return false;
+                if (!d->open()) { DIAG_DEBUG(775879, "The AVS+ decoder add-on did not open, so this service plays without a picture."); return false; }
                 if (vctx) avcodec_free_context(&vctx);
                 avd = std::move(d);
                 AVRational fr = fmt->streams[vIdx]->avg_frame_rate.num ? fmt->streams[vIdx]->avg_frame_rate : fmt->streams[vIdx]->r_frame_rate;
@@ -1006,13 +1112,17 @@ void Player::threadMain() {
                 if (hw) {
                     // GPU decoding: start on a keyframe; if the GPU stays silent for seconds, switch this service to the CPU decoder
                     const bool irap = vctx->codec_id == AV_CODEC_ID_HEVC ? hevcHasIrap(pkt->data, pkt->size) : (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-                    if (!hwGuard.feed(irap, hwNow())) { av_packet_unref(pkt); continue; }
+                    const bool feedIt = hwGuard.feed(irap, hwNow());
+                    // checked even for a packet held back: an H.264 stream with no flagged keyframe (I pictures with a recovery-point SEI) never
+                    // starts the GPU session, so audio plays and no picture ever comes (#410); the CPU decoder shows those
                     if (hwGuard.giveUp(hwNow())) {
                         fprintf(stderr, "player: hardware video decoding gave no picture after %.1f s (%d packets fed, %d held back before a random-access picture): switching to software decoding\n", hwNow(), hwGuard.fed(), hwGuard.skipped());
+                        DIAG(382108, "Hardware video decoding gave no picture after %.1f s, so playback restarts with software decoding.", hwNow());
                         hwFallback_ = true; restart_ = true;
                         av_packet_unref(pkt);
                         continue;
                     }
+                    if (!feedIt) { av_packet_unref(pkt); continue; }
                 }
                 if (avcodec_send_packet(vctx, pkt) >= 0)
                     while (avcodec_receive_frame(vctx, frame) >= 0) {

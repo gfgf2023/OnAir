@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Marine screens: the NAVTEX messages grouped by station with the text panel, the DSC calls (distress in red, the position on a small
 // map), the weather fax picture (zoom, pan, slant, save as PNG) and a tuning aid (the audio spectrum with the tones each service expects).
 #include "dect2/common/time_fmt.h"
@@ -18,7 +21,10 @@
 #include <map>
 #include <sstream>
 #include "dect2/marine/marine_wefax_stations.h"
+#include "dect2/marine/wefax_rotate.h"
+#include "dect2/marine/wefax_phase.h"
 #include "wefax_gallery.h"
+#include "incident_ui.h"
 #include "../panels/picsave_ui.h"
 #include "../state/picsave.h"
 #include "dect2/engine/updater.h"
@@ -27,6 +33,10 @@
 #include <cstring>
 #include <filesystem>
 #include <ctime>
+#include "dect2/ease/navtex.h"
+#include "dect2/ease/ease.h"
+#include "dect2/general/general_rx.h"
+#include "dect2/geo/maidenhead.h"
 
 void marineFaxTexture();   // below: the texture of a picture loaded from the results file
 
@@ -36,6 +46,12 @@ using dect2::DscCall;
 using dect2::NavtexMessage;
 
 struct State {
+    bool schedOn = false;            // "Follow the schedule": retune before each broadcast (off until chosen, not saved)
+    std::string schedStation;        // "" = any station of the region shown
+    long long schedTunedFor = 0;     // the broadcast already tuned for
+    double schedDialMhz = 0;         // where it tuned: another frequency means the user tuned by hand, and following stops
+    bool schedRan = false;           // the receiver ran for it: a Stop then ends following too
+    std::string schedNote;
     bool loaded = false;
     int view = 0;                    // 0 NAVTEX, 1 DSC, 2 fax, 3 tuning, 4 fax stations
     int region = 0;                  // fax stations: the region shown (0 all)
@@ -92,6 +108,8 @@ struct State {
     uint64_t imgSeq = 0, telImgSeq = ~0ull;
     dect2::FaxImage last;            // the copy kept for saving
     enhui::LiveTex enh;              // the Enhance control on the fax picture
+    int phase = 0;                   // fax picture: hand phasing, pixels every line is moved right (circular); per picture, back to 0 for a new one
+    int rot = 0;                     // fax picture: quarter turns clockwise (0..3), saved as faxRotate; applies to the shown and the saved pictures
     bool faxShown = false;           // the Fax view was drawn this frame (the top "clear" button also clears the picture then)
     float zoom = 0;                  // 0 = fit the width
     ImVec2 pan{0, 0};
@@ -116,6 +134,7 @@ void loadState() {
     S.listen = d.getB("faxListen", false);
     S.iocIdx = std::max(0, std::min(2, (int)d.getI("marineIoc", 0)));
     S.autoSlant = d.getB("marineAutoSlant", true);
+    S.rot = dect2::wefaxTurns((int)d.getI("faxRotate", 0));
     S.slant = (float)d.getD("marineSlant", 0.0);
     S.saveNav = d.getB("marineSaveNavtex", true);
     S.map.zoom = 5;
@@ -155,7 +174,55 @@ void subjectBadge(char s) {
     ImGui::Dummy(ImVec2(h, h));
 }
 
+// leave the Marine screens for the voice that follows a call
+void listenGeneralUsb(App& a, double khz) {
+    const bool was = a.engine.running();
+    if (was) a.engine.stop();
+    ::setMode(a, 55, 0);
+    generalRecallHz(a, khz * 1e3);
+    a.tune.centerHz = a.freqMhz * 1e6;
+    generalApiSetDemod(dect2::GenUsb);
+    savePrefs(a);
+    if (was) startReceiver(a);
+}
+
 // ---------------------------------------------------------------- NAVTEX
+
+// "in 37 min", "in 2 h 5 min" (a station's slot length is 10 minutes, so "now" covers the first of them)
+std::string navSlotIn(int secs) {
+    char b[48];
+    if (secs < 60) snprintf(b, sizeof b, "%s", tr("about to start"));
+    else if (secs < 3600) snprintf(b, sizeof b, tr("in %d min"), secs / 60);
+    else snprintf(b, sizeof b, tr("in %d h %d min"), secs / 3600, (secs % 3600) / 60);
+    return b;
+}
+
+int navKhz(const App& a) { const int k = (int)std::lround(a.freqMhz * 1000.0); return k == 490 ? 490 : 518; }
+
+// the stations you can expect: nearest first, with the next broadcast of each
+void navStationList(const App& a) {
+    if (!receiverLocationSet()) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Each station sends for ten minutes every four hours. Set your position (View > Map) to see the nearest ones and when they send."));
+        ImGui::PopTextWrapPos();
+        return;
+    }
+    double la, lo;
+    receiverLocation(la, lo);
+    const auto nearSt = dect2::ease::navtexNearest(la, lo, navKhz(a), (int64_t)time(nullptr));
+    if (nearSt.empty()) { ImGui::TextDisabled("%s", tr("No station on this frequency in the list.")); return; }
+    const auto* soon = &nearSt[0];
+    for (const auto& n : nearSt) if (n.secsToNext < soon->secsToNext) soon = &n;
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled(tr("Next from your nearest stations: %s (%c), %s."), soon->st->name, soon->st->letter, navSlotIn(soon->secsToNext).c_str());
+    ImGui::PopTextWrapPos();
+    for (const auto& n : nearSt) {
+        ImGui::TextDisabled("%c  %s, %.0f km, %s", n.st->letter, n.st->name, n.km, navSlotIn(n.secsToNext).c_str());
+    }
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", tr("Stations and times come from a community list and may be out of date. Range is usually about 400 nautical miles."));
+    ImGui::PopTextWrapPos();
+}
 
 void navtexView(App& a) {
     const dect2::MarineTelemetry& t = a.rx.marine;
@@ -163,8 +230,13 @@ void navtexView(App& a) {
     const float lw = std::min(380.f * gUi, W * 0.42f);
     std::vector<const NavtexMessage*> rows;
     for (const auto& m : t.navtex) rows.push_back(&m);
-    std::stable_sort(rows.begin(), rows.end(), [](const NavtexMessage* x, const NavtexMessage* y) {
-        if (x->station != y->station) return x->station < y->station;
+    const bool havePos = receiverLocationSet();
+    double myLa = 0, myLo = 0;
+    if (havePos) receiverLocation(myLa, myLo);
+    const int navK = navKhz(a);
+    auto stKm = [&](char c) { const auto* s = dect2::ease::navtexByLetter(c, navK, havePos, myLa, myLo); if (!s || !havePos) return 1e9; double km = 0, br = 0; dect2::greatCircle(myLa, myLo, s->lat, s->lon, km, br); return km; };
+    std::stable_sort(rows.begin(), rows.end(), [&](const NavtexMessage* x, const NavtexMessage* y) {
+        if (x->station != y->station) { const double kx = stKm(x->station), ky = stKm(y->station); return kx != ky ? kx < ky : x->station < y->station; }   // the nearest station first
         return x->rxSec > y->rxSec;      // newest first within a station
     });
     const NavtexMessage* sel = nullptr;
@@ -172,7 +244,8 @@ void navtexView(App& a) {
     if (!sel && !t.navtex.empty()) sel = &t.navtex.back();
 
     ImGui::BeginChild("##nav_l", ImVec2(lw, H), ImGuiChildFlags_Borders);
-    if (rows.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", live(a) ? "no NAVTEX message yet (one takes a minute or more)" : "start the receiver"); ImGui::PopTextWrapPos(); }
+    if (rows.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", live(a) ? tr("No NAVTEX message yet.") : tr("Start the receiver.")); ImGui::PopTextWrapPos(); ImGui::Spacing(); navStationList(a); }
+    else if (typo::collapsingHeader(tr("Nearest stations###navnear"))) navStationList(a);
     char cur = 0;
     bool open = true;
     for (const auto* m : rows) {
@@ -180,8 +253,10 @@ void navtexView(App& a) {
             cur = m->station;
             int n = 0;
             for (const auto* x : rows) n += x->station == cur;
-            char h[48];
-            snprintf(h, sizeof h, "Station %c  (%d)###st%c", cur, n, cur);
+            char h[128];
+            const auto* known = dect2::ease::navtexByLetter(cur, navK, havePos, myLa, myLo);
+            if (known) snprintf(h, sizeof h, "Station %c  %s  (%d)###st%c", cur, known->name, n, cur);
+            else snprintf(h, sizeof h, "Station %c  (%d)###st%c", cur, n, cur);
             ImGui::SetNextItemOpen(true, ImGuiCond_Once);
             open = typo::collapsingHeader(h);
         }
@@ -377,6 +452,19 @@ void dscDetail(App& a, const DscCall* c, ImVec2 size) {
             if (ImGui::SmallButton(bl)) marineVhfJump(a, ch ? ch : 16);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Opens the Marine VHF voice mode on that channel (it needs a radio that covers 156 to 162 MHz).");
         }
+        if (!c->vhf) {   // MF/HF: the working frequencies the call names, in USB in the General receiver
+            int shown = 0;
+            double first = 0;
+            for (const std::string* t : {&c->freqRx, &c->freqTx}) {
+                const double k = dect2::ease::dscWorkingKhz(*t);
+                if (k <= 0 || k == first) continue;
+                if (shown++) ImGui::SameLine();
+                else first = k;
+                char bl[64]; snprintf(bl, sizeof bl, tr("Listen on %.1f kHz USB##dschf%d"), k, shown);
+                if (ImGui::SmallButton(bl)) { listenGeneralUsb(a, k); break; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Opens the General receiver in USB on this frequency. The call may name one frequency for each direction."));
+            }
+        }
     }
     kv("end", c->eos == 117 ? "acknowledgement requested" : c->eos == 122 ? "acknowledgement" : c->eos == 127 ? "other call" : "");
     char b[64];
@@ -436,6 +524,7 @@ void dscView(App& a) {
             ImGui::PopStyleColor();
         }
     }
+    incidentBoardUi(a, true);   // sea distress incidents: DSC + AIS + AIS-SART + NAVTEX in one card (marine_incident.h)
     ImGui::SetNextItemWidth(180 * gUi);
     ImGui::InputTextWithHint("##dscf", tr("search calls"), S.dscFilter, sizeof S.dscFilter);
     ImGui::SameLine();
@@ -495,6 +584,48 @@ void dscView(App& a) {
 
 // ---------------------------------------------------------------- fax
 
+// The picture as the user wants it: S.last (the decoder's) turned by the Rotate setting. Used for the screen, PNG saves and the gallery.
+dect2::FaxImage rotatedFax(const dect2::FaxImage& im0, int turns) {
+    const dect2::FaxImage* src = &im0;
+    dect2::FaxImage ph;
+    if (S.phase != 0 && im0.width > 0 && im0.height > 0 && im0.pix.size() >= (size_t)im0.width * im0.height) {   // hand phasing first: it works on the lines as received
+        ph.width = im0.width; ph.height = im0.height;
+        dect2::wefaxPhaseShift(im0.pix.data(), im0.width, im0.height, S.phase, ph.pix);
+        src = &ph;
+    }
+    const dect2::FaxImage& im = *src;
+    if (dect2::wefaxTurns(turns) == 0 || im.width <= 0 || im.height <= 0 || im.pix.size() < (size_t)im.width * im.height) return im;
+    dect2::FaxImage o;
+    dect2::wefaxRotate(im.pix.data(), im.width, im.height, turns, o.pix, o.width, o.height);
+    return o;
+}
+
+// Puts S.last (rotated) on the screen texture
+void presentLast(bool finished) {
+    if (!gGfx || S.last.width <= 0 || S.last.height <= 0) return;
+    const dect2::FaxImage im = rotatedFax(S.last, S.rot);
+    const int th = std::max(1500, im.height);
+    if (!S.img || S.texW != im.width || S.texH < im.height) {
+        delete S.img;
+        S.img = gGfx->createImage(im.width, th, 0xFFFFFFFFu);
+        S.texW = im.width; S.texH = th;
+    }
+    if (!S.img) return;
+    std::vector<uint32_t> px((size_t)im.width * im.height);
+    for (size_t i = 0; i < px.size(); i++) { const uint32_t g = im.pix[i]; px[i] = 0xFF000000u | (g << 16) | (g << 8) | g; }
+    S.img->update(0, 0, im.width, im.height, px.data());
+    S.enh.e.setSource("Weather fax");
+    S.enh.feed(px.data(), im.width, im.height, finished);   // still arriving: the cheap preview path
+    S.imgW = im.width; S.imgH = im.height;
+}
+
+void setRotation(int turns) {
+    S.rot = dect2::wefaxTurns(turns);
+    plat::prefs().setI("faxRotate", S.rot);
+    S.zoom = 0; S.pan = ImVec2(0, 0);
+    presentLast(true);
+}
+
 void uploadFax(App& a) {
     if (!live(a) || !gGfx) return;
     if (a.rx.marine.fax.imageSeq == S.telImgSeq) return;     // ask for a copy only when the report says the picture changed
@@ -504,22 +635,11 @@ void uploadFax(App& a) {
     S.imgSeq = seq;
     S.telImgSeq = a.rx.marine.fax.imageSeq;
     if (im.width <= 0 || im.height <= 0 || im.pix.size() < (size_t)im.width * im.height) {
-        S.imgW = S.imgH = 0; S.last = dect2::FaxImage();      // the decoder started a new picture (cleared): drop the old one too
+        S.imgW = S.imgH = 0; S.last = dect2::FaxImage(); S.phase = 0;      // the decoder started a new picture (cleared): drop the old one too
         return;
     }
-    const int th = std::max(1500, im.height);
-    if (!S.img || S.texW != im.width || S.texH < im.height) {
-        delete S.img;
-        S.img = gGfx->createImage(im.width, th, 0xFFFFFFFFu);
-        S.texW = im.width; S.texH = th;
-    }
-    std::vector<uint32_t> px((size_t)im.width * im.height);
-    for (size_t i = 0; i < px.size(); i++) { const uint32_t g = im.pix[i]; px[i] = 0xFF000000u | (g << 16) | (g << 8) | g; }
-    S.img->update(0, 0, im.width, im.height, px.data());
-    S.enh.e.setSource("Weather fax");
-    S.enh.feed(px.data(), im.width, im.height, false);   // still arriving: the cheap preview path
-    S.imgW = im.width; S.imgH = im.height;
     S.last = std::move(im);
+    presentLast(false);
 }
 
 // a picture as PNG, where the user picks
@@ -539,12 +659,13 @@ void saveFax() {
     if (S.last.width <= 0 || S.last.height <= 0) return;
     const std::string path = saveFileDialog("weather-fax.png");
     if (path.empty()) return;
-    std::vector<uint8_t> rgba((size_t)S.last.width * S.last.height * 4);
-    for (size_t i = 0; i < S.last.pix.size() && i * 4 + 3 < rgba.size(); i++) {
-        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = S.last.pix[i];
+    const dect2::FaxImage im = rotatedFax(S.last, S.rot);   // saved the way it is shown
+    std::vector<uint8_t> rgba((size_t)im.width * im.height * 4);
+    for (size_t i = 0; i < im.pix.size() && i * 4 + 3 < rgba.size(); i++) {
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = im.pix[i];
         rgba[i * 4 + 3] = 255;
     }
-    S.saveMsg = gfx::writePng(path.c_str(), rgba.data(), S.last.width, S.last.height) ? "saved " + path : "could not write " + path;
+    S.saveMsg = gfx::writePng(path.c_str(), rgba.data(), im.width, im.height) ? "saved " + path : "could not write " + path;
 }
 
 void faxView(App& a) {
@@ -578,7 +699,43 @@ void faxView(App& a) {
     ImGui::SameLine();
     if (ImGui::SmallButton(tr("clear picture##faxclr"))) { a.engine.marine().clearFax(); marineFaxClearUi(); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Clears the picture and the lines the decoder has collected, and starts a new picture at the next start tone or phasing. Pictures already in the list on the right stay."));
+    flowNext(14 * gUi);
+    ImGui::TextDisabled("%s", tr("rotate"));
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("90 right##faxrr"))) setRotation(S.rot + 1);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Turn the picture 90 degrees clockwise (key ]). Applies to the picture on the screen and to the PNGs saved from now on; the setting is remembered."));
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("90 left##faxrl"))) setRotation(S.rot - 1);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Turn the picture 90 degrees counter-clockwise (key [)."));
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("180##faxr2"))) setRotation(S.rot + 2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Turn the picture upside down (key \\). Many stations are received with the picture the wrong way up."));
+    if (S.rot != 0) { ImGui::SameLine(); ImGui::TextDisabled("%d", S.rot * 90); }
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) setRotation(S.rot + 1);
+        else if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) setRotation(S.rot - 1);
+        else if (ImGui::IsKeyPressed(ImGuiKey_Backslash, false)) setRotation(S.rot + 2);
+    }
     flowEnd();
+    if (S.last.width > 0) {   // hand phasing: slide the picture sideways (every line, circular) until the black margin bar is at the left edge
+        ImGui::TextDisabled("%s", tr("phase"));
+        ImGui::SameLine();
+        const int pw = S.last.width;
+        auto setPhase = [&](int v) { v = dect2::wefaxPhaseWrap(v, pw); if (v != S.phase) { S.phase = v; presentLast(true); } };
+        if (ImGui::SmallButton("-##faxph-")) setPhase(S.phase - 1);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(220 * gUi);
+        int pv = S.phase;
+        if (ImGui::SliderInt("##faxphase", &pv, 0, pw - 1, "%d px")) setPhase(pv);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Slides the whole picture sideways, wrapping round, like the phase control of other fax programs. Use it when the black bar of the left margin sits in the middle. Shown at once and applied to the PNGs you save."));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+##faxph+")) setPhase(S.phase + 1);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("auto##faxpha"))) setPhase(dect2::wefaxPhaseAuto(S.last.pix.data(), pw, S.last.height));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Finds the darkest vertical bar and moves it to the left edge."));
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("reset##faxphr"))) setPhase(0);
+    }
     S.enh.e.setSource("Weather fax");
     S.enh.controls("faxenh");
     static const char* const st[] = {"waiting for the start tone", "phasing", "receiving", "stopped"};
@@ -601,7 +758,7 @@ void faxView(App& a) {
         dl->AddText(ImVec2(p0.x + (box.x - ts.x) * 0.5f, p0.y + box.y * 0.5f), IM_COL32(150, 154, 158, 255), msg);
         return;
     }
-    const float fit = box.x / (float)S.imgW;
+    const float fit = dect2::wefaxFitZoom(box.x, box.y, S.imgW, S.imgH, S.rot);
     float z = S.zoom > 0 ? S.zoom : fit;
     if (hov && ImGui::GetIO().MouseWheel != 0) {     // zoom around the pointer
         const ImVec2 m = ImGui::GetIO().MousePos;
@@ -617,10 +774,11 @@ void faxView(App& a) {
     const float w = S.imgW * z, h = S.imgH * z;
     if (S.zoom <= 0) {
         S.pan.x = 0;
-        if (h > box.y) S.pan.y = box.y - h;       // fitted: keep the newest lines in view
+        if (h > box.y) S.pan.y = S.rot == 2 ? 0.f : box.y - h;   // fitted: keep the newest lines in view (upside down they are at the top)
         else S.pan.y = 0;
+        if (w < box.x) S.pan.x = (box.x - w) * 0.5f;   // a whole turned picture narrower than the box: centred
     }
-    S.pan.x = std::min(0.f, std::max(S.pan.x, std::min(0.f, box.x - w)));
+    if (S.zoom > 0 || w >= box.x) S.pan.x = std::min(0.f, std::max(S.pan.x, std::min(0.f, box.x - w)));
     S.pan.y = std::min(0.f, std::max(S.pan.y, std::min(0.f, box.y - h)));
     const ImVec2 q0(p0.x + S.pan.x, p0.y + S.pan.y), q1(q0.x + w, q0.y + h);
     dl->PushClipRect(p0, ImVec2(p0.x + box.x, p0.y + box.y), true);
@@ -639,22 +797,77 @@ void tuneStation(App& a, double carrierKhz) {
     if (!a.engine.running()) startReceiver(a);
 }
 
+const char* const kFaxRegions[] = {"all regions", "Europe", "North America", "Asia", "Oceania", "South America", "Africa"};
+
+std::vector<dect2::ease::WefaxSlot> faxSlots(const std::vector<dect2::WefaxNext>& n) {
+    std::vector<dect2::ease::WefaxSlot> out;
+    for (const auto& x : n) out.push_back({x.s->id, x.startUtc});
+    return out;
+}
+
+// once a second: tune for the next broadcast (two minutes early, times are approximate), but never over a chart under way
+void scheduleTick(App& a) {
+    if (!S.schedOn) return;
+    if (S.schedDialMhz > 0 && std::fabs(a.freqMhz - S.schedDialMhz) > 0.0001) { S.schedOn = false; S.schedNote = tr("Stopped following: you tuned by hand."); return; }
+    if (S.schedRan && !a.engine.running()) { S.schedOn = false; S.schedNote = tr("Stopped following: the receiver was stopped."); return; }
+    const long long now = (long long)time(nullptr);
+    const auto next = dect2::wefaxNext(now - 60, 200, S.region > 0 ? kFaxRegions[S.region] : "");
+    const int i = dect2::ease::wefaxFollowPick(faxSlots(next), S.schedStation, now);
+    if (i < 0 || next[i].s->carrierKhz.empty()) { S.schedNote = tr("No broadcast listed for this choice."); return; }
+    const auto& n = next[i];
+    const bool chart = live(a) && a.rx.marine.fax.state == 2;
+    if (dect2::ease::wefaxFollowDue(n.startUtc, now, 120, S.schedTunedFor, chart)) {
+        S.schedTunedFor = n.startUtc;
+        if (txActive()) return;
+        tuneStation(a, n.s->carrierKhz[0]);
+        S.schedDialMhz = a.freqMhz;
+        S.schedRan = true;
+    }
+    char b[160];
+    const long long d = n.startUtc - now;
+    if (d > 0) snprintf(b, sizeof b, tr("Next: %s %s at %02d:%02d UTC, in %lld min."), n.s->callsign, n.b->product, n.b->utcMin / 60, n.b->utcMin % 60, d / 60 + 1);
+    else snprintf(b, sizeof b, tr("Receiving: %s %s."), n.s->callsign, n.b->product);
+    S.schedNote = b;
+}
+
+void scheduleControls(App& a) {
+    using namespace dect2;
+    if (ImGui::Checkbox(tr("Follow the schedule"), &S.schedOn)) {
+        S.schedTunedFor = 0; S.schedDialMhz = 0; S.schedRan = false; S.schedNote.clear();
+        if (S.schedOn) scheduleTick(a);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Tunes two minutes before each broadcast of the region or station and receives it. Charts are kept by the autosave. A chart under way is never interrupted. Tuning by hand or Stop ends it."));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180 * gUi);
+    const WefaxStation* cur = S.schedStation.empty() ? nullptr : wefaxStation(S.schedStation);
+    if (ImGui::BeginCombo("##wfsch", cur ? cur->name : tr("Any station"))) {
+        if (ImGui::Selectable(tr("Any station"), !cur)) S.schedStation.clear();
+        for (const WefaxStation& s : wefaxStations()) if (S.region == 0 || !strcmp(s.region, kFaxRegions[S.region])) if (ImGui::Selectable(s.name, cur == &s)) S.schedStation = s.id;
+        ImGui::EndCombo();
+    }
+    if (!S.schedNote.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", S.schedNote.c_str()); }
+}
+
 void stationsView(App& a) {
     using namespace dect2;
-    static const char* const regions[] = {"all regions", "Europe", "North America", "Asia", "Oceania", "South America", "Africa"};
+    scheduleControls(a);
     ImGui::SetNextItemWidth(140 * gUi);
-    ImGui::Combo("##wfreg", &S.region, regions, 7);
-    const std::string reg = S.region > 0 ? regions[S.region] : "";
-    ImGui::SameLine();
-    ImGui::PushTextWrapPos(0);
+    ImGui::Combo("##wfreg", &S.region, kFaxRegions, 7);
+    const std::string reg = S.region > 0 ? kFaxRegions[S.region] : "";
+    ImGui::PushTextWrapPos(0);   // on its own line: beside the combo its first letters sat under the box and the text ran off the edge
     ImGui::TextDisabled("Frequencies are the carriers; a click tunes the USB dial 1.9 kHz lower. Times (UTC) marked ~ are approximate: "
                         "schedules change, check the NOAA Worldwide Marine Radiofacsimile Broadcast Schedules or the station.");
     ImGui::PopTextWrapPos();
     const float H = ImGui::GetContentRegionAvail().y, W = ImGui::GetContentRegionAvail().x;
     const long long now = (long long)time(nullptr);
-    ImGui::BeginChild("##wfnext", ImVec2(std::min(460.f * gUi, W * 0.5f), H), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##wfnext", ImVec2(std::min(520.f * gUi, W * 0.55f), H), ImGuiChildFlags_Borders);
     ImGui::TextColored(pal::heading(), "Next broadcasts");
-    if (ImGui::BeginTable("##wfnt", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+    if (ImGui::BeginTable("##wfnt", 4, ImGuiTableFlags_RowBg)) {
+        // the product column takes what is left and is clipped, the frequency button column keeps its width so the button is always whole
+        ImGui::TableSetupColumn("##wfnt0", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##wfnt1", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##wfnt2", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("##wfnt3", ImGuiTableColumnFlags_WidthFixed, 64 * gUi);
         for (const WefaxNext& n : wefaxNext(now, 40, reg)) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -665,6 +878,7 @@ void stationsView(App& a) {
             ImGui::Text("%s%02d:%02d %s", n.b->approximate ? "~" : " ", n.b->utcMin / 60, n.b->utcMin % 60, t);
             ImGui::TableNextColumn(); ImGui::TextUnformatted(n.s->callsign);
             ImGui::TableNextColumn(); ImGui::TextUnformatted(n.b->product);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", n.b->product);
             ImGui::TableNextColumn();
             char b[48]; snprintf(b, sizeof b, "%.1f##wfn%p", n.s->carrierKhz.empty() ? 0.0 : n.s->carrierKhz[0], (const void*)n.b);
             if (!n.s->carrierKhz.empty() && ImGui::SmallButton(b)) tuneStation(a, n.s->carrierKhz[0]);
@@ -836,14 +1050,15 @@ void tick(App& a) {
     const int fs = a.rx.marine.fax.state;
     if (live(a) && fs == 2 && S.prevFaxState != 2) S.faxStartUtc = (long long)time(nullptr);
     if (live(a) && S.prevFaxState == 2 && fs != 2 && S.last.height >= 50) {
-        S.faxes.insert(S.faxes.begin(), State::Fax{(int64_t)time(nullptr), a.freqMhz * 1e3, S.last});
+        S.faxes.insert(S.faxes.begin(), State::Fax{(int64_t)time(nullptr), a.freqMhz * 1e3, rotatedFax(S.last, S.rot)});
         {
             gallery::Meta gm; gm.detail = std::to_string((int)std::lround(a.freqMhz * 1e3)) + " kHz, IOC " + std::to_string(a.rx.marine.fax.ioc) + ", " + std::to_string(a.rx.marine.fax.lpm) + " lpm";
-            gallery::publishGray("fax-" + std::to_string((long long)time(nullptr)), "Weather fax", (double)time(nullptr), S.last.width, S.last.height, S.last.pix.data(), gm);
+            const dect2::FaxImage ri = rotatedFax(S.last, S.rot);
+            gallery::publishGray("fax-" + std::to_string((long long)time(nullptr)), "Weather fax", (double)time(nullptr), ri.width, ri.height, ri.pix.data(), gm);
         }
         {   // the autosave: PNG + JSON side-car in the WEFAX folder (settings and gallery in wefax_gallery.cpp)
             wefaxgal::Capture c;
-            c.im = S.last; c.dialKhz = a.freqMhz * 1e3; c.ioc = a.rx.marine.fax.ioc; c.lpm = a.rx.marine.fax.lpm;
+            c.im = rotatedFax(S.last, S.rot); c.dialKhz = a.freqMhz * 1e3; c.ioc = a.rx.marine.fax.ioc; c.lpm = a.rx.marine.fax.lpm;
             c.stopUtc = (long long)time(nullptr); c.startUtc = S.faxStartUtc > 0 ? S.faxStartUtc : c.stopUtc;
             c.snrDb = a.rx.marine.fax.snrDb; c.phasingLines = a.rx.marine.fax.phasingLines;
             c.reason = fs == 3 ? "stop tone" : fs == 1 ? "new start" : "timeout";
@@ -895,6 +1110,7 @@ void scanTick(App& a) {
     const double now = (double)time(nullptr);
     if (now == lastSec) return;
     lastSec = now;
+    scheduleTick(a);
     dect2::MarineReceiver& r = a.engine.marine();
     if (S.parOn && !S.scanOn) {
         std::vector<double> want;
@@ -1171,7 +1387,7 @@ void mapView(App& a) {
         else dl->AddCircleFilled(q, r, col);
         if (e.heard) dl->AddCircle(q, r + 4 * gUi, col, 20, 1.6f);       // heard: a ring (and a full colour for a coast station)
         if (sel) dl->AddCircle(q, r + 8 * gUi, IM_COL32(255, 255, 255, 255), 24, 2.f);
-        if ((S.mapLabels && (S.map.zoom >= 8 || e.heard)) || sel) {
+        if ((S.mapLabels && adsbmap::labelsAt(S.map.zoom, false)) || sel) {
             const std::string lb = e.name.empty() ? e.mmsi : e.name;
             dl->AddText(ImVec2(q.x + r + 3 * gUi, q.y - 7 * gUi), IM_COL32(adsbmap::overlayText() >> 16 & 255, adsbmap::overlayText() >> 8 & 255, adsbmap::overlayText() & 255, e.heard ? 255 : 150), lb.c_str());
         }
@@ -1455,7 +1671,7 @@ const ModeUi kMarineUi = {
 // the last weather fax picture for the results file (results_ui.cpp): shown again until a new one comes in
 // the picture on screen and the saved copy: empty (the engine side is MarineReceiver::clearFax). Also used by the top bar's Clear all.
 void marineFaxClearUi() {
-    S.last = dect2::FaxImage();
+    S.last = dect2::FaxImage(); S.phase = 0;
     S.imgW = S.imgH = 0;
     S.zoom = 0; S.pan = ImVec2(0, 0);
     S.saveMsg.clear();
@@ -1472,14 +1688,5 @@ bool marineFaxLoad(const std::string& blob) {
 }
 void marineFaxTexture() {
     if (!gGfx || S.last.width <= 0 || S.img) return;
-    const int th = std::max(1500, S.last.height);
-    S.img = gGfx->createImage(S.last.width, th, 0xFFFFFFFFu);
-    if (!S.img) return;
-    S.texW = S.last.width; S.texH = th;
-    std::vector<uint32_t> px((size_t)S.last.width * S.last.height);
-    for (size_t i = 0; i < px.size(); i++) { const uint32_t g = S.last.pix[i]; px[i] = 0xFF000000u | (g << 16) | (g << 8) | g; }
-    S.img->update(0, 0, S.last.width, S.last.height, px.data());
-    S.enh.e.setSource("Weather fax");
-    S.enh.feed(px.data(), S.last.width, S.last.height, true);
-    S.imgW = S.last.width; S.imgH = S.last.height;
+    presentLast(true);
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/ham/ham_upload.h"
 #include "dect2/common/thread_name.h"
 #include "dect2/net/wsprnet.h"
@@ -8,6 +11,7 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include "dect2/common/diag.h"
 #ifdef _WIN32
 #define popen _popen
 #define pclose _pclose
@@ -100,7 +104,7 @@ UpTransport curlTransport() {
         std::string code; cf >> code;
         r.status = atoi(code.c_str());
         std::ostringstream ss; ss << of.rdbuf(); r.body = ss.str();
-        if (!r.status) r.err = "connection failed";
+        if (!r.status) { DIAG(172369, "The log upload request got no HTTP answer from the server, so the upload failed."); r.err = "connection failed"; }
         std::remove(outF.c_str()); std::remove(codeF.c_str());
         return r;
     };

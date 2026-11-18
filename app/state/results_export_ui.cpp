@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // GUI half of the results export (dialog + button); the pure half is results_export.cpp.
 #include "results_export.h"
 #include "../app.h"
@@ -17,12 +20,12 @@ bool saveButton(const Table& t, const char* kind, std::string& note, const char*
     clips::tableLog().observe(kind, t, (double)std::time(nullptr));   // radio clips: remembers what the table showed (rate limited inside)
     ImGui::PushID(id);
     bool hit = iconFlat(Ic::Save, "Save results: CSV, JSON, ADIF logbook (ham modes), KML, GPX or GeoJSON (anything with positions)");
-    ImGui::SameLine();
+    sameLineIf(ImGui::CalcTextSize("Save results...").x + 12 * gUi, -1.f);   // wraps in a narrow pane (the Simple views)
     if (ImGui::SmallButton("Save results...")) hit = true;
-    ImGui::SameLine();
+    sameLineIf(90 * gUi, -1.f);
     ImGui::SetNextItemWidth(90 * gUi);
     ImGui::Combo("##fmt", &fmt, "CSV\0JSON\0ADIF\0KML\0GPX\0GeoJSON\0");
-    ImGui::SameLine();
+    sameLineIf(110 * gUi, -1.f);
     ImGui::SetNextItemWidth(110 * gUi);
     {
         const char* scopes[] = {tr("Since start"), tr("All")};

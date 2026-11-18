@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Radiosonde receiver: finds every sonde in the captured band (up to 8 at once), follows each on its own channel, tells the type from the
 // frame sync and decodes it. Written to the engine's contract: configure() once the sample rate is known, feed() from the analysis
 // thread (never blocks: the work is done on the receiver's own thread), telemetry() and the setters from the interface thread.
@@ -34,6 +37,15 @@ public:
     // Setters for the interface; safe while feed() runs
     void setCenterMhz(double mhz);                       // the tuned centre frequency: lets the telemetry carry absolute frequencies
     void clearSondes();                                  // empty the list of sondes heard (channels keep following their carriers)
+    void setToneDetection(bool on);                      // symbols decided by tone energies (default on; off: the discriminator only, as in 3.9); applies to channels opened afterwards
+    bool toneDetection() const;
+    // 4.1: iMet-54 (soft Hamming(8,4) with a CRC-checked second choice) and MRZ (both halves of each Manchester bit) decide from soft symbols (default on;
+    // off: the 4.0 hard symbols); applies to channels opened afterwards
+    void setSoftDecisions(bool on);
+    bool softDecisions() const;
+    // 4.0: a view onto one radiosonde type: bit k of the mask = SondeKind k; only sondes of those types are reported (telemetry()), 0 = every type. The receiver itself
+    // still tries every type, and everything else (uploads, the saved results) is unchanged.
+    void setKindMask(uint32_t mask);
     void setMaxChannels(int n);                          // 1 to 8 (default 8)
     // Tests and tools
     void setSynchronous(bool on);                        // process inside feed() instead of on the worker thread (deterministic; set before the first feed)
@@ -47,6 +59,7 @@ private:
 };
 
 ModeTuning sondeTuning();
+
 bool sondeIsLbandMhz(double mhz);              // LMS6-1680 profile (wide FSK, ~170 kHz)
 double sondeMinSampleRateHz(double centerMhz);
 

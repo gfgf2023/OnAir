@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // MPEG transport-stream analysis: PSI/SI parsing (PAT, PMT, SDT, NIT, EIT now/next, TDT), per-PID statistics.
 #pragma once
+#include "dect2/tv/psip.h"
 #include "dect2/tv/ca_state.h"
 #include "dect2/tv/dsmcc.h"
 #include "dect2/tv/si_tables.h"
@@ -9,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dect2 {
@@ -22,8 +27,20 @@ struct TsSubEntry {
     int ancPage = 0;         // DVB: ancillary_page_id
 };
 
+// ISO 639-2 code (either the bibliographic or the terminology one, any case) to an English language name; "" for no code, the upper-case code
+// itself when it is not in the table. Chinese is split the way DTMB broadcasters use it: CHS simplified, CHT traditional, CHI/ZHO plain.
+std::string isoLanguageName(const std::string& code);
+// What a subtitle entry is, in a few words ("DVB subtitles", "DVB subtitles, 16:9", "Teletext subtitles"); hearingImpaired is set for the
+// hard-of-hearing types (DVB subtitling_type 0x20..0x24, teletext_type 5).
+std::string subtitleTypeName(const TsSubEntry& e, bool* hearingImpaired = nullptr);
+// The one-line label of a subtitle track for a menu: "Chinese (traditional) - DVB subtitles (hearing impaired)". English: the UI shows it as data.
+std::string subtitleTrackLabel(const TsSubEntry& e);
+// Entries that are real subtitles (teletext initial / information / schedule pages are not).
+bool subtitleEntryIsSubtitle(const TsSubEntry& e);
+
 struct TsStream {
     int pid = 0, streamType = 0;
+    int declaredPid = -1;  // the PID the PMT gave, when the packets come on another one (DPRK DVB-T2, issue 498: every PID inverted, XOR 0x1FFF); -1: as declared
     std::vector<TsSubEntry> subs;
     std::string codec;     // "H.264", "HEVC", "AAC", "AC-3", ...
     std::string kind;      // "video", "audio", "subtitles", "teletext", "data"
@@ -38,6 +55,7 @@ struct TsService {
     std::string name, provider;
     int type = 0;            // DVB service type
     int pmtPid = 0, pcrPid = 0;
+    int declaredPcrPid = -1;  // as TsStream::declaredPid, for the PCR PID
     bool caFlag = false;     // free_CA_mode or CA descriptors present (signalling only: many free channels carry them, e.g. on DTMB in China)
     bool scrambled = false;  // its elementary streams arrive scrambled (transport_scrambling_control of their payload packets): what to show
     CaState caState = CaState::Unknown;   // from the packets of its streams (classifyCa); the app adds the player's decode result
@@ -69,6 +87,7 @@ struct TsPid {
 };
 
 struct TsSnapshot {
+    dvbsi::TextEncoding textEncoding = dvbsi::TextEncoding::Dvb;
     std::vector<TsService> services;
     std::vector<TsPid> pids;
     std::string networkName, utc;
@@ -94,10 +113,13 @@ public:
     // Programme guide per service id, sorted by start time (now/next plus the schedule when the broadcaster sends it).
     std::map<int, std::vector<EpgEvent>> epg() const;
     void reset();
-    void setGbDefault(bool on) { gbText_ = on; }   // DTMB: unprefixed SI text may be GB 2312
+    void setTextEncoding(dvbsi::TextEncoding encoding) {
+        if (textEncoding_ != encoding) si_.resetTextCountry();
+        textEncoding_ = encoding; si_.setTextEncoding(encoding);
+    }
 
 private:
-    bool gbText_ = false;
+    dvbsi::TextEncoding textEncoding_ = dvbsi::TextEncoding::Dvb;
     struct SectionBuf { std::vector<uint8_t> data; bool active = false; };
     struct PidState { uint32_t scrWin = 0, clrWin = 0; uint64_t packets = 0, bytesWin = 0, ccErrors = 0, tei = 0; int lastCc = -1; double kbps = 0; bool scrambled = false; bool resync = true; };
     void section(int pid, const uint8_t* s, int len);
@@ -106,6 +128,9 @@ private:
     void parsePmt(int pid, const uint8_t* s, int len);
     void parseSdt(const uint8_t* s, int len);
     void parseNit(const uint8_t* s, int len);
+    void psipEit(const uint8_t* s, int len);
+    void psipEtt(const uint8_t* s, int len);
+    psip::State psip_;
     void parseTvct(const uint8_t* s, int len);   // ATSC PSIP terrestrial/cable virtual channel table: names and channel numbers
     void parseEit(const uint8_t* s, int len);
     void parseTdt(const uint8_t* s, int len);
@@ -130,8 +155,8 @@ private:
 // Selects one service from a multiplex: passes its PMT/ES/PCR PIDs and SI, and replaces the PAT with a single-program one.
 class ServiceFilter {
 public:
-    void select(int serviceId) { sid_ = serviceId; pass_.clear(); patSid_ = -1; }
-    void setStrict(bool on) { strict_ = on; pass_.clear(); patSid_ = -1; }   // on: only the service's own PIDs (PAT, PMT, PCR, streams), no SDT/NIT/EIT (for recordings)
+    void select(int serviceId) { sid_ = serviceId; pass_.clear(); remap_.clear(); patSid_ = -1; }
+    void setStrict(bool on) { strict_ = on; pass_.clear(); remap_.clear(); patSid_ = -1; }   // on: only the service's own PIDs (PAT, PMT, PCR, streams), no SDT/NIT/EIT (for recordings)
     int selected() const { return sid_; }
     // Returns true if the packet should be forwarded; `out` receives the (possibly rewritten) packet.
     bool process(const uint8_t* in, const TsSnapshot* snap, uint8_t* out);
@@ -139,11 +164,12 @@ public:
 private:
     int sid_ = -1;
     std::vector<int> pass_;
+    std::vector<std::pair<int, int>> remap_;   // declared PID -> the PID the packets use (patched into the PMT)
     bool strict_ = false;
     int patCc_ = 0, patSid_ = -1, patPmt_ = 0, patTsid_ = 0;
 };
 
 uint32_t mpegCrc32(const uint8_t* p, int n);
-std::string dvbText(const uint8_t* p, int n, bool gbDefault = false); // gbDefault: unprefixed GB 2312 pairs are decoded as GB 2312 (DTMB) // DVB text with character-table prefix -> UTF-8
+using dvbsi::dvbText; // DVB/ISDB broadcast text -> UTF-8
 
 } // namespace dect2

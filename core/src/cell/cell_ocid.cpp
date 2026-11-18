@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 #include "dect2/common/thread_name.h"
 #include "dect2/cell/cell_ocid.h"
 #include <algorithm>
@@ -10,6 +13,7 @@
 #include <sstream>
 #include <tuple>
 #include <vector>
+#include "dect2/common/diag.h"
 
 namespace dect2 {
 
@@ -119,7 +123,7 @@ bool OcidCache::save(const std::string& path) const {
     const std::string tmp = path + ".tmp";
     {
         std::ofstream f(tmp, std::ios::trunc);
-        if (!f) return false;
+        if (!f) { DIAG(109542, "The cell lookup cache file %s could not be created, so the cache was not saved.", tmp.c_str()); return false; }
         char b[256];
         for (const auto& kv : m_) {
             const auto& k = kv.first; const auto& e = kv.second;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NDB (non-directional beacon) receiver. Receive only.
 //
 // The usual band is the long-wave beacon band, 190-535 kHz (some beacons sit higher, up to about 1750 kHz; the tuner is not
@@ -40,6 +43,12 @@ public:
     void setLogCallback(std::function<void(const std::string&)> cb);
     // 0 auto (400 Hz, 1020 Hz or a keyed carrier, whichever is being keyed), 1 force 400 Hz, 2 force 1020 Hz, 3 force keyed carrier
     void setToneMode(int mode);
+    // 4.0 weak-signal path (default on; off = the 3.9 receiver, for before / after measurements)
+    void setWeakSignalPath(bool on);
+    // 4.0 ident folding (default on, with the weak-signal path): a beacon repeats the same ident. The keying depth of each path is kept for 3 minutes, the
+    // ident period is found from its autocorrelation, the last periods are averaged (the keying adds up, the noise averages down) and the average is read
+    // as Morse. Needs the ident to have repeated at least 3 times on a steady carrier (docs/SENSITIVITY-4.0-X1.md).
+    void setIdentFolding(bool on);
     // "Listen": the keyed tone (a 400 Hz tone gated by the carrier when the beacon sends no modulating tone). Off by default
     void setListen(bool on);
     bool listening() const;

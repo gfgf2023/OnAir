@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // DECT screens: the base stations heard on a carrier (RFPI, manufacturer code, level, slot, how often), the system information they send and the
 // burst log. Activity and signalling only: the voice is encrypted and its codec is not decoded, and nothing is sent.
 #include "app.h"
@@ -222,7 +225,7 @@ void tuner(App& a, bool& retune) {
     ImGui::SetNextItemWidth(std::min(300 * gUi, ImGui::GetContentRegionAvail().x));
     if (ImGui::BeginCombo("##dectband", bandName(S.band))) {
         for (int b = 0; b < dect::kBands; b++) {
-            if (ImGui::Selectable(bandName(b), b == S.band)) { S.band = b; S.scan = false; }
+            if (ImGui::Selectable(bandName(b), b == S.band)) { S.band = b; S.scan = false; tuneFreq(a, dect::carrierMhz(b, 0)); retune = true; }   // a new band retunes to its first carrier
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", bandWhere(b));
         }
         ImGui::EndCombo();

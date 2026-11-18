@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Cell towers screens: the cell table (operator, band, EARFCN, PCI, eNB / sector, TAC, bandwidth, RSRP / RSRQ, last seen), cells grouped
 // by site, the neighbour lists of SIB4 / SIB5, the strongest cell per operator, a band scan over the LTE EARFCN raster, and an optional
 // map of the towers: looked up on OpenCelliD with the user's own API key (only the cell identity and the key are sent; cached on disk), or
@@ -6,11 +9,13 @@
 #include <set>
 #include "app.h"
 #include "state/results_export.h"
+#include "i18n/i18n.h"
 #include "../adsb/adsb_map.h"
 #include "dect2/cell/cell_ocid.h"
 #include "dect2/cell/cell_rx.h"
 #include "dect2/cell/cell_filter.h"
 #include "dect2/cell/cell_tel.h"
+#include "dect2/cell/cell_lte.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -44,7 +49,7 @@ struct State {
     std::map<uint64_t, Pos> towers;   // (mcc, mnc, eci) -> position
     std::string towerFile, towerNote;
     adsbmap::View map;
-    bool keyLoaded = false, showKey = false, fitted = false;
+    bool keyLoaded = false, showKey = false, fitted = false, fitRxOnly = false;
     char key[128] = {};
     std::unique_ptr<dect2::OcidLookup> ocid;
     char find[48] = {};           // operator / PLMN / eNB / TAC / PCI search
@@ -328,6 +333,11 @@ void detail(App& a) {
     ImGui::Text("PCI %d, %s, %d RB, %d port%s, %s CP, PHICH %s Ng %d, SFN %d", c.pci, c.tdd ? "TDD" : "FDD", c.nRb, c.ports, c.ports == 1 ? "" : "s", c.extCp ? "extended" : "normal",
                 c.phichDur ? "extended" : "normal", c.phichRes, c.sfn);
     ImGui::Text("RSRP %.1f dBFS, RSRQ %.1f dB, SINR %.1f dB, offset %+.0f Hz", c.rsrpDb, c.rsrqDb, c.sinrDb, c.cfoHz);
+    if (c.hasMib && dect2::cell::lteMibSib1Br(c.mibTail) > 0) {   // LTE-M (eMTC): the MIB schedules SIB1-BR for BL / CE devices
+        const int v = dect2::cell::lteMibSib1Br(c.mibTail);
+        ImGui::Text(tr("LTE-M: SIB1-BR sent (schedulingInfoSIB1-BR %d: %d repetitions, %d bit transport block)%s"), v, dect2::cell::lteSib1BrReps(v), dect2::cell::lteSib1BrTbs(v),
+                    dect2::cell::lteMibSiUnchangedBr(c.mibTail) ? tr(", system information unchanged") : "");
+    }
     if (c.hasSib1) {
         std::string pl;
         for (size_t k = 0; k < c.plmns.size(); k++) {   // every PLMN the cell broadcasts, with the operator name where the table has it
@@ -337,12 +347,19 @@ void detail(App& a) {
         }
         ImGui::Text("SIB1: %s(%s) TAC %u, cell id %u (eNB %u, sector %d)%s", pl.c_str(), dect2::lteCountry(c.mcc), c.tac, c.cellId, c.enb, c.sector, c.barred ? ", barred" : "");
     }
-    {   // SIB types 10, 11 and 12 in the scheduling list: the cell can broadcast warnings (ETWS / CMAS); their content is not decoded
+    {   // SIB types 10, 11 and 12 in the scheduling list: the cell can broadcast warnings (ETWS / CMAS); the messages appear under Public warnings
         bool etws = false, cmas = false;
         for (const auto& s : c.sched) for (int b : s.sibs) { if (b == 10 || b == 11) etws = true; if (b == 12) cmas = true; }
         if (etws || cmas) ImGui::TextDisabled("%s%s%s", etws ? "scheduled: SIB10/11 (ETWS earthquake and tsunami warning)" : "", etws && cmas ? "; " : "", cmas ? "SIB12 (CMAS / public warning)" : "");
     }
     if (c.hasSib2) ImGui::Text("SIB2: reference signal %d dBm, p-b %d, UL %s", c.refSignalPowerDbm, c.pb, c.ulEarfcn >= 0 ? std::to_string(c.ulEarfcn).c_str() : "default spacing");
+    if (!c.hnbName.empty()) ImGui::Text("SIB9: home eNB name %s", c.hnbName.c_str());
+    if (c.hasTime) {
+        char tb[40] = "";
+        time_t tu = (time_t)c.utcSec;
+        if (const struct tm* g = gmtime(&tu)) strftime(tb, sizeof tb, "%Y-%m-%d %H:%M:%S", g);
+        ImGui::Text("SIB16: network time %s UTC%s%s", tb, c.localOffsetQh > -64 ? ", local offset " : "", c.localOffsetQh > -64 ? (std::to_string(c.localOffsetQh * 15) + " min").c_str() : "");
+    }
     if (c.hasSib3) ImGui::Text("SIB3: priority %d, hysteresis %d dB", c.prio, c.qHystDb);
 }
 
@@ -451,12 +468,16 @@ void mapView(App& a) {
     if (sz.y < 40) return;
     const double rLat = plat::prefs().getD("adsbLat", 0), rLon = plat::prefs().getD("adsbLon", 0);
     const bool haveRx = rLat != 0 || rLon != 0;   // the antenna position the map modes share
-    if (!S.fitted) {   // centre on the first tower placed, else the receiver
-        for (const auto& c : a.rx.cell.cells) { const Loc l = towerOf(c); if (l.src) { S.map.lat = l.p.lat; S.map.lon = l.p.lon; S.map.zoom = 13; S.fitted = true; break; } }
-        if (!S.fitted && haveRx) { S.map.lat = rLat; S.map.lon = rLon; S.map.zoom = 12; }
+    // centre on the first tower placed, else the receiver until a tower is placed or the map is moved. Once only: a reset every frame
+    // undid every zoom and pan (the + / - buttons and the wheel did nothing while no tower had a position)
+    if (!S.fitted || S.fitRxOnly) {
+        for (const auto& c : a.rx.cell.cells) { const Loc l = towerOf(c); if (l.src) { S.map.lat = l.p.lat; S.map.lon = l.p.lon; S.map.zoom = 13; S.fitted = true; S.fitRxOnly = false; break; } }
+        if (!S.fitted && haveRx) { S.map.lat = rLat; S.map.lon = rLon; S.map.zoom = 12; S.fitted = true; S.fitRxOnly = true; }
     }
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const double mLat0 = S.map.lat, mLon0 = S.map.lon; const int mZoom0 = S.map.zoom;
     adsbmap::draw(S.map, sz);
+    if (S.map.lat != mLat0 || S.map.lon != mLon0 || S.map.zoom != mZoom0) S.fitRxOnly = false;   // the user moved it: it stays where they put it
     adsbmap::fullCorner(p0, sz);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(p0, ImVec2(p0.x + sz.x, p0.y + sz.y), true);
@@ -478,7 +499,7 @@ void mapView(App& a) {
         dl->AddCircleFilled(q, 5 * gUi, opColour(c, 255));
         dl->AddCircle(q, 5 * gUi, IM_COL32(0, 0, 0, 200));
         char b[96]; snprintf(b, sizeof b, "%s eNB %u/%d PCI %d", c.op.empty() ? (c.plmns.empty() ? "?" : c.plmns[0].c_str()) : c.op.c_str(), c.enb, c.sector, c.pci);
-        dl->AddText(ImVec2(q.x + 7 * gUi, q.y - 7 * gUi), IM_COL32(240, 240, 240, 255), b);
+        if (adsbmap::labelsAt(S.map.zoom, false)) dl->AddText(ImVec2(q.x + 7 * gUi, q.y - 7 * gUi), IM_COL32(240, 240, 240, 255), b);
     }
     dl->PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 8 * gUi, p0.y + sz.y - ImGui::GetTextLineHeight() - 6 * gUi));
@@ -488,6 +509,23 @@ void mapView(App& a) {
 void logView(App& a) {
     for (const auto& e : a.rx.cell.events) ImGui::TextUnformatted(e.text.c_str());
     if (a.rx.cell.events.empty()) ImGui::TextDisabled("nothing yet");
+}
+
+// ETWS / CMAS / EU-Alert messages the cells around are broadcasting (SIB10, SIB11, SIB12): shown as a phone would show the text
+void warnView(App& a) {
+    const auto& t = a.rx.cell;
+    ImGui::PushTextWrapPos(0);
+    if (t.warnings.empty()) { ImGui::TextDisabled("%s", tr("No public warning received. Cells broadcast these only while an alert or a test is active.")); ImGui::PopTextWrapPos(); return; }
+    for (const auto& w : t.warnings) {
+        char when[32] = "";
+        time_t tt = (time_t)w.wallTime;
+        if (const struct tm* lt = localtime(&tt)) strftime(when, sizeof when, "%H:%M:%S", lt);
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s  %s (id %u)", when, w.category.empty() ? tr("unlisted identifier") : w.category.c_str(), w.messageId);
+        ImGui::TextDisabled("SIB%d, PCI %d, %s, serial 0x%04X, %d cell%s%s%s", w.sib, w.pci, w.plmn.empty() ? "?" : w.plmn.c_str(), w.serial, w.cells, w.cells == 1 ? "" : "s", w.lang.empty() ? "" : ", ", w.lang.c_str());
+        ImGui::TextUnformatted(w.text.empty() ? "-" : w.text.c_str());
+        ImGui::Separator();
+    }
+    ImGui::PopTextWrapPos();
 }
 
 void tick(App& a) {
@@ -516,7 +554,7 @@ void tab(App& a) {
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("Receive only: the public information every LTE cell broadcasts to all phones (operator, band, cell identity). Nothing addressed to a phone is decoded.");
     ImGui::PopTextWrapPos();
-    subNav("cellv", S.view, {"Cells", "Sites", "Neighbours", "Operators", "Map", "Log"});
+    subNav("cellv", S.view, {"Cells", "Sites", "Neighbours", "Operators", "Map", "Log", "Warnings"});
     if (S.view == 4) { mapView(a); return; }
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to find the cells around you"); return; }
     if (S.view == 0) {
@@ -527,6 +565,7 @@ void tab(App& a) {
     } else if (S.view == 1) sitesView(a);
     else if (S.view == 2) neighView(a);
     else if (S.view == 3) opView(a);
+    else if (S.view == 6) warnView(a);
     else logView(a);
 }
 

@@ -1,19 +1,45 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital, the keyboard modes view of the main tab (called by hfdig_ui.cpp): Olivia, Contestia, MFSK, THOR, DominoEX and Hellschreiber.
 // The settings of the family (tones and bandwidth, or the variant), the audio frequency of the signal (found by the decoder while none is
 // locked, or typed), the band buttons, the decoded text; Hellschreiber draws what it hears as a picture, lines of columns of 14 pixels.
+#include "../panels/picsave_ui.h"
+#include "../state/picsave.h"
 #include "app.h"
+#include "ham/ham_events_ui.h"
+#include "gfx/gfx.h"
+#include "panels/gallery.h"
 #include "platform/platform.h"
+#include "dect2/audio/hf_demod.h"
+#include "dect2/engine/click_tune.h"
 #include "dect2/hfdig/hfdig_tel.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
 using namespace dect2;
 
+// MFSK pictures (Shortwave Radiogram): the one coming in, drawn as a texture that grows, and the finished ones as thumbnails
+struct PicItem {
+    std::shared_ptr<const dect2::KbdPicture> pic;
+    gfx::Image* tex = nullptr;
+};
 struct State {
+    gfx::Image* live = nullptr;
+    int liveW = 0, liveH = 0;
+    uint64_t liveSerial = ~0ull, lastId = 0;
+    std::vector<PicItem> items;     // newest first
+    int sel = -1;                   // -1: the live picture
+    bool autoSave = false, loadedPics = false;
+    std::string msg;
     bool stick = true;
     float lastMax = 0;
     KbdConfig cf[kKbdFamilies];
@@ -42,6 +68,7 @@ void load(App& a, int fam) {
     snprintf(k, sizeof k, "kbd%d.variant", fam); c.variant = (int)plat::prefs().getI(k, kbdDefaultVariant(fam));
     snprintf(k, sizeof k, "kbd%d.centre", fam); c.centreHz = plat::prefs().getD(k, 1500);
     snprintf(k, sizeof k, "kbd%d.auto", fam); c.autoCentre = plat::prefs().getB(k, true);
+    snprintf(k, sizeof k, "kbd%d.autop", fam); c.autoParams = plat::prefs().getB(k, true);
     c.tones = std::clamp(c.tones, 2, 256);
     c.bandwidth = std::clamp(c.bandwidth, 125, 2000);
     if (c.variant < 0 || c.variant >= std::max(1, kbdVariantCount(fam))) c.variant = kbdDefaultVariant(fam);
@@ -57,6 +84,7 @@ void save(const KbdConfig& c) {
     snprintf(k, sizeof k, "kbd%d.variant", fam); plat::prefs().setI(k, c.variant);
     snprintf(k, sizeof k, "kbd%d.centre", fam); plat::prefs().setD(k, c.centreHz);
     snprintf(k, sizeof k, "kbd%d.auto", fam); plat::prefs().setB(k, c.autoCentre);
+    snprintf(k, sizeof k, "kbd%d.autop", fam); plat::prefs().setB(k, c.autoParams);
 }
 
 void bandButtons(App& a, int fam) {
@@ -85,13 +113,13 @@ void hellPicture(App& a, const HfdigKbdTelemetry& k) {
     static bool invert = false, dual = false;
     ImGui::Checkbox("Invert (black on white)", &invert); ImGui::SameLine(0, 10 * gUi);
     ImGui::Checkbox("Dual line", &dual);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every line is drawn twice, the second copy half a line later, so a character cut by the line end or a slanted picture is whole in one of them");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every column is drawn twice, one copy straight above the other at the same time, as the Hell printers did: when the picture slants or sits too high or too low, a whole line of text shows across the two copies");
     ImGui::BeginChild("##hellpic", ImVec2(0, 0), ImGuiChildFlags_Borders);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float px = std::max(2.f, std::floor(2.5f * gUi)), gap = 6 * gUi;
-    const float lineH = (dual ? 28 : 14) * px + gap + (dual ? px : 0);
+    const float lineH = (dual ? 28 : 14) * px + gap;
     const int perLine = std::max(8, (int)(avail.x / px));
     const int lines = std::max(1, (int)(avail.y / lineH));
     const int total = k.hellCols;
@@ -107,11 +135,12 @@ void hellPicture(App& a, const HfdigKbdTelemetry& k) {
     dl->AddRectFilled(p0, ImVec2(p0.x + avail.x, p0.y + avail.y), bg);
     const int copies = dual ? 2 : 1;
     for (int cp = 0; cp < copies; cp++) {
-        const int shift = cp * (perLine / 2);   // the second copy is half a line further on
-        for (int c = first + shift; c < total; c++) {
-            const int li = (c - first - shift) / perLine, ci = (c - first - shift) % perLine;
+        // the copies are the same columns, drawn at the same time and place, one straight above the other with no gap: the 28 rows repeat the column,
+        // so any 14 of them in a row are a whole column whatever its vertical phase (#225: the second copy used to come half a line later)
+        for (int c = first; c < total; c++) {
+            const int li = (c - first) / perLine, ci = (c - first) % perLine;
             if (li >= nLines) break;
-            const float x = p0.x + ci * px, y = p0.y + li * lineH + cp * (14 * px + px);
+            const float x = p0.x + ci * px, y = p0.y + li * lineH + cp * (14 * px);
             const uint8_t* col = &k.hell[(size_t)c * kKbdHellRows];
             for (int r = 0; r < kKbdHellRows; r++) {
                 if (col[r] < 40) continue;
@@ -125,9 +154,163 @@ void hellPicture(App& a, const HfdigKbdTelemetry& k) {
     ImGui::EndChild();
 }
 
+std::vector<uint32_t> toRgba(const dect2::KbdPicture& pc) {
+    std::vector<uint32_t> px((size_t)pc.width * pc.height, 0xFF000000u);
+    for (size_t i = 0; i < px.size() && i * 3 + 2 < pc.rgb.size(); i++)
+        px[i] = 0xFF000000u | ((uint32_t)pc.rgb[i * 3 + 2] << 16) | ((uint32_t)pc.rgb[i * 3 + 1] << 8) | pc.rgb[i * 3];
+    return px;
+}
+gfx::Image* makeTexture(const dect2::KbdPicture& pc) {
+    if (!gGfx || pc.width <= 0 || pc.height <= 0) return nullptr;
+    gfx::Image* t = gGfx->createImage(pc.width, pc.height, 0xFF000000u);
+    if (t) { const auto px = toRgba(pc); t->update(0, 0, pc.width, pc.height, px.data()); }
+    return t;
+}
+void dropItem(PicItem& it) { delete it.tex; it.tex = nullptr; }
+
+std::vector<uint8_t> rgbaOf(const dect2::KbdPicture& pc) {
+    std::vector<uint8_t> o((size_t)pc.width * pc.height * 4);
+    for (size_t i = 0; i < (size_t)pc.width * pc.height; i++) { o[i * 4] = pc.rgb[i * 3]; o[i * 4 + 1] = pc.rgb[i * 3 + 1]; o[i * 4 + 2] = pc.rgb[i * 3 + 2]; o[i * 4 + 3] = 255; }
+    return o;
+}
+// every finished picture goes to <data folder>/mfsk/<date>-<time>-<n>.png when "Save every picture" is on
+void autoSavePic(const dect2::KbdPicture& pc) {
+    if (pc.width <= 0 || pc.rgb.size() < (size_t)pc.width * pc.height * 3) return;
+    const std::string dir = plat::dataDir() + "/mfsk";
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(reinterpret_cast<const char8_t*>(dir.c_str())), ec);
+    char name[96];
+    const time_t tt = (time_t)pc.unixTime;
+    struct tm lt;
+#ifdef _WIN32
+    localtime_s(&lt, &tt);
+#else
+    localtime_r(&tt, &lt);
+#endif
+    char ts[32];
+    strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &lt);
+    snprintf(name, sizeof name, "/%s-MFSK-%llu.png", ts, (unsigned long long)pc.id);
+    const auto rgba = rgbaOf(pc);
+    S.msg = gfx::writePng((dir + name).c_str(), rgba.data(), pc.width, pc.height) ? std::string(tr("saved")) + " " + dir + name : std::string(tr("could not write")) + " " + dir + name;
+}
+
+// takes what the receiver delivered since the last frame: the live picture's pixels and the pictures that finished
+void updatePics(const HfdigKbdTelemetry& k) {
+    if (!S.loadedPics) { S.loadedPics = true; S.autoSave = plat::prefs().getB("hfdigMfskAutoSave", false); }
+    for (size_t i = k.picHistory.size(); i-- > 0;) {
+        const auto& h = k.picHistory[i];
+        if (!h || h->id <= S.lastId) continue;
+        S.lastId = h->id;
+        PicItem it;
+        it.pic = h;
+        it.tex = makeTexture(*h);
+        S.items.insert(S.items.begin(), it);
+        if (S.sel >= 0) S.sel++;
+        if (S.autoSave) autoSavePic(*h);
+        gallery::Meta gm; gm.detail = std::string(h->colour ? "colour " : "grey ") + std::to_string(h->width) + "x" + std::to_string(h->height);
+        gallery::publishRgb("mfsk-" + std::to_string((long long)h->unixTime) + "-" + std::to_string(h->id), "MFSK", h->unixTime, h->width, h->height, h->rgb.data(), gm);
+        while (S.items.size() > (size_t)dect2::kKbdPicHistory) { dropItem(S.items.back()); S.items.pop_back(); if (S.sel >= (int)S.items.size()) S.sel = -1; }
+    }
+    if (k.picLive && k.picSerial != S.liveSerial && gGfx) {
+        S.liveSerial = k.picSerial;
+        const dect2::KbdPicture& pc = *k.picLive;
+        if (pc.width > 0 && pc.height > 0) {
+            if (!S.live || S.liveW != pc.width || S.liveH != pc.height) {
+                delete S.live;
+                S.live = gGfx->createImage(pc.width, pc.height, 0xFF000000u);
+                S.liveW = pc.width; S.liveH = pc.height;
+            }
+            if (S.live) { const auto px = toRgba(pc); S.live->update(0, 0, pc.width, pc.height, px.data()); }
+        }
+    }
+}
+
+// the picture area: the picture, what it is, Save PNG / Save every picture / Clear, and the finished ones as thumbnails to click
+void picturePanel(App& a, HfdigKbd& dec, const HfdigKbdTelemetry& k, float height) {
+    ImGui::BeginChild("##kbpic", ImVec2(0, height), ImGuiChildFlags_Borders);
+    const bool showLive = S.sel < 0 || S.sel >= (int)S.items.size();
+    const dect2::KbdPicture* pc = showLive ? k.picLive.get() : S.items[(size_t)S.sel].pic.get();
+    gfx::Image* tex = showLive ? S.live : S.items[(size_t)S.sel].tex;
+    const float footH = ImGui::GetFrameHeightWithSpacing() * 2 + 4 * gUi;
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 box(std::max(40.f, avail.x), std::max(40.f, avail.y - footH));
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, ImVec2(p0.x + box.x, p0.y + box.y), IM_COL32(18, 19, 21, 255));
+    if (pc && tex && pc->width > 0) {
+        const float z = std::min(box.x / (float)pc->width, box.y / (float)pc->height);
+        const float iw = pc->width * z, ih = pc->height * z;
+        const ImVec2 q0(p0.x + (box.x - iw) * 0.5f, p0.y + (box.y - ih) * 0.5f);
+        dl->AddImage(tex->texture(), q0, ImVec2(q0.x + iw, q0.y + ih));
+    }
+    ImGui::Dummy(box);
+    if (pc && pc->width > 0) {
+        const int pct = pc->samplesTotal > 0 ? (int)(100.0 * pc->samplesDone / pc->samplesTotal) : 0;
+        ImGui::TextDisabled("%dx%d %s X%d, %s", pc->width, pc->height, pc->colour ? tr("colour") : tr("grey"), 8 / std::max(1, pc->spp),
+                            pc->done ? tr("Done") : (std::string(tr("receiving")) + " " + std::to_string(pct) + "%").c_str());
+    } else {
+        ImGui::TextDisabled("%s", tr("Pictures sent inside the MFSK stream (Shortwave Radiogram) appear here as they arrive."));
+    }
+    const bool can = pc && pc->width > 0 && pc->done;
+    ImGui::BeginDisabled(!can);
+    if (ImGui::Button(trw("Save PNG")) && can) { const auto rgba = rgbaOf(*pc); picui::saveRgba("MFSK", (time_t)pc->unixTime, rgba.data(), pc->width, pc->height); }
+    ImGui::EndDisabled();
+    ImGui::SameLine(0, 8 * gUi);
+    if (ImGui::Checkbox(trw("Save every picture"), &S.autoSave)) plat::prefs().setB("hfdigMfskAutoSave", S.autoSave);
+    ImGui::SameLine(0, 8 * gUi);
+    if (ImGui::Button(trw("Clear pictures"))) {
+        dec.clearPictures();
+        for (PicItem& it : S.items) dropItem(it);
+        S.items.clear(); S.sel = -1; S.liveSerial = ~0ull;
+        delete S.live; S.live = nullptr; S.liveW = S.liveH = 0;
+    }
+    for (size_t i = 0; i < S.items.size(); i++) {
+        ImGui::SameLine(0, 6 * gUi);
+        ImGui::PushID((int)i);
+        const float th = ImGui::GetFrameHeight();
+        const dect2::KbdPicture& ip = *S.items[i].pic;
+        const ImVec2 q = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##th", ImVec2(th, th))) S.sel = (int)i;
+        const float z = std::min(th / (float)ip.width, th / (float)ip.height);
+        if (S.items[i].tex) dl->AddImage(S.items[i].tex->texture(), ImVec2(q.x, q.y), ImVec2(q.x + ip.width * z, q.y + ip.height * z));
+        if (S.sel == (int)i) dl->AddRect(q, ImVec2(q.x + th, q.y + th), IM_COL32(80, 160, 255, 255), 0, 0, 2.f);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%dx%d", ip.width, ip.height);
+        ImGui::PopID();
+    }
+    if (S.sel >= 0) { ImGui::SameLine(0, 8 * gUi); if (ImGui::SmallButton(trw("Live"))) S.sel = -1; }
+    picui::statusLine();
+    if (!S.msg.empty()) ImGui::TextDisabled("%s", S.msg.c_str());
+    (void)a;
+    ImGui::EndChild();
+}
+
+}
+
+// A click on the spectrum or waterfall while a keyboard mode is shown (#225), as fldigi: on a signal inside the sideband the dial stays and the
+// decoder's audio frequency goes onto the signal (Find signal turns off: the click chose it); outside it the dial moves so that the clicked signal
+// lands on the audio frequency the decoder listens on. True when the click was used up; otherwise absMhz is the dial to tune.
+bool hfdigKbdSpectrumClick(App& a, double& absMhz) {
+    if (a.family != 25 || a.second.drawing) return false;
+    const SubMode* sm = curSub(a);
+    if (!sm || sm->decoders != 32) return false;
+    const double dialHz = a.freqMhz * 1e6;
+    const int dm = hfDemodResolve(a.engine.hfdig().demod(), a.freqMhz);
+    if (dm != HfDemodUsb && dm != HfDemodLsb) return false;   // NFM / AM: the audio is not dial-relative, the click tunes as usual
+    const int fam = std::clamp(sm->sel, 0, kKbdFamilies - 1);
+    load(a, fam);
+    KbdConfig& c = S.cf[fam];
+    const double now = a.engine.running() && a.rx.hfdig.kbd.centreHz > 0 ? a.rx.hfdig.kbd.centreHz : c.centreHz;
+    const SidebandClick r = sidebandClick(absMhz * 1e6, dialHz, dm == HfDemodLsb, now);
+    if (!r.keepDial) { absMhz = r.dialHz / 1e6; return false; }
+    c.centreHz = std::clamp(r.audioHz, 300.0, 3500.0);
+    c.autoCentre = false;
+    save(c);
+    a.engine.hfdig().kbd().setConfig(c);
+    return true;
 }
 
 void hfdigKbdTab(App& a, const dect2::HfdigTelemetry& t) {
+    if (!t.rsidMode.empty() && t.rsidAgeSec < 120.f) ImGui::TextDisabled("%s: %s, %.0f Hz", tr("RSID heard"), t.rsidMode.c_str(), t.rsidAudioHz);
     const SubMode* sm = curSub(a);
     const int fam = sm && sm->decoders == 32 ? std::clamp(sm->sel, 0, kKbdFamilies - 1) : KbdOlivia;
     load(a, fam);
@@ -137,6 +320,21 @@ void hfdigKbdTab(App& a, const dect2::HfdigTelemetry& t) {
     const bool run = a.engine.running();
     bool changed = false;
 
+    // Auto (the default): the tones and bandwidth or the variant follow the signal; the hand-set ones are under Advanced and picking one turns Auto off
+    if (ImGui::Checkbox(tr("Auto"), &c.autoParams)) changed = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Finds the tones and bandwidth, or the variant, from the signal and tries them on the decoder. Follows the signal when it changes."));
+    flowNext(6 * gUi);
+    ImGui::AlignTextToFramePadding();
+    if (!c.autoParams) ImGui::TextDisabled("%s", tr("manual settings (Advanced)"));
+    else if (!run) ImGui::TextDisabled("%s", tr("Auto: starts with the receiver"));
+    else if (k.autoLocked) {
+        if (fam == KbdOlivia || fam == KbdContestia) ImGui::TextDisabled(tr("Found: %d tones, %d Hz"), k.autoTones, k.autoBandwidth);
+        else ImGui::TextDisabled(tr("Found: %s"), kbdVariantName(fam, k.autoVariant >= 0 ? k.autoVariant : c.variant));
+    }
+    else ImGui::TextDisabled("%s", tr("Auto: listening..."));
+    flowEnd();
+    if (ImGui::TreeNode(trw("Advanced##kbd"))) {
+        bool manualChange = false;
     ImGui::AlignTextToFramePadding();
     if (fam == KbdOlivia || fam == KbdContestia) {
         ImGui::TextDisabled("Tones"); ImGui::SameLine(0, 5 * gUi);
@@ -144,7 +342,7 @@ void hfdigKbdTab(App& a, const dect2::HfdigTelemetry& t) {
         snprintf(lbl, sizeof lbl, "%d", c.tones);
         ImGui::SetNextItemWidth(70 * gUi);
         if (ImGui::BeginCombo("##kbtones", lbl)) {
-            for (int v : kKbdTonesList) { snprintf(lbl, sizeof lbl, "%d", v); if (ImGui::Selectable(lbl, v == c.tones)) { c.tones = v; changed = true; } }
+            for (int v : kKbdTonesList) { snprintf(lbl, sizeof lbl, "%d", v); if (ImGui::Selectable(lbl, v == c.tones)) { c.tones = v; changed = true; manualChange = true; } }
             ImGui::EndCombo();
         }
         flowNext(12 * gUi);
@@ -153,24 +351,28 @@ void hfdigKbdTab(App& a, const dect2::HfdigTelemetry& t) {
         snprintf(lbl, sizeof lbl, "%d Hz", c.bandwidth);
         ImGui::SetNextItemWidth(92 * gUi);
         if (ImGui::BeginCombo("##kbbw", lbl)) {
-            for (int v : kKbdBwList) { snprintf(lbl, sizeof lbl, "%d Hz", v); if (ImGui::Selectable(lbl, v == c.bandwidth)) { c.bandwidth = v; changed = true; } }
+            for (int v : kKbdBwList) { snprintf(lbl, sizeof lbl, "%d Hz", v); if (ImGui::Selectable(lbl, v == c.bandwidth)) { c.bandwidth = v; changed = true; manualChange = true; } }
             ImGui::EndCombo();
         }
     } else {
         ImGui::TextDisabled("Mode"); ImGui::SameLine(0, 5 * gUi);
         ImGui::SetNextItemWidth(130 * gUi);
         if (ImGui::BeginCombo("##kbvar", kbdVariantName(fam, c.variant))) {
-            for (int v = 0; v < kbdVariantCount(fam); v++) if (ImGui::Selectable(kbdVariantName(fam, v), v == c.variant)) { c.variant = v; changed = true; }
+            for (int v = 0; v < kbdVariantCount(fam); v++) if (ImGui::Selectable(kbdVariantName(fam, v), v == c.variant)) { c.variant = v; changed = true; manualChange = true; }
             ImGui::EndCombo();
         }
     }
-    flowNext(12 * gUi);
+        flowEnd();
+        if (manualChange) c.autoParams = false;
+        ImGui::TextDisabled("%s", tr("Changing one of these turns Auto off."));
+        ImGui::TreePop();
+    }
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Audio"); ImGui::SameLine(0, 5 * gUi);
     float centre = (float)c.centreHz;
     ImGui::SetNextItemWidth(84 * gUi);
     if (ImGui::InputFloat("##kbcentre", &centre, 0, 0, "%.0f Hz")) { c.centreHz = std::clamp((double)centre, 300.0, 3500.0); changed = true; }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The audio frequency of the middle of the signal, 300 .. 3500 Hz above the dial.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The audio frequency of the middle of the signal, 300 .. 3500 Hz from the dial. Click the signal in the spectrum or waterfall to set it: the dial stays where it is."));
     flowNext(8 * gUi);
     if (ImGui::Checkbox("Find signal", &c.autoCentre)) changed = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Look for the signal in the audio while none is decoding; it moves the audio frequency above.");
@@ -207,13 +409,17 @@ void hfdigKbdTab(App& a, const dect2::HfdigTelemetry& t) {
         if (!k.callsign.empty()) {
             flowNext(12 * gUi);
             ImGui::TextDisabled("Callsign"); ImGui::SameLine(0, 5 * gUi);
-            ImGui::PushFont(a.mono, 0); ImGui::TextColored(pal::okGreen(), "%s", k.callsign.c_str()); ImGui::PopFont();
+            ImGui::PushFont(a.mono, 0); hamCallText(k.callsign, a.freqMhz * 1e6, kbdFamilyName(fam)); ImGui::PopFont();   // country, worked-before colour (ham/ham_events_ui.h)
         }
     }
     flowEnd();
     bandButtons(a, fam);
 
     if (fam == KbdHell) { hellPicture(a, k); return; }
+    if (fam == KbdMfsk) {
+        updatePics(k);
+        if (k.picLive || !S.items.empty()) picturePanel(a, dec, k, std::max(140 * gUi, ImGui::GetContentRegionAvail().y * 0.55f));
+    }
     ImGui::BeginChild("##kbdtext", ImVec2(0, 0), ImGuiChildFlags_Borders);
     ImGui::PushFont(a.mono, 0);
     ImGui::PushTextWrapPos(0);

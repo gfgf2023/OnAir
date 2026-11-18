@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // CubeSat telemetry framings, without any radio: the codes and frame layouts amateur satellites on 2 m / 70 cm use.
 //  - AX.25 (packet_ax25.h) at 1200 baud AFSK or 9600 baud G3RUH: HDLC, NRZI, the G3RUH scrambler at 9600.
 //  - GOMspace NanoCom AX100 "Mode 5" (ASM + Golay): GMSK / FSK, the sync word 0x930B51DE, a Golay (24,12) coded length field (low 8 bits
@@ -17,7 +20,7 @@
 namespace dect2 {
 namespace cubesat {
 
-enum Framing { Ax25Afsk1200 = 0, Ax25G3ruh, Ax100Mode5, Ax100Mode6, CcsdsRs, kNumFramings };
+enum Framing { Ax25Afsk1200 = 0, Ax25G3ruh, Ax100Mode5, Ax100Mode6, CcsdsRs, U482c, CcsdsConcat, Usp, Ngham, Mobitex, kNumFramings };   // the last five: cubesat_more.h (3.9)
 const char* framingName(int f);        // "AX.25 AFSK 1200", ...
 const char* framingShort(int f);       // "AFSK", "G3RUH", "AX100 M5", "AX100 M6", "CCSDS"
 

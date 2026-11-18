@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Mesh (LoRa) receiver: the channel plan of the region, one channel filter per frequency and bandwidth, one LoRa demodulator per
 // setting, the packet layer on every good frame, and the tables of MeshTelemetry.
 #include "dect2/session/mode_adapters.h"
@@ -7,6 +10,7 @@
 #include "dect2/net/feeds.h"
 #include "dect2/automation/engine.h"
 #include "dect2/mesh/mesh_rx.h"
+#include "dect2/map/mesh_topology_feed.h"
 #include "dect2/results/results_io.h"
 #include "dect2/mesh/mesh_lora.h"
 #include "dect2/mesh/mesh_presets.h"
@@ -126,6 +130,7 @@ template <class T> void capPush(std::vector<T>& v, T&& x, size_t cap) {
 
 struct MeshReceiver::Impl {
     // settings, written by any thread
+    std::atomic<int> capScale{1};            // table sizes are the defaults times this (1, 5, 20): the snapshot of every update is copied, so it stays a choice
     std::mutex mu;
     double rate = 0, offsetHz = 0, tunedHz = 0;
     int region = 0, protocols = 15;
@@ -136,6 +141,7 @@ struct MeshReceiver::Impl {
     std::atomic<bool> dirty{true};
     std::atomic<bool> resetReq{false};
     std::function<void(const std::string&)> log;
+    std::function<void(int, const std::vector<uint8_t>&, float, double)> frameCb;   // the MeshCore device (setFrameCallback)
     MeshTelemetry pub;                     // the published report
     MeshProto proto;                       // locks internally
     // the decoded lists (packets, nodes, messages, stations, devices) stay through resets: Clear and a loaded file reach the feed
@@ -167,6 +173,10 @@ struct MeshReceiver::Impl {
     MeshTelemetry tel;
     std::map<std::string, size_t> nodeIdx, aprsIdx, lwIdx;
     std::set<std::string> msgSeen;
+    MeshTopology topo;                     // relays and links (mesh_topology.h), fed by every parsed Meshtastic / MeshCore packet
+    LoraTopoState topoSt;
+    double topoSnapAt = -1e9;
+    std::atomic<uint64_t> jumpFrames{0};   // frames recovered by undoing sample jumps (framesWithJumpsFixed)
     std::vector<lora::RxFrame> frames;
     double lastGood = -1e9, lastPreamble = -1e9;
     uint64_t preamblesSeen = 0;
@@ -200,7 +210,7 @@ struct MeshReceiver::Impl {
             d.protocol = e.protocol; d.preset = e.preset; d.freqHz = e.freqHz; d.offsetHz = e.freqHz - tu;
             d.sf = e.p.sf; d.bwHz = e.p.bwHz; d.cr = e.p.cr; d.syncWord = e.p.syncWord; d.preamble = e.p.preamble; d.ldro = e.p.ldro;
             const double inOff = d.offsetHz + off;        // where it sits in the input
-            d.inBand = std::fabs(inOff) + 0.5 * e.p.bwHz + 25e3 < 0.45 * rt && rt >= 2.2 * e.p.bwHz;
+            d.inBand = meshChannelFits(rt, inOff, e.p.bwHz);
             if (!d.inBand && e.protocol == 5) continue;   // the US plan has 264 settings: only the ones in the capture are listed
             tel.decoders.push_back(d);
             if (!d.inBand) continue;
@@ -267,7 +277,7 @@ struct MeshReceiver::Impl {
         const std::string key = std::to_string(protocol) + "|" + id;
         auto it = nodeIdx.find(key);
         if (it != nodeIdx.end()) return tel.nodes[it->second];
-        if (tel.nodes.size() >= kNodeCap) {
+        if (tel.nodes.size() >= kNodeCap * (size_t)capScale.load()) {
             // the node heard longest ago leaves
             size_t old = 0;
             for (size_t i = 1; i < tel.nodes.size(); i++) if (tel.nodes[i].lastHeard < tel.nodes[old].lastHeard) old = i;
@@ -308,6 +318,8 @@ struct MeshReceiver::Impl {
         row.sf = di.sf; row.cr = f.hdr.cr; row.bwHz = di.bwHz;
         row.levelDb = (float)f.levelDb; row.snrDb = (float)f.snrDb;
         row.size = (int)f.payload.size(); row.crcOk = f.crcOk;
+        row.jumpsFixed = f.jumpsFixed;
+        if (f.jumpsFixed > 0) jumpFrames.fetch_add(1, std::memory_order_relaxed);
         const bool crcBad = f.hdr.crc && !f.crcOk;
         if (crcBad) count(di.protocol, "CRC error");
         MeshRadioInfo ri;
@@ -322,6 +334,11 @@ struct MeshReceiver::Impl {
             if (r.ok) { proto_ = q; break; }
         }
         row.protocol = proto_;
+        if (f.crcOk && (proto_ == 2 || std::find(d.protos.begin(), d.protos.end(), 2) != d.protos.end())) {   // the MeshCore device takes every good frame of a MeshCore decoder
+            std::function<void(int, const std::vector<uint8_t>&, float, double)> cb;
+            { std::lock_guard<std::mutex> lk(mu); cb = frameCb; }
+            if (cb) cb(proto_, f.payload, (float)f.snrDb, row.freqHz);
+        }
         if (Feeds::get().wantLora()) {
             const char* kind = proto_ == 1 ? "meshtastic" : proto_ == 2 ? "meshcore" : proto_ == 3 ? "loraaprs" : proto_ == 4 ? "meshcom" : "lorawan";
             std::string extra;
@@ -344,12 +361,12 @@ struct MeshReceiver::Impl {
             row.note = r.packet.note.empty() ? "not a " + std::string(protoName(di.protocol)) + " packet" : r.packet.note;   // (the first one tried)
             if (crcBad) row.note = row.note == "CRC error" ? row.note : std::string("CRC error") + (row.note.empty() ? "" : "; " + row.note);
             count(di.protocol, "unknown");
-            capPush(tel.packets, std::move(row), kPacketCap);
+            capPush(tel.packets, std::move(row), kPacketCap * (size_t)capScale.load());
             return;
         }
         if (proto_ == 5 && crcBad) {   // a LoRaWAN frame with a failed CRC is never trusted: counted and listed, but no device is made from it
             row.note = row.note.empty() ? "CRC error" : std::string("CRC error; ") + row.note;
-            capPush(tel.packets, std::move(row), kPacketCap);
+            capPush(tel.packets, std::move(row), kPacketCap * (size_t)capScale.load());
             return;
         }
         if (proto_ == 5) { onLorawan(c, t, f, r, std::move(row)); return; }
@@ -421,16 +438,29 @@ struct MeshReceiver::Impl {
             auto it = nodeIdx.find(std::to_string(mm.protocol) + "|" + m.from);
             if (it != nodeIdx.end()) mm.fromName = tel.nodes[it->second].longName;
             else if (mm.protocol == 2) mm.fromName = m.from;   // MeshCore puts the sender's name in the text
-            capPush(tel.messages, std::move(mm), kMessageCap);
+            capPush(tel.messages, std::move(mm), kMessageCap * (size_t)capScale.load());
         }
-        capPush(tel.packets, std::move(row), kPacketCap);
+        if (!crcBad && (proto_ == 1 || proto_ == 2)) {
+            for (const auto& u : r.nodes) {   // names, roles and positions help to read the graph
+                if (u.nodeId.empty()) continue;
+                const int pr = u.protocol == MeshProtocol::MeshCore ? 2 : 1;
+                auto it = nodeIdx.find(std::to_string(pr) + "|" + u.nodeId);
+                if (it == nodeIdx.end()) continue;
+                const MeshNode& nd = tel.nodes[it->second];
+                topoNoteMeshNode(topo, nd.id, nd.longName.empty() ? nd.shortName : nd.longName, nd.role, nd.hasPosition, nd.lat, nd.lon, t, pr);
+            }
+            auto fit = nodeIdx.find(std::to_string(proto_) + "|" + pk.from);
+            if (fit != nodeIdx.end()) { const MeshNode& nd = tel.nodes[fit->second]; topoNoteMeshNode(topo, nd.id, nd.longName.empty() ? nd.shortName : nd.longName, nd.role, nd.hasPosition, nd.lat, nd.lon, t, proto_); }
+            topoFeedLora(topo, topoSt, row, t);
+        }
+        capPush(tel.packets, std::move(row), kPacketCap * (size_t)capScale.load());
     }
 
     MeshAprsStation& aprsStation(int protocol, const std::string& call) {
         const std::string key = std::to_string(protocol) + "|" + call;
         auto it = aprsIdx.find(key);
         if (it != aprsIdx.end()) return tel.aprsStations[it->second];
-        if (tel.aprsStations.size() >= kAprsCap) {
+        if (tel.aprsStations.size() >= kAprsCap * (size_t)capScale.load()) {
             size_t old = 0;
             for (size_t i = 1; i < tel.aprsStations.size(); i++) if (tel.aprsStations[i].st.lastHeardSec < tel.aprsStations[old].st.lastHeardSec) old = i;
             tel.aprsStations.erase(tel.aprsStations.begin() + (long)old);
@@ -485,9 +515,9 @@ struct MeshReceiver::Impl {
             MeshMessage mm;
             mm.timeSec = t; mm.protocol = pr;
             mm.channel = m.channel; mm.from = m.from; mm.fromName = m.from; mm.to = m.to; mm.text = m.text.substr(0, 240); mm.packetId = m.packetId;
-            capPush(tel.messages, std::move(mm), kMessageCap);
+            capPush(tel.messages, std::move(mm), kMessageCap * (size_t)capScale.load());
         }
-        capPush(tel.packets, std::move(row), kPacketCap);
+        capPush(tel.packets, std::move(row), kPacketCap * (size_t)capScale.load());
     }
 
     // LoRaWAN: the device table (by DevAddr; join requests by DevEUI) and the packet row. Nothing is decrypted.
@@ -514,7 +544,7 @@ struct MeshReceiver::Impl {
         if (!id.empty()) {
             auto it = lwIdx.find(id);
             if (it == lwIdx.end()) {
-                if (tel.lorawanDevices.size() >= kLorawanCap) {
+                if (tel.lorawanDevices.size() >= kLorawanCap * (size_t)capScale.load()) {
                     size_t old = 0;
                     for (size_t i = 1; i < tel.lorawanDevices.size(); i++) if (tel.lorawanDevices[i].lastHeard < tel.lorawanDevices[old].lastHeard) old = i;
                     tel.lorawanDevices.erase(tel.lorawanDevices.begin() + (long)old);
@@ -547,7 +577,7 @@ struct MeshReceiver::Impl {
             }
         }
         (void)c;
-        capPush(tel.packets, std::move(row), kPacketCap);
+        capPush(tel.packets, std::move(row), kPacketCap * (size_t)capScale.load());
     }
 
     void report() {
@@ -562,11 +592,13 @@ struct MeshReceiver::Impl {
         tel.userChannels.clear();
         for (const auto& n : proto.channelNames(MeshProtocol::Meshtastic)) tel.userChannels.push_back("Meshtastic: " + n);
         for (const auto& n : proto.channelNames(MeshProtocol::MeshCore)) tel.userChannels.push_back("MeshCore: " + n);
+        if (t - topoSnapAt >= 1.0 || topoSnapAt > t) { tel.topo = topo.snapshot(); topoSnapAt = t; }
         std::lock_guard<std::mutex> lk(mu);
         pub = tel;
     }
 
     static void moveLists(MeshTelemetry& to, MeshTelemetry& from) {
+        to.topo = std::move(from.topo); from.topo = TopoSnapshot();
         to.packets = std::move(from.packets); to.nodes = std::move(from.nodes); to.messages = std::move(from.messages);
         to.counts = std::move(from.counts); to.aprsStations = std::move(from.aprsStations); to.lorawanDevices = std::move(from.lorawanDevices);
         to.readings = std::move(from.readings);
@@ -591,8 +623,15 @@ struct MeshReceiver::Impl {
     void takeRequests() {
         std::lock_guard<std::mutex> lk(mu);
         if (!clearReq && !loadReq) return;
-        if (clearReq) { MeshTelemetry e; moveLists(tel, e); msgSeen.clear(); clearReq = false; }
-        if (loadReq) { moveLists(tel, loaded); msgSeen.clear(); loadReq = false; }
+        if (clearReq) { MeshTelemetry e; moveLists(tel, e); msgSeen.clear(); clearReq = false; topo.clear(); topoSt = LoraTopoState(); topoSnapAt = -1e9; }
+        if (loadReq) {
+            moveLists(tel, loaded); msgSeen.clear(); loadReq = false;
+            reindex();
+            topo.clear(); topoSt = LoraTopoState();   // a loaded file: the graph is rebuilt from its packets, oldest first
+            for (const MeshNode& nd : tel.nodes) topoNoteMeshNode(topo, nd.id, nd.longName.empty() ? nd.shortName : nd.longName, nd.role, nd.hasPosition, nd.lat, nd.lon, 0, nd.protocol);
+            for (const MeshPacket& p : tel.packets) topoFeedLora(topo, topoSt, p, p.timeSec);
+            tel.topo = topo.snapshot(); topoSnapAt = -1e9;
+        }
         reindex();
     }
 
@@ -700,6 +739,7 @@ void MeshReceiver::feed(const cf32* x, size_t n) {
     }
 }
 
+uint64_t MeshReceiver::framesWithJumpsFixed() const { return p_->jumpFrames.load(std::memory_order_relaxed); }
 bool MeshReceiver::telemetry(MeshTelemetry& out, uint64_t lastSeq) {
     std::lock_guard<std::mutex> lk(p_->mu);
     if (p_->pub.seq <= lastSeq) return false;
@@ -708,8 +748,10 @@ bool MeshReceiver::telemetry(MeshTelemetry& out, uint64_t lastSeq) {
     return true;
 }
 void MeshReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->log = std::move(cb); }
+void MeshReceiver::setFrameCallback(std::function<void(int, const std::vector<uint8_t>&, float, double)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->frameCb = std::move(cb); }
 void MeshReceiver::setTunedHz(double hz) { std::lock_guard<std::mutex> lk(p_->mu); p_->tunedHz = hz; p_->dirty = true; }
 void MeshReceiver::setRegion(int r) { std::lock_guard<std::mutex> lk(p_->mu); p_->region = r >= 1 && r <= 3 ? r : 0; p_->dirty = true; }
+void MeshReceiver::setTableScale(int scale) { p_->capScale = std::max(1, std::min(20, scale)); }
 void MeshReceiver::setProtocols(int mask) { std::lock_guard<std::mutex> lk(p_->mu); p_->protocols = mask & 31; p_->dirty = true; }
 void MeshReceiver::setPresetSearch(bool all) { std::lock_guard<std::mutex> lk(p_->mu); p_->presetSearch = all; p_->dirty = true; }
 void MeshReceiver::setMeshtasticPlan(const std::string& region, const std::string& preset) {

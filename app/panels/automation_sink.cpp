@@ -1,8 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The actions of the Automations inside OnAir: notification, sound (respects Mute), recording, tuning, memories, screenshot, webhook, run.
 #include "dect2/common/thread_name.h"
+#include "dect2/common/diag.h"
 #include "../app.h"
 #include "../memory/memory_options.h"
 #include "automation_internal.h"
+#include "../ui/notify_logic.h"
+#include <ctime>
 #include "dect2/audio/audio_rec.h"
 #include "dect2/audio/audioout.h"
 #include "dect2/session/record_rules.h"
@@ -113,7 +119,7 @@ void playSound(App& a, const std::string& file, std::string& note) {
     if (a.muted || a.volume <= 0.001f) { note = "muted: no sound"; return; }
     std::vector<float> pcm;
     if (!file.empty()) {
-        if (!readWav(file, pcm)) { note = "cannot read " + file + " (a 16 bit or float WAV file is needed)"; return; }
+        if (!readWav(file, pcm)) { DIAG(308279, "The automation sound file %s could not be read as a 16 bit or float WAV, so no sound was played for the rule.", file.c_str()); note = "cannot read " + file + " (a 16 bit or float WAV file is needed)"; return; }
     } else {   // three short beeps
         const int rate = 48000;
         for (int b = 0; b < 3; b++) {
@@ -132,19 +138,39 @@ void playSound(App& a, const std::string& file, std::string& note) {
     gBeep->write(pcm.data(), (int)(pcm.size() / 2));
 }
 
+// Settings > Notifications: the system notification, the banner and the sounds, and the quiet hours (ui/notify_logic.h)
+bool quietNow() {
+    if (!plat::prefs().getB("notifyQuiet", false)) return false;
+    const std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    return notifyset::inQuiet(tm.tm_hour * 60 + tm.tm_min, (int)plat::prefs().getI("notifyQuietFrom", 1320), (int)plat::prefs().getI("notifyQuietTo", 420));
+}
+bool systemNotifyOn() { return plat::prefs().getB("notifySystem", true) && !quietNow(); }
+bool soundsOn() { return plat::prefs().getB("notifySound", true) && !quietNow(); }
+void showBanner(const std::string& title, const std::string& body, double now) {
+    if (!plat::prefs().getB("notifyBanner", true)) return;
+    const double sec = (double)std::max(2L, std::min(120L, plat::prefs().getI("notifyBannerSec", 10)));
+    std::lock_guard<std::mutex> lk(gMu);
+    gBanner = {title, body, now + sec};
+}
+
 std::pair<bool, std::string> doOnUi(App& a, const Pending& p) {
     auto get = [&](const char* k) { auto it = p.p.find(k); return it == p.p.end() ? std::string() : it->second; };
     const double now = nowS();
     if (p.kind == "notify") {
         const std::string title = get("title").empty() ? "OnAir" : get("title"), body = get("body");
-        {
-            std::lock_guard<std::mutex> lk(gMu);
-            gBanner = {title, body, now + 10};
-        }
+        showBanner(title, body, now);
+        if (!systemNotifyOn()) return {true, "shown in OnAir (system notifications are off or in quiet hours: Settings > Notifications)"};
         const bool ok = plat::notify(title, body);
         return {true, ok ? "shown" : "shown in OnAir (the system could not show it)"};
     }
     if (p.kind == "sound") {
+        if (!soundsOn()) return {true, "not played (alert sounds are off or in quiet hours: Settings > Notifications)"};
         std::string note;
         playSound(a, get("file"), note);
         return {note.empty(), note.empty() ? "played" : note};
@@ -153,8 +179,8 @@ std::pair<bool, std::string> doOnUi(App& a, const Pending& p) {
         int sec = std::max(1, std::min(3600, atoi(get("seconds").c_str())));
         if (!a.engine.running()) return {false, "the receiver is not running"};
         if (a.engine.recordingStats().active) { gIqStop = std::max(gIqStop, now + sec); return {true, "already recording: extended"}; }
-        const dect2::FileFormat f = a.recFormat >= 1 ? dect2::FileFormat::CF32 : dect2::FileFormat::CS8;
-        const std::string path = plat::dataDir() + "/recordings/" + (a.recFormat == 2 ? dect2::blueRecordingName(a.engine.recordingName(f)) : a.engine.recordingName(f));
+        const dect2::FileFormat f = (dect2::FileFormat)recFileFormatOf(a.recFormat);
+        const std::string path = recordingsDir() + "/" + (a.recFormat == 2 ? dect2::blueRecordingName(a.engine.recordingName(f)) : a.engine.recordingName(f));
         std::string err;
         if (!a.engine.startRecording(path, f, err)) { a.engine.log("automation: recording failed: " + err); return {false, err}; }
         a.recDonePath.clear();
@@ -170,7 +196,7 @@ std::pair<bool, std::string> doOnUi(App& a, const Pending& p) {
         int sec = std::max(1, std::min(3600, atoi(get("seconds").c_str())));
         auto& rec = dect2::AudioRecorder::instance();
         if (rec.active()) { gAudioStop = std::max(gAudioStop, now + sec); return {true, "already recording: extended"}; }
-        const std::string path = plat::dataDir() + "/recordings/" + dect2::AudioRecorder::fileName("automation", a.freqMhz * 1e6, dect2::AudioRecFormat::Wav);
+        const std::string path = recordingsDir() + "/" + dect2::AudioRecorder::fileName("automation", a.freqMhz * 1e6, dect2::AudioRecFormat::Wav);
         std::string err;
         dect2::AudioRecOptions o;
         if (!rec.start(path, o, err)) return {false, err};
@@ -254,6 +280,12 @@ public:
     }
 };
 }  // namespace
+
+void alertNow(App& a, const std::string& title, const std::string& body, bool sound) {
+    showBanner(title, body, nowS());
+    if (systemNotifyOn()) plat::notify(title, body);
+    if (sound && soundsOn()) { std::string note; playSound(a, "", note); }
+}
 
 ActionSink& sink() {
     static AppSink s;

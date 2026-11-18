@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Why a USB radio that is plugged in does not show up (Linux): the radio is on the bus, but this user may not open its device file, or the
 // kernel's TV driver holds an RTL-SDR. Read from sysfs, which needs no root. The paths go under DECT2_SYSFS_ROOT when it is set (the tests
 // build a fake /sys and /dev tree in a temp folder), so this code is compiled and tested on every platform.
@@ -8,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <system_error>
 #ifdef _WIN32
@@ -19,6 +23,7 @@
 namespace dect2 {
 bool usbVendorPresent(uint16_t vid);   // hackrf_usb.cpp
 bool usbDevicePresent(uint16_t vid, uint16_t pid);
+void usbForEachDevice(const std::function<void(uint16_t, uint16_t, int)>& f, const std::function<bool(uint16_t, uint16_t)>& tryOpen);
 namespace {
 
 namespace fs = std::filesystem;
@@ -132,9 +137,37 @@ std::vector<std::string> usbRadioHints() {
 #endif
 }
 
+std::vector<UsbRadio> usbRadiosPresent() {
+    std::vector<UsbRadio> out;
+    const auto tryOpen = [](uint16_t vid, uint16_t pid) {
+#ifdef _WIN32
+        // only the radios that use WinUSB: an SDRplay RSP has the SDRplay API's driver, the LimeSDR Mini FTDI's, the PlutoSDR its own (network)
+        return radioOf(vid, pid) != nullptr && vid != 0x1df7 && vid != 0x0403 && vid != 0x0456;
+#else
+        (void)vid; (void)pid;
+        return false;   // Linux: usbRadioHints reads the permissions from sysfs; macOS needs no driver
+#endif
+    };
+    usbForEachDevice([&out](uint16_t vid, uint16_t pid, int openError) {
+        const char* r = radioOf(vid, pid);
+        if (!r) return;
+        UsbRadio u;
+        u.radio = r; u.vid = vid; u.pid = pid;
+        // NOT_SUPPORTED / NOT_FOUND: Windows has no driver libusb can use (ACCESS is left out: OnAir itself may have the radio open)
+        if (native::kOnWindows && (openError == -12 || openError == -5)) u.problem = native::windowsUsbDriverHint();
+        out.push_back(u);
+    }, tryOpen);
+    return out;
+}
+
 std::vector<std::string> sdrplayApiHints() {
     if (native::sdrplayApiInstalled() || !usbVendorPresent(0x1df7)) return {};
     return {"An SDRplay RSP is plugged in but the SDRplay API is not installed: install the free Hardware API from sdrplay.com/hardware-api (separately from SDRconnect), then restart OnAir"};
+}
+
+std::vector<std::string> spectranApiHints() {
+    if (native::spectranApiInstalled() || !usbVendorPresent(0x2f72)) return {};
+    return {"An Aaronia SPECTRAN is plugged in but the Aaronia RTSA-Suite PRO is not installed: install it from aaronia.com/downloads (it brings the RTSA API library OnAir uses), then restart OnAir"};
 }
 
 std::vector<std::string> limeLibraryHints() {
@@ -152,7 +185,13 @@ std::vector<std::string> limeLibraryHints() {
     const char* how = "install LimeSuite (sudo apt install limesuite, or your distribution's package) and OnAir's udev rules";
 #endif
     if (!loaded) return {std::string("A LimeSDR Mini is plugged in but the LimeSuite library is not installed: ") + how + ", then restart OnAir"};
-    return {"A LimeSDR Mini is plugged in but LimeSuite (" + path + ") lists no radio: " + how + "; if that is done, run \"LimeUtil --update\" to match the board's firmware to the library"};
+#if defined(_WIN32)
+    // #169: a Mini V1 was listed with FTDI's FT60x driver 1.3 (2023) and not with 1.4 (2025)
+    const char* older = "; if the newest FTDI driver is installed and it still lists nothing, try FTDI's previous driver version (1.3), which a Mini V1 user found to work";
+#else
+    const char* older = "";
+#endif
+    return {"A LimeSDR Mini is plugged in but LimeSuite (" + path + ") lists no radio: " + how + "; if that is done, run \"LimeUtil --update\" to match the board's firmware to the library" + older};
 }
 
 } // namespace dect2

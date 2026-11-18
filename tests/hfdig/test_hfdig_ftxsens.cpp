@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // HF digital, FT8 / FT4 / FT2 decoding depth: the share decoded at the WSJT-X thresholds (FT8 -21 dB, FT4 -16 dB, FT2 -13 dB in 2500 Hz;
 // eight stations a slot, random DT), a crowded FT8 slot (100 stations at -20 .. 0 dB, overlapping), and slots of noise alone (no false
 // decodes). Before the coherent metrics, OSD and the CQ a-priori pass: FT8 -21 dB 4 %, FT4 -16 dB 4 %, the crowded slot 83 of 100.
 #include "hfdig_wsjt_testutil.h"
 #include "../common/test_util.h"
+#include "../common/test_long.h"
 using namespace dect2;
 
 static std::string callOf(int i) {
@@ -59,7 +63,9 @@ int main() {
     }
     for (int mode : {ftx::kFt8, ftx::kFt4, ftx::kFt2}) {   // noise alone
         int wrong = 0;
-        for (int t = 0; t < (mode == ftx::kFt8 ? 12 : 24); t++) {
+        // quick run: a third of the noise slots (each must give no decode); ONAIR_TEST_LONG=1 runs all of them
+        const int slots = (mode == ftx::kFt8 ? 12 : 24) / testLongPick(3, 1);
+        for (int t = 0; t < slots; t++) {
             wsjttest::Imp imp;
             for (const auto& x : wsjttest::decode(wsjttest::audio(mode, {}, 1, imp, 777 + 7919 * t), mode, imp)) { wrong++; printf("  noise: \"%s\"\n", x.msg.c_str()); }
         }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 //! PSI / SI section parsers: PAT, PMT (ISO/IEC 13818-1 section 2.4.4), SDT and NIT (ETSI EN 300 468 sections 5.2.3 and 5.2.1), the ATSC terrestrial /
 //! cable virtual channel table (A/65 section 6.3) and the TDT (EN 300 468 section 5.2.5). Every parser takes the whole section (header and CRC included,
 //! the CRC already checked by the caller) and writes plain records; text fields are `Span`s into the section. Reads past the end give 0.
@@ -209,6 +212,11 @@ pub fn parse_pmt(s: &[u8], streams: &mut [PmtStream], subs: &mut [PmtSub]) -> Op
                 }
                 0x7C => {
                     set_codec(&mut st, b"AAC");
+                    st.kind = KIND_AUDIO;
+                }
+                // extension descriptor: AC-4 (descriptor_tag_extension 0x15, EN 300 468 annex D.7)
+                0x7F if l >= 1 && d[0] == 0x15 => {
+                    set_codec(&mut st, b"AC-4");
                     st.kind = KIND_AUDIO;
                 }
                 0x59 => {
@@ -439,6 +447,7 @@ pub struct Tvct {
 pub fn parse_tvct(s: &[u8], out: &mut [Tvct]) -> Option<(i32, usize)> {
     let len = s.len();
     if len < 14 {
+        onair_common::diag_debug!(203124, "A transport stream section of {} bytes is too short for its table header, so it was skipped.", len);
         return None;
     }
     let cnt = rd(s, 9);
@@ -520,6 +529,7 @@ fn put_int(out: &mut [u8; 32], n: &mut usize, v: i32, w: usize) {
 /// Parse a TDT / TOT (`s.len() >= 8`): the UTC time as text and Unix seconds. The date is the MJD conversion of EN 300 468 Annex C.
 pub fn parse_tdt(s: &[u8]) -> Option<Tdt> {
     if s.len() < 8 {
+        onair_common::diag_debug!(978878, "A time table section of {} bytes is too short, so the stream time was not updated.", s.len());
         return None;
     }
     let mjd = rd16(s, 3);

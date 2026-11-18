@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Tools > Scheduler: jobs that tune the radio, start the receiver, record audio / IQ / the log, then stop and put everything back. When a job is due
 // (time, daily, weekly, cron-like, or a satellite pass above N degrees), how overlapping jobs are handled and what happens to jobs missed while the
 // computer slept are all in core/src/sched/sched.cpp (tested without a radio); this file is the window, the App as the scheduler's radio, and the
@@ -83,7 +86,7 @@ std::string modeNameOf(const std::string& key) {
     const int i = key.empty() ? -1 : scanModeIndex(key);
     return i >= 0 ? kModes[i].name : key;
 }
-std::string recordingsDir() { return plat::dataDir() + "/recordings"; }
+// recordingsDir(): app/state/recdir.h
 
 // The App as the scheduler's radio.
 struct AppHost : sd::Host {
@@ -135,7 +138,7 @@ struct AppHost : sd::Host {
             started.push_back({path, "audio"});
         }
         if (r.iq) {
-            const FileFormat f = a->recFormat == 1 ? FileFormat::CF32 : FileFormat::CS8;
+            const FileFormat f = (FileFormat)recFileFormatOf(a->recFormat);
             const std::string path = base + (f == FileFormat::CF32 ? ".cf32" : ".cs8");
             if (!a->engine.startRecording(path, f, err)) {
                 if (r.audio) dect2::AudioRecorder::instance().stop();

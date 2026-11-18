@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ISM sensors: pulse slicers and device decoders. See ism_proto.h.
 //
 // Written from rtl_433 (GPL-2.0, https://github.com/merbanan/rtl_433): the slicers follow src/pulse_slicer.c, the bit helpers
@@ -141,6 +144,21 @@ const std::vector<Proto>& protos() {
         {{"Z-Wave R2 (40 kbit/s)", "G.9959", "Z-Wave", true}, FskPcm, {25, 25, 1000, 0, 0, 0}, [](Bits& b, Out& o) { decZwave(b, o, 2); }, 10},
         {{"Z-Wave R3 (100 kbit/s)", "G.9959", "Z-Wave", true}, FskPcm, {10, 10, 500, 0, 0, 0}, [](Bits& b, Out& o) { decZwave(b, o, 3); }},
         {{"Wireless M-Bus T / C (header)", "m_bus.c", "Meter", true}, FskPcm, {10, 10, 500, 0, 0, 0}, decMbus},
+        {{"KNX RF 1.1 (S-mode PHY, 32.768 kchip/s)", "m_bus.c", "Sensor", true}, FskPcm, {30.5f, 30.5f, 275, 0, 0, 0}, decKnxRf, 15},
+        {{"DASH7 (55.555 kbit/s)", "Sub-IoT phy.c / dll.c", "Sensor", true}, FskPcm, {18, 18, 1500, 0, 0, 0}, [](Bits& b, Out& o) { decDash7(b, o, false); }, 8},
+        {{"DASH7 (9.6 kbit/s)", "Sub-IoT phy.c / dll.c", "Sensor", true}, FskPcm, {104, 104, 8000, 0, 0, 0}, [](Bits& b, Out& o) { decDash7(b, o, true); }, 40},
+        {{"EnOcean ERP1 (868.3 MHz ASK, 125 kbit/s)", "enocean_erp1.c", "Sensor", false}, OokPcm, {8, 8, 800, 0, 0, 0}, decEnOcean},
+        {{"HomeMatic BidCoS (868.3 MHz, 10 kbit/s)", "culfw rf_asksin.c / FHEM HMConfig.pm", "Sensor", true}, FskPcm, {100, 100, 4000, 0, 0, 0}, decHomeMatic, 30},
+        // 3.9 (ism_dec_39.cpp)
+        {{"X10 RF remotes and sensors", "x10_rf.c", "Remote", false}, OokPpm, {562, 1687, 6000, 2200, 0, 0}, decX10Rf},
+        {{"inFactory / nor-tec / DAY / Tchibo thermo-hygro", "infactory.c", "Weather", false}, OokPpm, {2000, 4000, 5000, 0, 500, 750}, decInfactory},
+        {{"GM aftermarket TPMS", "tpms_gm.c", "TPMS", false}, OokMcZero, {120, 0, 15600, 0, 0, 0}, decGmTpms},
+        {{"Itron ERT SCM+ (utility meter)", "scmplus.c", "Meter", false}, OokMcZero, {30, 0, 64, 0, 0, 0}, decScmPlus},
+        {{"Insteon RF (915 MHz)", "insteon.c", "Sensor", true}, FskPcm, {110, 110, 1000, 500, 0, 15}, decInsteon},
+        {{"Ambient Weather / Ecowitt WH31E, WH31B", "ambientweather_wh31e.c", "Weather", true}, FskPcm, {56, 56, 1500, 1800, 0, 0}, decWh31e},
+        {{"Nissan TPMS", "tpms_nissan.c", "TPMS", true}, FskPcm, {120, 120, 250, 0, 0, 0}, decNissan},
+        {{"Efergy Optical", "efergy_optical.c", "Energy", true}, FskPwm, {64, 136, 400, 0, 500, 0}, decEfergyOptical},
+        {{"ESIC EMT7110 power meter", "esic_emt7110.c", "Energy", true}, FskPcm, {104, 104, 10000, 0, 0, 0}, decEmt7110},
     };
     return p;
 }

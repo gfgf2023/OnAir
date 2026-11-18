@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.model
 
 import org.json.JSONArray
@@ -118,7 +121,8 @@ data class StartConfig(
 data class ResultTable(val name: String, val cols: List<String>, val rows: List<List<String>>)
 
 /** FM broadcast panel (telemetry "fm"). */
-data class FmInfo(val ps: String, val rt: String, val rdsSync: Boolean, val stereo: Boolean, val pi: Int, val pty: String)
+/** [rdsRows]: the other RDS items the station sends (PTYN, long name, country, AF list, clock, RT+, EON ...) as label / value pairs. */
+data class FmInfo(val ps: String, val rt: String, val rdsSync: Boolean, val stereo: Boolean, val pi: Int, val pty: String, val rdsRows: List<Pair<String, String>> = emptyList())
 
 /** General receiver panel (telemetry "general"). */
 data class GeneralInfo(val squelchOpen: Boolean, val levelDb: Double, val audioDb: Double)
@@ -130,6 +134,10 @@ enum class LockState { SEARCHING, CONVERGING, LOCKED }
 data class Telemetry(
     val running: Boolean, val available: Boolean, val standard: Int, val state: Int, val locked: Boolean, val snrDb: Double?,
     val summary: String, val cards: List<Pair<String, String>>, val tables: List<ResultTable>, val fm: FmInfo?, val general: GeneralInfo?,
+    /** CDR only (#463): the services and the DRA+ add-on state. */
+    val cdr: CdrInfo? = null,
+    /** A plain warning when a live radio loses part of the signal (#435), else "". */
+    val linkNote: String = "",
 ) {
     val lock: LockState get() = when { locked -> LockState.LOCKED; state == 1 -> LockState.CONVERGING; else -> LockState.SEARCHING }
 
@@ -148,13 +156,35 @@ data class Telemetry(
                     ResultTable(t.optString("name"), cols, rows)
                 }
             } ?: emptyList()
-            val fm = raw.optJSONObject("fm")?.let { FmInfo(it.optString("ps"), it.optString("rt"), it.optBoolean("rdsSync"), it.optBoolean("stereo"), it.optInt("pi"), it.optString("pty")) }
+            val fm = raw.optJSONObject("fm")?.let { FmInfo(it.optString("ps"), it.optString("rt"), it.optBoolean("rdsSync"), it.optBoolean("stereo"), it.optInt("pi"), it.optString("pty"),
+                it.optJSONArray("rdsRows")?.let { a -> (0 until a.length()).mapNotNull { i -> a.optJSONArray(i)?.let { r -> r.optString(0) to r.optString(1) } } } ?: emptyList()) }
             val gen = raw.optJSONObject("general")?.let { GeneralInfo(it.optBoolean("squelchOpen"), it.optDouble("levelDb"), it.optDouble("audioDb")) }
             return Telemetry(
                 raw.optBoolean("running"), raw.optBoolean("available"), raw.optInt("standard", -1), raw.optInt("state"), raw.optBoolean("locked"),
                 if (!raw.has("snrDb") || raw.isNull("snrDb")) null else raw.optDouble("snrDb"),
-                raw.optString("summary"), cards, tables, fm, gen,
+                raw.optString("summary"), cards, tables, fm, gen, raw.optJSONObject("cdr")?.let { CdrInfo.parse(it) }, raw.optString("linkNote"),
             )
+        }
+    }
+}
+
+/** One CDR service as the bridge lists it. */
+data class CdrService(val id: Int, val audio: Boolean, val name: String, val format: String)
+
+/** CDR: the DRA+ add-on (found, or why not), the service that plays ([playing], 0 none) and the asked-for one ([listen], -1 automatic). */
+data class CdrInfo(
+    val draFound: Boolean, val draProblem: String, val draPath: String, val anyAudio: Boolean, val listen: Int, val playing: Int, val pcmFrames: Long,
+    val services: List<CdrService>,
+) {
+    companion object {
+        fun parse(o: JSONObject): CdrInfo {
+            val a = o.optJSONArray("services")
+            val svc = if (a == null) emptyList() else (0 until a.length()).map { i ->
+                val x = a.getJSONObject(i)
+                CdrService(x.optInt("id"), x.optBoolean("audio"), x.optString("name"), x.optString("format"))
+            }
+            return CdrInfo(o.optBoolean("draFound"), o.optString("draProblem"), o.optString("draPath"), o.optBoolean("anyAudio"), o.optInt("listen", -1),
+                o.optInt("playing"), o.optLong("pcmFrames"), svc)
         }
     }
 }

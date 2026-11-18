@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Bit-level helpers shared by the protocol decoders: popcount/parity, Gray code, bit reversal,
 // and readers/writers for "unpacked" bit vectors (one bit per byte, only bit 0 significant).
 // MSB-first means the first element is the most significant bit of the field (the usual air order);
@@ -11,9 +14,18 @@
 namespace dect2 {
 namespace bits {
 
-// Number of set bits (Hamming weight); C++20 std::popcount.
+// Number of set bits (Hamming weight); C++20 std::popcount. The x86-64 baseline has no POPCNT instruction, so std::popcount there is a
+// libgcc call (a byte table): the bit-parallel count is a few integer operations instead (the same count). Sync-word searches call it per bit.
+#if defined(__x86_64__) && !defined(__POPCNT__)
+inline int popcount(uint32_t v) { v = v - ((v >> 1) & 0x55555555u); v = (v & 0x33333333u) + ((v >> 2) & 0x33333333u); return (int)((((v + (v >> 4)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24); }
+inline int popcount(uint64_t v) {
+    v = v - ((v >> 1) & 0x5555555555555555ull); v = (v & 0x3333333333333333ull) + ((v >> 2) & 0x3333333333333333ull);
+    return (int)((((v + (v >> 4)) & 0x0F0F0F0F0F0F0F0Full) * 0x0101010101010101ull) >> 56);
+}
+#else
 inline int popcount(uint32_t v) { return std::popcount(v); }
 inline int popcount(uint64_t v) { return std::popcount(v); }
+#endif
 // Parity (xor of all bits): 1 when the number of set bits is odd.
 inline int parity(uint32_t v) { return std::popcount(v) & 1; }
 inline int parity(uint64_t v) { return std::popcount(v) & 1; }

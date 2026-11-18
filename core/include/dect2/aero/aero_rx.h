@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Inmarsat Aero receiver: finds the P channels in the band (up to 6), demodulates 600, 1200 and 10500 bit/s (rate found on its own),
 // decodes frames and hands the SUs to the SU layer (aero_su.h) for logons and ACARS messages.
 #pragma once
@@ -17,6 +20,9 @@ public:
     ~AeroReceiver();
 
     void configure(double inputRateHz);
+    // 4.1: faster acquisition (default on): the band search runs every quarter second for its first 4 searches, and the carrier search of a channel
+    // looks after every averaged spectrum from the 4th on (4.0: after 4, 8, 16 and 32). Off: as in 4.0. Restarts the receiver.
+    void setFastAcquisition(bool on);
     void setSearchLimit(double hz);                      // 0 = whole input; else the band search only looks within +-hz of 0 (the Inmarsat window's pass-band: the rest of its input is empty)
     void setSignalOffset(double hz);                     // where the wanted channel sits relative to 0 Hz in the input
     bool ready() const;                                  // false when the input rate is too low for this mode

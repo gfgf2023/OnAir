@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // NFC / RFID (13.56 MHz) screens: the frame log, the tag table (UID, type, ATQA / SAK, time seen, ATS) and decoded NDEF.
 // Receive only. ISO/IEC 14443 Type A / Type B and ISO/IEC 15693 as far as the public specs allow.
 #include "app.h"
@@ -19,12 +22,13 @@ void tab(App& a) {
                         "at a few Msps so the subcarrier sidebands fit. Nothing is cloned and no encrypted content is decoded.");
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
-    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "tune to 13.56 MHz and start the receiver"); return; }
+    if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : tr("Tune to 13.56 MHz and start the receiver. NFC only carries a few centimetres: hold a loop antenna within a few cm of the reader.")); return; }
 
     const dect2::NfcTelemetry& t = a.rx.nfc;
     ImGui::Text("Field %.1f dBFS   subcarrier %.1f dBFS   frames %llu   CRC/parity errors %llu",
                 (double)t.levelDb, (double)t.subcarrierDb, (unsigned long long)t.blocksOk, (unsigned long long)t.blocksBad);
     ImGui::Spacing();
+    if (t.blocksOk == 0) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", tr("No frames yet. NFC only carries a few centimetres: hold a loop antenna within a few cm of the reader, with the card on the reader.")); ImGui::PopTextWrapPos(); ImGui::Spacing(); }
 
     // ---- tag table ----
     if (!t.tags.empty()) {
@@ -107,7 +111,19 @@ void list(App& a) {
     if (t.tags.empty()) ImGui::TextDisabled("no tags yet");
 }
 
-void tick(App&) {}
+// the protocol filter: only the frames and tags of one protocol are listed (NfcReceiver::setProtoMask; bit = NfcLogEntry::proto)
+const char* const kProtoNames[] = {"every protocol", "ISO 14443 Type A", "ISO 14443 Type B", "ISO 15693"};
+int& protoFilter() { static int v = std::clamp((int)plat::prefs().getI("nfcProtoFilter", 0), 0, 3); return v; }   // 0 every protocol, else proto + 1
+void pushProtoFilter(App& a) { const int k = protoFilter(); a.engine.nfc().setProtoMask(k ? 1u << (k - 1) : 0u); }   // every frame (an atomic store): each receiver gets it
+
+void tick(App& a) { pushProtoFilter(a); }
+
+void decoder(App& a, bool&) {
+    ImGui::TextDisabled("PROTOCOL"); ImGui::SameLine(0, 5 * gUi);
+    ImGui::SetNextItemWidth(std::min(170 * gUi, ImGui::GetContentRegionAvail().x));
+    if (ImGui::Combo("##nfcproto", &protoFilter(), kProtoNames, IM_ARRAYSIZE(kProtoNames))) { plat::prefs().setI("nfcProtoFilter", protoFilter()); pushProtoFilter(a); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("List the frames, tags and NDEF records of one protocol only. Every frame is still decoded.");
+}
 
 void status(App& a) {
     ImGui::AlignTextToFramePadding();
@@ -133,5 +149,6 @@ const ModeUi kNfcUi = {
     .list = list,
     .status = status,
     .summary = summary,
+    .decoder = decoder,
     .tick = tick,
 };

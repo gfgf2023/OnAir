@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // JS8Call receiver telemetry, shared by the receiver and the UI.
 // The first members are copied into RxTelemetry (history plot, top bar): keep them and their meaning.
 #pragma once
@@ -70,6 +73,7 @@ struct Js8Telemetry {
     int lastSlotCount[3] = {};
     float decodeMs[3] = {};
     float clockErr = 0;          // median DT of the recent decodes, s
+    float clockTrim = 0;         // the automatic correction in use, s (added to the computer clock)
     std::vector<Js8Decode> decodes;          // oldest first
     std::vector<Js8Message> messages;        // oldest first
     std::vector<Js8Station> stations;        // by last heard, newest first

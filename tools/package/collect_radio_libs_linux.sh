@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 # Gathers the libraries of the radios OnAir can drive by itself (RTL-SDR, Airspy, BladeRF, LimeSDR, PlutoSDR, USRP) with everything they need that
 # a Linux system does not have anyway, into one folder. The packages ship that folder with the program, so nothing has to be installed next to it.
 # RTL-SDR is built here from the RTL-SDR Blog fork (1.4.0, the version the Windows build ships) and not taken from the distribution: the
@@ -32,7 +35,7 @@ build_rtlsdr_blog() {
   for f in "$REPO/build-windows-deps/src/$T" "$REPO/tools/package/cache/$T"; do [ -f "$f" ] && tarball=$f && break; done
   if [ -z "$tarball" ]; then   # a copy on this computer is used when there is one, otherwise it comes from GitHub
     tarball=$W/$T
-    curl -fsSL -o "$tarball" https://github.com/rtlsdrblog/rtl-sdr-blog/archive/aed0ea1.tar.gz
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$tarball" https://github.com/rtlsdrblog/rtl-sdr-blog/archive/aed0ea1.tar.gz
   fi
   mkdir "$W/src" && tar xf "$tarball" -C "$W/src" --strip-components=1
   sed -i 's/^set(VERSION_INFO_PATCH_VERSION git)/set(VERSION_INFO_PATCH_VERSION 0)/' "$W/src/CMakeLists.txt"   # (the tarball has no git history to take the version from)

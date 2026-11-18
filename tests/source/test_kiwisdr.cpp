@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The KiwiSDR source (source_kiwisdr.cpp) against a fake KiwiSDR on localhost: the WebSocket upgrade on /kiwi/<time>/SND, "SET auth", the MSG hand-shake
 // (version, audio_rate, sample_rate), the set-up and tuning commands, keepalive, SND IQ frames (flags, sequence, S-meter, GPS block, big-endian s16), a
 // sequence gap, short / odd / compressed / oversize frames, a busy or refusing server, a time limit and the reconnect pause. Also the pure pieces
@@ -59,7 +62,7 @@ struct Fake {
     std::mutex mu;
     std::vector<std::string> log;   // each text command of the client
     std::string path;
-    bool streaming = false;
+    bool streaming = false, gotMod = false, gotAgc = false;
     std::atomic<uint32_t> seq{100};
 
     bool has(const std::string& l) { std::lock_guard<std::mutex> lk(mu); for (auto& x : log) if (x == l) return true; return false; }
@@ -124,7 +127,7 @@ struct Fake {
         const std::string key = head.substr(k + 19, head.find("\r\n", k) - k - 19);
         const std::string r = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAcceptKey(key) + "\r\n\r\n";
         sockSendAll(c, r.data(), r.size());
-        { std::lock_guard<std::mutex> lk(mu); streaming = false; }
+        { std::lock_guard<std::mutex> lk(mu); streaming = false; gotMod = gotAgc = false; }
         int tick = 0;
         while (run) {
             if (dropNow.exchange(0)) return;
@@ -173,16 +176,21 @@ struct Fake {
             if (op != 1) continue;
             { std::lock_guard<std::mutex> lk(mu); log.push_back(p); }
             if (p.compare(0, 8, "SET auth") == 0) {
-                if (mode == Busy) { wsSend(c, 2, msgFrame("too_busy=4")); continue; }
-                if (mode == BadPw) { wsSend(c, 2, msgFrame("badp=1")); continue; }
+                if (mode == Busy) { wsSend(c, 2, msgFrame("sample_rate=11998.9")); wsSend(c, 2, msgFrame("too_busy=4")); continue; }
+                if (mode == BadPw) { wsSend(c, 2, msgFrame("sample_rate=11998.9")); wsSend(c, 2, msgFrame("badp=1")); continue; }
                 if (mode == Down) { wsSend(c, 2, msgFrame("down=0")); continue; }
+                // the order of a real KiwiSDR v1.8xx: sample_rate first, then badp=0 (accepted), version, audio_rate
+                wsSend(c, 2, msgFrame("sample_rate=11998.939594"));
+                wsSend(c, 2, msgFrame("client_public_ip=127.0.0.1"));
+                wsSend(c, 2, msgFrame("rx_chans=8 firmware_sel=5"));
+                wsSend(c, 2, msgFrame("badp=0"));
                 wsSend(c, 2, msgFrame("version_maj=1 version_min=800"));
-                wsSend(c, 2, msgFrame("bandwidth=30000000 freq_offset=0.000"));
-                wsSend(c, 2, msgFrame("audio_rate=12000"));
-                wsSend(c, 2, msgFrame("sample_rate=12000.123"));
-            } else if (p.compare(0, 7, "SET mod") == 0) {
+                wsSend(c, 2, msgFrame("center_freq=15000000 bandwidth=30000000 adc_clk_nom=66666600"));
+                wsSend(c, 2, msgFrame("audio_init=0 audio_rate=12000"));
+            } else if (p.compare(0, 7, "SET mod") == 0 || p.compare(0, 7, "SET agc") == 0) {   // a real Kiwi streams only after both
                 std::lock_guard<std::mutex> lk(mu);
-                streaming = true;
+                if (p[4] == 'm') gotMod = true; else gotAgc = true;
+                if (gotMod && gotAgc) streaming = true;
             }
         }
     }
@@ -315,7 +323,7 @@ int main() {
     pureTests();
     listTests();
     native::kiwiSetBackoffForTest(80, 400);
-    native::kiwiSetStallForTest(1500);
+    native::kiwiSetStallForTest(3000);   // the cut frame of the slow-link step pauses 1.4 s (past the 1 s receive timeout): the stall limit needs a wide margin over it on a loaded runner
 
     // network radio list: the type, its default port, the password in the list text (and nowhere else)
     NetRadio nr;
@@ -379,7 +387,8 @@ int main() {
     CHECK(eventually([&] { return srv.hasPrefix("SET mod=iq"); }));
     { std::lock_guard<std::mutex> lk(srv.mu); CHECK(srv.path.rfind("/kiwi/", 0) == 0 && srv.path.size() > 10 && srv.path.compare(srv.path.size() - 4, 4, "/SND") == 0); }
     CHECK(srv.has("SET mod=iq low_cut=-5000 high_cut=5000 freq=7074.000"));
-    CHECK(srv.has("SET ident_user=OnAir") && srv.has("SET compression=0") && srv.has("SET AR OK in=12000 out=44100"));
+    CHECK(srv.has("SET ident_user=OnAir") && srv.has("SET compression=0"));
+    CHECK(eventually([&] { return srv.has("SET AR OK in=12000 out=44100"); }));   // audio_rate arrives after version, so it is answered from the receive loop
     CHECK(eventually([&] { return srv.hasPrefix("SET agc=1 ") && srv.hasPrefix("SET keepalive"); }));
     CHECK(std::fabs(src->sampleRate() - 252000) < 1);
     std::vector<cf32> buf(30000);

@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Digital video generator engine (videogen.h). One thread, "onair-videogen": source picture -> fit to the output size -> overlay ->
 // video encoder, the sound -> one encoder per audio track, both into FFmpeg's MPEG-TS muxer (mux rate, service, PIDs), whose packets
-// go to a .ts file (as fast as the encoder runs) or to tsout's paced UDP / RTP sender (in real time).
-// The camera comes from VideoIn (listVideoInputs / start / copyYuv420), the microphone from AudioIn. Pictures and video files are
+// go to a .ts file (as fast as the encoder runs) or to tsout's paced UDP / RTP sender (in real time). A preview (previewOnly) makes
+// the pictures in real time for the window and encodes nothing.
+// The camera comes from VideoIn (listVideoInputs / start / copyYuv420), an RTMP sender (OBS) from RtmpInput, the microphone from AudioIn. Pictures and video files are
 // decoded here, frame by frame, so a file is encoded faster than real time with its picture and sound in step. The test generator
 // draws its test picture (drawTestCard) straight into the output frame.
 #include "dect2/tv/videogen.h"
@@ -10,6 +14,8 @@
 #include "dect2/common/thread_name.h"
 #include "dect2/common/u8file.h"
 #include "dect2/tv/tsout.h"
+#include "dect2/tv/videogen_rtmp.h"
+#include "dect2/common/diag.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -240,9 +246,18 @@ struct Sink {
     std::vector<uint8_t> part;   // bytes of an unfinished 188-byte packet
     uint64_t bytes = 0;
     bool failed = false;
+    int hubId = 0;               // Output::Transmitter: the queue of this generator (videogen_hub.cpp)
     void write(const uint8_t* d, int n) {
         bytes += (uint64_t)n;
         if (file && fwrite(d, 1, (size_t)n, file) != (size_t)n) failed = true;
+        if (hubId > 0) {
+            part.insert(part.end(), d, d + n);
+            const size_t whole = part.size() / 188;
+            if (whole) {
+                generatorPush(hubId, part.data(), whole);
+                part.erase(part.begin(), part.begin() + (std::ptrdiff_t)(whole * 188));
+            }
+        }
         if (net) {
             part.insert(part.end(), d, d + n);
             const size_t whole = part.size() / 188;
@@ -262,18 +277,6 @@ int writePacket(void* op, uint8_t* buf, int n) {
     Sink* s = (Sink*)op;
     s->write(buf, n);
     return s->failed ? AVERROR(EIO) : n;
-}
-
-bool encoderTakes(const AVCodec* c, AVPixelFormat want) {
-    const AVPixelFormat* f = nullptr;
-#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
-    if (avcodec_get_supported_config(nullptr, c, AV_CODEC_CONFIG_PIX_FORMAT, 0, (const void**)&f, nullptr) < 0) return false;
-#else
-    f = c->pix_fmts;
-#endif
-    if (!f) return true;
-    for (; *f != AV_PIX_FMT_NONE; f++) if (*f == want) return true;
-    return false;
 }
 
 AVSampleFormat firstSampleFmt(const AVCodec* c) {
@@ -330,12 +333,12 @@ bool isMulticast(const std::string& host) {
 }
 
 std::string streamUrl(Output o, const std::string& host, int port) {
-    if (o == Output::File) return std::string();
+    if (o == Output::File || o == Output::Transmitter) return std::string();
     return std::string(o == Output::Rtp ? "rtp://" : "udp://") + host + ":" + std::to_string(port);
 }
 
 std::string vlcOpenUrl(Output o, const std::string& host, int port) {
-    if (o == Output::File) return std::string();
+    if (o == Output::File || o == Output::Transmitter) return std::string();
     return std::string(o == Output::Rtp ? "rtp://@" : "udp://@") + (isMulticast(host) ? host : std::string()) + ":" + std::to_string(port);
 }
 
@@ -344,6 +347,11 @@ static std::string lowerExt(const std::string& path) {
     for (char& ch : e) ch = (char)std::tolower((unsigned char)ch);
     return e;
 }
+AudioSource audioForSource(Source source, AudioSource current) {
+    if (source == Source::VideoFile || source == Source::Rtmp) return current == AudioSource::Tone || current == AudioSource::Silence ? AudioSource::FromFile : current;
+    return current == AudioSource::FromFile ? AudioSource::Tone : current;
+}
+
 MediaKind mediaKind(const std::string& path) {
     static const std::set<std::string> pic = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp", ".ppm", ".pgm", ".pnm"};
     static const std::set<std::string> vid = {".mp4", ".m4v", ".mov", ".mkv", ".avi", ".webm", ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".vob", ".wmv", ".flv", ".ogv", ".3gp"};
@@ -403,7 +411,7 @@ struct VideoGenerator::Impl {
     int prevW = 0, prevH = 0;
     uint64_t prevSerial = 0;
 
-    void fail(const std::string& e) { std::lock_guard<std::mutex> lk(mu); if (st.error.empty()) st.error = e; }
+    void fail(const std::string& e) { DIAG_ERROR(753702, "The video generator stopped with an error: %s.", e.c_str()); std::lock_guard<std::mutex> lk(mu); if (st.error.empty()) st.error = e; }
     void run(GenConfig c);
 };
 
@@ -412,13 +420,15 @@ void VideoGenerator::Impl::run(GenConfig c) {
     const int W = s.width & ~1, H = s.height & ~1;
     const AVRational fr = av_d2q(std::clamp(s.fps, 0.5, 120.0), 1001);
     const double fps = av_q2d(fr);
-    const bool live = c.source == Source::Camera || c.output != Output::File;
-    const int64_t totalFrames = c.output == Output::File ? std::max<int64_t>(1, (int64_t)std::llround(c.seconds * fps)) : INT64_MAX;
+    const bool live = c.source == Source::Camera || c.source == Source::Rtmp || c.output != Output::File || c.previewOnly;
+    const int64_t totalFrames = c.output == Output::File && !c.previewOnly ? std::max<int64_t>(1, (int64_t)std::llround(c.seconds * fps)) : INT64_MAX;
     const Budget bud = estimate(s);
 
+    std::vector<ArgOpt> userOpts;
+    { std::string aerr; parseEncoderArgs(c.ffmpegArgs, userOpts, aerr); }   // already checked in start()
     // encoders
     const std::string venc = pickVideoEncoder(s.videoEncoder, videoEncoders());
-    const int tracks = audioTrackCount(s);
+    const int tracks = c.previewOnly ? 0 : audioTrackCount(s);   // a preview has no sound (and opens no microphone)
     std::string aenc;
     if (tracks > 0) {
         // the chosen encoder, else the first this FFmpeg has (st.audioEncoder tells the window which); none at all is an error, not a
@@ -431,6 +441,8 @@ void VideoGenerator::Impl::run(GenConfig c) {
 
     // sources
     VideoIn cam;
+    RtmpInput rtmp;
+    uint64_t rtmpSerial = 0;
     MediaReader vfile, afile;
     std::vector<std::string> vlist, alist;   // the picture / video files and the sound files, in play order
     size_t vidx = 0, aidx = 0;
@@ -441,6 +453,9 @@ void VideoGenerator::Impl::run(GenConfig c) {
     std::string err;
     if (c.source == Source::Camera) {
         if (!cam.start(VideoIn::Camera, c.cameraId, err)) { fail(err.empty() ? "cannot open the camera" : err); return; }
+    } else if (c.source == Source::Rtmp) {
+        // the sound is read only when it goes into the stream; without a sender the picture is black
+        if (!rtmp.start(c.rtmpUrl, s.sampleRate, err)) { fail(err); return; }
     } else if (c.source != Source::Generator) {
         vlist = listMedia(c.path, c.source == Source::Picture ? MediaKind::Picture : MediaKind::Video);
         if (vlist.empty()) { fail("no " + std::string(c.source == Source::Picture ? "pictures" : "videos") + " in " + c.path); return; }
@@ -471,13 +486,19 @@ void VideoGenerator::Impl::run(GenConfig c) {
         if (!mic.start(AudioIn::Mic, s.sampleRate, c.micId, 0, err)) { fail(err.empty() ? "cannot open the microphone" : err); return; }
     }
 
-    // output
+    // output (a preview's sink goes nowhere)
     Sink sink;
     OutputManager net;
-    if (c.output == Output::File) {
+    struct RateGuard { int id = 0; ~RateGuard() { if (id > 0) generatorSetRate(id, 0); } } rateGuard;   // the transmitter's multiplex sees it stop
+    if (!c.previewOnly && c.output == Output::File) {
         sink.file = u8fopen(c.tsPath, "wb");
         if (!sink.file) { fail("cannot write " + c.tsPath + ": " + strerror(errno)); return; }
-    } else {
+    } else if (!c.previewOnly && c.output == Output::Transmitter) {
+        sink.hubId = c.instanceId;
+        generatorClear(c.instanceId);
+        generatorSetRate(c.instanceId, bud.mux * 1000.0);   // its share of a multiplex (generatorMuxSource)
+        rateGuard.id = c.instanceId;
+    } else if (!c.previewOnly) {
         OutputConfig oc;
         oc.udp = true; oc.host = c.host; oc.port = c.port; oc.ttl = c.ttl; oc.rtp = c.output == Output::Rtp;
         net.configure(oc);
@@ -507,53 +528,41 @@ void VideoGenerator::Impl::run(GenConfig c) {
     bool ok = vx != nullptr;
     if (!ok) fail("no video encoder " + venc);
     if (ok) {
-        const EncoderCaps caps = capsOf(venc);
-        vx->width = W; vx->height = H;
-        vx->pix_fmt = encoderTakes(vc, AV_PIX_FMT_YUV420P) ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NV12;
-        vx->time_base = av_inv_q(fr); vx->framerate = fr;
-        vx->sample_aspect_ratio = AVRational{1, 1};
-        const int gop = s.frames == FrameTypes::IOnly ? 1 : std::max(1, (int)std::lround(s.gopSeconds * fps));
-        vx->gop_size = gop;
-        int bf = s.frames == FrameTypes::IPB && caps.bFrames ? 2 : 0;
-        if (caps.profile && s.profile == 0) bf = 0;   // Baseline has no B-frames
-        vx->max_b_frames = std::min(bf, gop - 1);
-        const int64_t rate = (int64_t)effectiveVideoKbps(s) * 1000;
-        const bool mpeg2 = codecOf(venc) == Codec::Mpeg2;
-        const int64_t vbvCap = mpeg2 ? (W <= 720 && H <= 576 ? 1835008 : 9781248) : INT64_MAX;   // MPEG-2 Main Level / High Level
-        AVDictionary* o = nullptr;
-        RateControl rc = s.rc;
-        if (rc == RateControl::Crf && !caps.crf) rc = RateControl::ConstrainedVbr;
-        if (rc == RateControl::Cbr) {
-            vx->bit_rate = vx->rc_min_rate = vx->rc_max_rate = rate;
-            vx->rc_buffer_size = (int)std::min<int64_t>(rate, vbvCap);
-            if (venc == "libx264") av_dict_set(&o, "nal-hrd", "cbr", 0);   // filler data keeps the rate even on a still picture
-            if (venc.find("_nvenc") != std::string::npos) av_dict_set(&o, "rc", "cbr", 0);
-        } else if (rc == RateControl::ConstrainedVbr) {
-            vx->bit_rate = rate;
-            vx->rc_max_rate = rate * 3 / 2;
-            vx->rc_buffer_size = (int)std::min<int64_t>(rate * 3 / 2, vbvCap);
-            if (venc.find("_nvenc") != std::string::npos) av_dict_set(&o, "rc", "vbr", 0);
-        } else {
-            av_dict_set_int(&o, "crf", s.crf, 0);
-            vx->rc_max_rate = rate * 2;   // capped, so the mux rate the estimate gives is enough
-            vx->rc_buffer_size = (int)(rate * 2);
+        // as asked first; an encoder that refuses that (a profile or B-frames this card lacks, its own rate-control mode) a second time
+        // without them, and the window says so
+        const bool hwMode = encoderHardware(venc);
+        std::string firstErr;
+        for (int attempt = 0; attempt < 2 && ok; attempt++) {
+            const bool full = attempt == 0;
+            if (!full) {
+                avcodec_free_context(&vx);
+                if (!(vx = avcodec_alloc_context3(vc))) { fail("out of memory"); ok = false; break; }
+            }
+            AVDictionary* o = nullptr;
+            if (!setupVideoEncoder(vx, &o, vc, venc, hwMode, s, W, H, fr.num, fr.den, full)) {
+                av_dict_free(&o);
+                fail("the video encoder " + venc + " takes no YUV 4:2:0 or NV12 pictures");
+                ok = false;
+                break;
+            }
+            for (const ArgOpt& a : userOpts) av_dict_set(&o, a.key.c_str(), a.value.c_str(), 0);   // the user's own encoder options win
+            const int r = avcodec_open2(vx, vc, &o);
+            if (r >= 0 && o) {   // options the encoder did not know are left in the dictionary: say so
+                std::string bad;
+                for (const AVDictionaryEntry* e = nullptr; (e = av_dict_iterate(o, e));) bad += (bad.empty() ? "-" : " -") + std::string(e->key);
+                std::lock_guard<std::mutex> lk(mu);
+                st.notice = (st.notice.empty() ? "" : st.notice + "; ") + venc + " did not use " + bad;
+            }
+            av_dict_free(&o);
+            if (r >= 0) {
+                if (!full) { std::lock_guard<std::mutex> lk(mu); st.notice = venc + " refused the profile, B-frames or its rate-control mode (" + firstErr + "): opened without them"; }
+                break;
+            }
+            if (full) { firstErr = averr(r); continue; }
+            const std::string second = averr(r);
+            fail("cannot open the video encoder " + venc + ": " + firstErr + (second != firstErr ? "; without the profile and B-frames: " + second : ""));
+            ok = false;
         }
-        if (mpeg2) {
-            // vbv_delay is 16 bits of 90 kHz: a buffer longer than about 0.7 s of the rate makes the stream VBR in the headers
-            vx->rc_buffer_size = (int)std::min<int64_t>(vx->rc_buffer_size, vx->rc_max_rate * 7 / 10);
-            vx->rc_initial_buffer_occupancy = vx->rc_buffer_size * 3 / 4;
-            // a busy picture (camera noise) can still take longer than vbv_delay holds, and FFmpeg aborts on it in CBR: VBR headers
-            // then (vbv_delay 0xFFFF); the rate control keeps the set rate, the muxer pads the rest with null packets
-            if (vx->rc_min_rate && !mpeg2CbrHeaders(W, H, vx->rc_min_rate)) vx->rc_min_rate = 0;
-        }
-        if (caps.preset) av_dict_set(&o, "preset", kPresets[std::clamp(s.preset, 0, kNumPresets - 1)], 0);
-        if (caps.zeroLatency && s.zeroLatency) av_dict_set(&o, "tune", "zerolatency", 0);
-        if (caps.profile) av_dict_set(&o, "profile", kProfiles[std::clamp(s.profile, 0, kNumProfiles - 1)], 0);
-        if (venc == "libx264") av_dict_set(&o, "x264-params", "scenecut=0", 0);   // the GOP the user set, not one the scene cuts choose
-        if (venc == "libx265") av_dict_set(&o, "x265-params", rc == RateControl::Cbr ? "log-level=error:scenecut=0:strict-cbr=1" : "log-level=error:scenecut=0", 0);
-        const int r = avcodec_open2(vx, vc, &o);
-        av_dict_free(&o);
-        if (r < 0) { fail("cannot open the video encoder " + venc + ": " + averr(r)); ok = false; }
     }
     if (ok) {
         vs = avformat_new_stream(oc, nullptr);
@@ -607,12 +616,14 @@ void VideoGenerator::Impl::run(GenConfig c) {
     }
 
     if (ok) {
-        auto drain = [&](AVCodecContext* cx, AVStream* stream) {
-            while (avcodec_receive_packet(cx, pk) >= 0) {
-                av_packet_rescale_ts(pk, cx->time_base, stream->time_base);
-                pk->stream_index = stream->index;
-                if (av_interleaved_write_frame(oc, pk) < 0) sink.failed = true;
-            }
+        // a frame (nullptr: the end) into an encoder and its packets into the muxer; a busy hardware encoder is waited for
+        int muxErr = 0;   // the muxer refused a packet (time stamps out of order ...): not the file or the network
+        auto encode = [&](AVCodecContext* cx, AVStream* stream, const AVFrame* frame) {
+            return sendToEncoder(cx, frame, pk, [&](AVPacket* p) {
+                av_packet_rescale_ts(p, cx->time_base, stream->time_base);
+                p->stream_index = stream->index;
+                if (const int r = av_interleaved_write_frame(oc, p); r < 0) { if (!sink.failed && !muxErr) muxErr = r; sink.failed = true; }
+            });
         };
         auto noError = [&] { std::lock_guard<std::mutex> lk(mu); return st.error.empty(); };
         OverlayRenderer ovr;
@@ -664,6 +675,8 @@ void VideoGenerator::Impl::run(GenConfig c) {
             return false;
         };
         SwsContext* prevSws = nullptr;
+        SwsContext* frameSws = nullptr;
+        std::vector<uint8_t> frameRgb;
         auto lastPreview = std::chrono::steady_clock::now() - std::chrono::seconds(1);
         const auto t0 = std::chrono::steady_clock::now();
         int late = 0;
@@ -684,6 +697,15 @@ void VideoGenerator::Impl::run(GenConfig c) {
                         const int ss[3] = {src.w, src.w / 2, src.w / 2};
                         fitter.run(sp, ss, src.w, src.h, out, c.fit);
                     }
+                }
+            } else if (c.source == Source::Rtmp) {
+                rtmp.picture(src.y, src.u, src.v, src.w, src.h, rtmpSerial);   // a newer picture of the sender, if there is one
+                if (src.w >= 2 && src.h >= 2) {   // every frame again: the overlay drew on the last one
+                    const uint8_t* sp[3] = {src.y.data(), src.u.data(), src.v.data()};
+                    const int ss[3] = {src.w, src.w / 2, src.w / 2};
+                    fitter.run(sp, ss, src.w, src.h, out, c.fit);
+                } else {
+                    out.black();   // no sender (yet), or it stopped
                 }
             } else if (c.source == Source::Generator) {
                 drawTestCard(out.y.data(), W, out.u.data(), W / 2, out.v.data(), W / 2, W, H, (int)(n % (1 << 30)), fps, c.pattern);
@@ -735,20 +757,21 @@ void VideoGenerator::Impl::run(GenConfig c) {
                 if (!ovlStatic || rolling) { ovr.render(lay, s, t, W, H, ovl); ovlStatic = true; ovlEmpty = false; }
                 if (!ovlEmpty) OverlayRenderer::blendYuv420(ovl.data(), W, H, out.y.data(), W, out.u.data(), W / 2, out.v.data(), W / 2);
             }
-            // encode the picture
-            if (av_frame_make_writable(vf) < 0) { fail("out of memory"); break; }
-            if (vx->pix_fmt == AV_PIX_FMT_NV12 && toNv12) {
-                const uint8_t* sp[3] = {out.y.data(), out.u.data(), out.v.data()};
-                const int ss[3] = {W, W / 2, W / 2};
-                sws_scale(toNv12, sp, ss, 0, H, vf->data, vf->linesize);
-            } else {
-                av_image_copy_plane(vf->data[0], vf->linesize[0], out.y.data(), W, W, H);
-                av_image_copy_plane(vf->data[1], vf->linesize[1], out.u.data(), W / 2, W / 2, H / 2);
-                av_image_copy_plane(vf->data[2], vf->linesize[2], out.v.data(), W / 2, W / 2, H / 2);
+            // encode the picture (not for a preview: it only shows the picture)
+            if (!c.previewOnly) {
+                if (av_frame_make_writable(vf) < 0) { fail("out of memory"); break; }
+                if (vx->pix_fmt == AV_PIX_FMT_NV12 && toNv12) {
+                    const uint8_t* sp[3] = {out.y.data(), out.u.data(), out.v.data()};
+                    const int ss[3] = {W, W / 2, W / 2};
+                    sws_scale(toNv12, sp, ss, 0, H, vf->data, vf->linesize);
+                } else {
+                    av_image_copy_plane(vf->data[0], vf->linesize[0], out.y.data(), W, W, H);
+                    av_image_copy_plane(vf->data[1], vf->linesize[1], out.u.data(), W / 2, W / 2, H / 2);
+                    av_image_copy_plane(vf->data[2], vf->linesize[2], out.v.data(), W / 2, W / 2, H / 2);
+                }
+                vf->pts = n;
+                if (const int r = encode(vx, vs, vf); r < 0) { fail("the video encoder " + venc + " stopped: " + averr(r)); break; }
             }
-            vf->pts = n;
-            if (avcodec_send_frame(vx, vf) < 0) { fail("the video encoder stopped"); break; }
-            drain(vx, vs);
             // the sound up to the end of this picture
             if (tracks > 0 && ax[0]) {
                 const int fs = af->nb_samples;
@@ -763,6 +786,8 @@ void VideoGenerator::Impl::run(GenConfig c) {
                         phase = std::fmod(phase, 2 * kPi);
                     } else if (c.audio == AudioSource::Microphone) {
                         mic.read(abuf.data(), fs);
+                    } else if (c.audio == AudioSource::FromFile && c.source == Source::Rtmp) {
+                        rtmp.readAudio(abuf.data(), fs);
                     } else if (fileSound) {
                         while (fifo.size() < (size_t)fs * 2 && audioMore()) {}
                         const size_t m = std::min(fifo.size(), (size_t)fs * 2);
@@ -775,15 +800,28 @@ void VideoGenerator::Impl::run(GenConfig c) {
                     for (int k = 0; k < tracks; k++) {
                         if (av_frame_make_writable(af) < 0 || !fillAudio(af, abuf.data(), fs, ax[(size_t)k]->ch_layout.nb_channels)) { fail("the sound format is not supported"); break; }
                         af->pts = aPts;
-                        avcodec_send_frame(ax[(size_t)k], af);
-                        drain(ax[(size_t)k], as[(size_t)k]);
+                        if (const int r = encode(ax[(size_t)k], as[(size_t)k], af); r < 0) { fail("the audio encoder " + aenc + " stopped: " + averr(r)); break; }
                     }
                     aPts += fs;
                 }
             }
             if (!noError()) break;   // an audio encoder failed
             if (sink.net) net.burstDone(1.0 / fps);
+            if (muxErr) { fail("the MPEG-TS muxer refused a packet of " + venc + ": " + averr(muxErr)); break; }
             if (sink.failed) { fail(c.output == Output::File ? "cannot write " + c.tsPath : "cannot send the stream"); break; }
+            if (c.instanceId > 0 && generatorHasFrameSink(c.instanceId)) {   // the analog transmitter takes the picture itself
+                const int fw = std::min(W, 720) & ~1, fh = std::max(2, (int)std::lround((double)fw * H / W) & ~1);
+                frameSws = sws_getCachedContext(frameSws, W, H, AV_PIX_FMT_YUV420P, fw, fh, AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                if (frameSws) {
+                    frameRgb.resize((size_t)fw * fh * 3);
+                    const uint8_t* sp[3] = {out.y.data(), out.u.data(), out.v.data()};
+                    const int ss[3] = {W, W / 2, W / 2};
+                    uint8_t* d[1] = {frameRgb.data()};
+                    const int ds[1] = {fw * 3};
+                    sws_scale(frameSws, sp, ss, 0, H, d, ds);
+                    generatorPublishFrame(c.instanceId, fw, fh, frameRgb.data());
+                }
+            }
             // the preview for the window, about 8 times a second
             const auto now = std::chrono::steady_clock::now();
             if (now - lastPreview > std::chrono::milliseconds(120)) {
@@ -809,13 +847,14 @@ void VideoGenerator::Impl::run(GenConfig c) {
                 st.kbps = st.seconds > 0 ? (double)sink.bytes * 8 / st.seconds / 1000.0 : 0;
                 st.progress = c.output == Output::File ? (double)(n + 1) / (double)totalFrames : 0;
                 st.lateFrames = late;
+                if (c.source == Source::Rtmp) st.input = rtmp.status();
             }
         }
         sws_freeContext(prevSws);
+        sws_freeContext(frameSws);
         // flush the encoders and close the stream
-        avcodec_send_frame(vx, nullptr);
-        drain(vx, vs);
-        for (int k = 0; k < tracks; k++) if (ax[(size_t)k]) { avcodec_send_frame(ax[(size_t)k], nullptr); drain(ax[(size_t)k], as[(size_t)k]); }
+        if (const int r = encode(vx, vs, nullptr); r < 0) fail("the video encoder " + venc + " did not finish: " + averr(r));
+        for (int k = 0; k < tracks; k++) if (ax[(size_t)k]) encode(ax[(size_t)k], as[(size_t)k], nullptr);
         av_write_trailer(oc);
     }
     avio_flush(oc->pb);
@@ -835,6 +874,7 @@ void VideoGenerator::Impl::run(GenConfig c) {
         net.close();
     }
     cam.stop();
+    rtmp.stop();
     mic.stop();
     std::lock_guard<std::mutex> lk(mu);
     st.bytes = sink.bytes;
@@ -845,15 +885,24 @@ VideoGenerator::VideoGenerator() : p_(new Impl) {}
 VideoGenerator::~VideoGenerator() { stop(); }
 
 bool VideoGenerator::start(const GenConfig& c, std::string& err) {
-    if (running()) { err = "already running"; return false; }
+    auto refuse = [&](std::string m) { err = std::move(m); DIAG(763812, "The video generator was not started because of its settings: %s.", err.c_str()); return false; };
+    if (running()) return refuse("already running");
     if (p_->th.joinable()) p_->th.join();
-    if (c.output == Output::File && c.tsPath.empty()) { err = "choose a .ts file to write"; return false; }
-    if ((c.source == Source::Picture || c.source == Source::VideoFile) && c.path.empty()) { err = "choose a picture or video file (or a folder)"; return false; }
-    if (c.source != Source::Generator && c.source != Source::Camera && listMedia(c.path, c.source == Source::Picture ? MediaKind::Picture : MediaKind::Video).empty()) { err = "there is nothing to play in " + c.path; return false; }
-    if (c.audio == AudioSource::AudioFile && listMedia(c.audioPath, MediaKind::Audio).empty()) { err = "choose a sound file (or a folder of them)"; return false; }
-    if (c.source == Source::Generator && (c.pattern < 0 || c.pattern > 2)) { err = "the test pattern must be 0 to 2"; return false; }
-    if (c.output != Output::File && (c.port <= 0 || c.port > 65535)) { err = "the port must be 1 to 65535"; return false; }
-    if (c.enc.width < 16 || c.enc.height < 16) { err = "the picture is too small"; return false; }
+    if (c.output == Output::File && !c.previewOnly && c.tsPath.empty()) return refuse("choose a .ts file to write");
+    if ((c.source == Source::Picture || c.source == Source::VideoFile) && c.path.empty()) return refuse("choose a picture or video file (or a folder)");
+    if ((c.source == Source::Picture || c.source == Source::VideoFile) && listMedia(c.path, c.source == Source::Picture ? MediaKind::Picture : MediaKind::Video).empty()) return refuse("there is nothing to play in " + c.path);
+    if (c.audio == AudioSource::AudioFile && !c.previewOnly && listMedia(c.audioPath, MediaKind::Audio).empty()) return refuse("choose a sound file (or a folder of them)");
+    if (c.source == Source::Rtmp) {
+        std::string lu, why;
+        int port = 0;
+        if (!rtmpSupported(why)) return refuse("RTMP input: " + why);
+        if (!parseRtmpListenUrl(c.rtmpUrl, lu, port, why)) return refuse("RTMP address: " + why);
+    }
+    if (c.source == Source::Generator && (c.pattern < 0 || c.pattern > 2)) return refuse("the test pattern must be 0 to 2");
+    if (c.output == Output::Transmitter && !c.previewOnly && (c.instanceId < 1 || c.instanceId > kMaxInstances)) return refuse("the generator number must be 1 to " + std::to_string(kMaxInstances));
+    { std::vector<ArgOpt> uo; std::string aerr; if (!parseEncoderArgs(c.ffmpegArgs, uo, aerr)) return refuse("FFmpeg arguments: " + aerr); }
+    if ((c.output == Output::Udp || c.output == Output::Rtp) && !c.previewOnly && (c.port <= 0 || c.port > 65535)) return refuse("the port must be 1 to 65535");
+    if (c.enc.width < 16 || c.enc.height < 16) return refuse("the picture is too small");
     {
         std::lock_guard<std::mutex> lk(p_->mu);
         p_->st = GenStats();
@@ -861,6 +910,7 @@ bool VideoGenerator::start(const GenConfig& c, std::string& err) {
         p_->active = true;
         p_->overlay = c.overlay;
         p_->overlaySerial++;
+        p_->prev.clear();   // the last run's picture: preview() would hand it out with a 0 x 0 size (a crash in the window)
         p_->prevW = p_->prevH = 0;
     }
     p_->stopFlag = false;

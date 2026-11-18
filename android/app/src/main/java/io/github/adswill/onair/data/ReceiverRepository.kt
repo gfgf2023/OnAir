@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 package io.github.adswill.onair.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import io.github.adswill.onair.ModeDef
@@ -10,6 +14,7 @@ import io.github.adswill.onair.R
 import io.github.adswill.onair.OnAirNative
 import io.github.adswill.onair.diag.AppLog
 import io.github.adswill.onair.diag.CrashLog
+import io.github.adswill.onair.engine.CodecStatus
 import io.github.adswill.onair.engine.ReceiverEngine
 import io.github.adswill.onair.model.DeviceCaps
 import io.github.adswill.onair.model.Demod
@@ -35,6 +40,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.File
 
 /** Where the receiver is in its life. Only the repository changes it. */
 enum class Phase { IDLE, STARTING, RUNNING, STOPPING }
@@ -75,6 +81,8 @@ data class ReceiverState(
     companion object {
         /** The engine's standard code of a desktop family number (app_state.cpp engineStd). */
         fun stdOf(f: Int) = when { f >= 6 -> f + 2; f == 1 -> 3; f == 2 -> 4; f == 3 -> 5; f == 4 -> 6; f == 5 -> 7; else -> 0 }
+        /** The number the receiver reports in Telemetry.standard, one below the engine's code (panels and the mode's exporter go by this one). */
+        fun telemetryStdOf(f: Int) = if (f <= 0) 0 else f + 1
     }
 }
 
@@ -116,16 +124,84 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
 
     private var fileFd: ParcelFileDescriptor? = null
 
+    // ---- IQ recording (only when the user presses Record IQ; nothing is uploaded) ------------------------------------------------
+    private val _rec = MutableStateFlow(IqRecording.idle)
+    /** The IQ recorder: running state, size and time so far, the last finished file, a warning near the cap. */
+    val rec: StateFlow<IqRecording> = _rec.asStateFlow()
+    private val recPrefs = ctx.getSharedPreferences("iq_recording", Context.MODE_PRIVATE)
+    private var recJob: kotlinx.coroutines.Job? = null
+
+    /** Copy a finished recording to Downloads/OnAir by itself (#546). On by default; the app-private file stays the source. */
+    fun recordingAutoSave(): Boolean = recPrefs.getBoolean("autoSave", true)
+    fun setRecordingAutoSave(on: Boolean) { recPrefs.edit().putBoolean("autoSave", on).apply() }
+    fun recordingCapMb(): Int = recPrefs.getInt("capMb", IqRecording.DEFAULT_CAP_MB)
+    fun setRecordingCapMb(mb: Int) { recPrefs.edit().putInt("capMb", mb).apply(); _rec.update { it.copy(capBytes = mb * 1048576L) } }
+
+    /** Starts recording the radio's raw IQ (CS8 + SigMF metadata) into the app's own folder (scoped storage, no permission). */
+    fun startRecording() {
+        if (_rec.value.active || _state.value.phase != Phase.RUNNING) return
+        val dir = IqFiles.dir(ctx)
+        val cap = recordingCapMb() * 1048576L
+        val st = _state.value
+        val hw = ctx.getString(R.string.app_name) + " Android, " + _settings.value.source.name.lowercase().replace('_', ' ')
+        scope.launch {
+            val r = try { engine.call("recStart") { it.recStart(dir.absolutePath, hw, false, 0.0, 0.0, cap) } } catch (e: Throwable) { Result.failure(e) }
+            r.onSuccess { path ->
+                AppLog.i("iq", "recording to $path (cap ${cap / 1048576} MB)")
+                _rec.value = IqRecording(true, 0.0, 0L, cap, false, "", File(path), _rec.value.last)
+                recJob?.cancel()
+                recJob = scope.launch { watchRecording() }
+            }.onFailure { e ->
+                AppLog.w("iq", "recording not started: ${e.message}")
+                _state.update { it.copy(error = ctx.getString(R.string.iq_not_started, e.message ?: "")) }
+            }
+        }
+    }
+
+    private suspend fun watchRecording() {
+        while (_rec.value.active) {
+            kotlinx.coroutines.delay(500)
+            val s = try { engine.call("recStats") { it.recStats() } } catch (_: Throwable) { break }
+            val capped = s.capReached
+            _rec.update { it.copy(seconds = s.seconds, bytes = s.bytes, nearCap = s.bytes >= it.capBytes * 9 / 10, error = s.error) }
+            if (!s.active || s.error.isNotEmpty()) { finishRecording(if (capped) ctx.getString(R.string.iq_cap_reached) else s.error); break }
+        }
+    }
+
+    private suspend fun finishRecording(note: String) {
+        try { engine.call("recStop") { it.recStop() } } catch (_: Throwable) {}
+        val cur = _rec.value
+        val f = cur.file
+        val done = if (f != null && f.exists()) f else null
+        AppLog.i("iq", "recording finished: ${done?.name} ${cur.bytes} bytes")
+        _rec.value = IqRecording.idle.copy(capBytes = cur.capBytes, last = done, error = note)
+        if (done != null && recordingAutoSave() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { IqFiles.saveToDownloads(ctx, done) }
+            AppLog.i("iq", "auto-save of ${done.name}: ${if (ok) "done" else "failed"}")
+            val msg = ctx.getString(if (ok) R.string.iq_saved else R.string.iq_save_failed)
+            _rec.update { it.copy(error = if (it.error.isEmpty()) msg else it.error + "\n" + msg) }
+        }
+    }
+
+    fun stopRecording() { if (_rec.value.active) scope.launch { finishRecording("") } }
+    fun clearRecordingNote() { _rec.update { it.copy(error = "") } }
+
+    /** The most recent recording (data file), also after a restart of the app. */
+    fun lastRecording(): File? = _rec.value.last ?: IqFiles.newest(ctx)
+
     /** USB radios, network radios, the sound-card input (data/RadioRepository.kt, docs/USB.md). */
-    val radios = RadioRepository(
+    val radios: RadioRepository = RadioRepository(
         ctx, scope,
         object : EngineExec { override suspend fun <T> call(name: String, block: () -> T): T = engine.call(name) { block() } },
         settings, ::updateSettings,
         onRadioLost = { msg -> stopBecause(msg) },
         onRadiosChanged = { if (_settings.value.source == SourceKind.USB) refreshCaps() },
+        // a radio plugged in while the app still shows the test signal: use it, nothing else to set up
+        onRadioReady = { r -> if (!_state.value.active && _settings.value.source == SourceKind.TEST_SIGNAL) { radios.selectUsb(r); chooseSource(SourceKind.USB); AppLog.i("usb", "using ${r.label}") } },
     )
 
     init {
+        io.github.adswill.onair.ui.UiHooks.usb = io.github.adswill.onair.usb.UsbRadiosBridge(radios, settings, scope) { chooseSource(SourceKind.USB) }
         scope.launch { for (u in persist) try { store.update { _settings.value } } catch (e: Exception) { AppLog.e("settings", "write failed", e) } }
         scope.launch { ops.withLock { initialise() } }
     }
@@ -148,6 +224,7 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
             val dir = ctx.filesDir.absolutePath + "/results"
             val (table, version) = engine.call("init") { core -> check(core.init(dir)) { "nativeInit returned false" }; core.modeTable() to core.version() }
             engine.ready = true
+            refreshCodecs()
             _state.update { it.copy(initialised = true, modeTable = table, coreVersion = version) }
             AppLog.i("engine", "core $version, ${table.byStd.size} modes, ${table.bySub.size} protocols")
         } catch (e: Throwable) {
@@ -156,7 +233,7 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
         }
         if (CrashLog.hasUnseen(ctx)) _state.update { it.copy(error = ctx.getString(R.string.previous_crash, CrashLog.file(ctx).absolutePath)) }
         val saved = s.modeIndex
-        val idx = if (saved in Modes.all.indices) saved else Modes.all.indexOfFirst { it.family == 5 }.coerceAtLeast(0)
+        val idx = Modes.live(saved).takeIf { it >= 0 } ?: Modes.all.indexOfFirst { it.family == 5 }.coerceAtLeast(0)   // a removed type row opens its receiver
         applyMode(idx)
         radios.start()
         refreshCaps(s)
@@ -172,6 +249,9 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
 
     // ---- receive session ------------------------------------------------------------------------------------------------------
     fun toggle() { if (_state.value.active) stop() else start() }
+
+    /** Starts when nothing is running; queued behind a mode change made just before. */
+    fun startIfIdle() { if (_state.value.phase == Phase.IDLE) start() }
 
     fun start() {
         val st = _state.value
@@ -230,6 +310,7 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
     }
 
     private suspend fun doStop() {
+        if (_rec.value.active) finishRecording("")   // the file is closed and its metadata completed before the radio goes
         engine.polling = false
         try { engine.call("stop") { it.stop() } } catch (_: Throwable) {}
         radios.activeUsbKey = ""
@@ -383,6 +464,53 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
     }
 
     /** A recording chosen with the system picker (no storage permission): the fd stays open until the next pick. */
+    // ---- user-installed codec add-ons (docs/CODECS.md; #463: CDR sound needs the DRA+ add-on) ---------------------------------
+    private val _codecs = MutableStateFlow(CodecStatus.none)
+    /** The DRA+ add-on as the core sees it after the last look. */
+    val codecs: StateFlow<CodecStatus> = _codecs.asStateFlow()
+    /** The app's own codecs folder: add-ons the user imported are copied here (the phone's shared storage cannot hold code that runs). */
+    fun codecDir(): File = File(ctx.filesDir, "codecs")
+
+    private fun refreshCodecs() {
+        if (!engine.ready) return
+        val dir = codecDir().apply { mkdirs() }.absolutePath
+        engine.post("codecs") { core ->
+            val st = core.codecs(dir)
+            _codecs.value = st
+            AppLog.i("app", when {
+                st.found -> "DRA+ add-on loaded: ${st.path}"
+                st.problem.isNotEmpty() -> "DRA+ add-on cannot be used: ${st.problem}"
+                else -> "DRA+ add-on not installed (CDR sound stays silent; Import it on the CDR panel)"
+            })
+        }
+    }
+
+    /** Copies a codec add-on the user picked (a .so built for arm64) into [codecDir] under the name the core looks for, then looks again. */
+    fun importCodec(uri: Uri) {
+        scope.launch {
+            try {
+                val cr = ctx.contentResolver
+                val name = cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: ""
+                if (name.isNotEmpty() && !name.endsWith(".so")) AppLog.w("app", "codec file $name does not end in .so; trying it anyway")
+                val dest = File(codecDir().apply { mkdirs() }, DRA_FILE)
+                val tmp = File(dest.parentFile, "$DRA_FILE.part")
+                cr.openInputStream(uri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } } ?: error("the file could not be opened")
+                if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
+                AppLog.i("app", "codec add-on imported as ${dest.absolutePath} (${dest.length()} bytes)")
+                refreshCodecs()
+            } catch (e: Exception) {
+                AppLog.e("app", "codec import failed", e)
+                _state.update { it.copy(error = ctx.getString(R.string.cdr_import_failed, e.message ?: e.javaClass.simpleName)) }
+            }
+        }
+    }
+
+    /** Removes the imported DRA+ add-on. The library stays loaded until the app restarts (Android cannot unload it safely). */
+    fun removeCodec() { File(codecDir(), DRA_FILE).delete(); refreshCodecs() }
+
+    /** CDR: the service whose sound plays; -1 the first audio service. */
+    fun cdrListen(serviceId: Int) { if (engine.ready) engine.post("cdrListen") { it.cdrListen(serviceId) } }
+
     fun openFile(uri: Uri) {
         try {
             val cr = ctx.contentResolver
@@ -405,4 +533,6 @@ class ReceiverRepository(private val ctx: Context, private val store: SettingsSt
             _state.update { it.copy(error = ctx.getString(R.string.file_open_failed)) }
         }
     }
+
+    private companion object { const val DRA_FILE = "libonair_dra.so" }
 }

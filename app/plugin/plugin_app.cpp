@@ -1,15 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Plugins in the program: the plugin manager (View > Plugins, and the "Plugins" mode), the generic screen every plugin mode gets (status lamps, tables,
 // plots, images, map points, log and the settings the plugin declared), and the glue to the host (core/src/plugin): discovery at start, a numbered row in
 // the mode list for every plugin mode, the IQ from the engine to the running plugin, and the automation events. docs/plugins.md explains the model.
 #include "app.h"
+#include "dect2/common/diag.h"
+#include "dect2/audio/audioout.h"
 #include "dect2/engine/mode_tuning.h"
 #include "dect2/plugin/host.h"
 #include "platform/platform.h"
+#include "pstore/store_ui.h"
 #include "ui/theme.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <atomic>
+#include <map>
+#include <memory>
 #include <mutex>
 
 #if defined(_WIN32)
@@ -42,6 +51,81 @@ std::string exeDir() {
 #endif
     const size_t cut = exe.find_last_of("/\\");
     return cut == std::string::npos ? std::string(".") : exe.substr(0, cut);
+}
+
+// The sound of the plugins (audio_out): one 48 kHz output per plugin on the default device. Declared before P so that it outlives the
+// Manager (a plugin thread may still play while the Manager stops it at exit).
+struct PluginSound {
+    std::mutex mu;              // one per plugin: opening one plugin's device does not hold up the others
+    std::unique_ptr<dect2::AudioOut> out;
+    double rate = 0, pos = 0;   // pos: the next output frame, in input samples after `prev`
+    float prev = 0;             // the last input sample of the previous block
+    std::vector<float> st;
+};
+std::mutex gSoundMu;            // guards gSounds only, never held while a device is opened or closed
+std::map<std::string, std::shared_ptr<PluginSound>> gSounds;
+std::atomic<float> gSoundVolume{1.f};   // the app's volume and mute (pluginFrame), applied to every plugin output
+std::atomic<bool> gSoundMuted{false};
+
+// Mono PCM at any rate to the plugin's output: linear interpolation to 48 kHz stereo (as the voice modes do), across block boundaries.
+int playPluginSound(const std::string& id, const float* pcm, size_t n, double rate) {
+    if (!pcm || n == 0 || !(rate >= 1000 && rate <= 400000)) return -1;   // the limits of docs/plugins.md (also checked by the host)
+    std::shared_ptr<PluginSound> sp;
+    {
+        std::lock_guard<std::mutex> lk(gSoundMu);
+        auto& e = gSounds[id];
+        if (!e) e = std::make_shared<PluginSound>();
+        sp = e;
+    }
+    PluginSound& s = *sp;
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.out) {
+        s.out = std::make_unique<dect2::AudioOut>();
+        if (!s.out->start(48000)) { s.out.reset(); return -1; }
+        s.out->setStartThreshold(48000 / 5);
+    }
+    s.out->setVolume(gSoundVolume.load()); s.out->setMuted(gSoundMuted.load());
+    auto clean = [](float v) { return std::isfinite(v) ? v : 0.f; };
+    if (s.rate != rate) { s.rate = rate; s.pos = 0; s.prev = clean(pcm[0]); }
+    const double step = rate / 48000.0;   // input samples per output frame
+    s.st.clear();
+    // position t: -1 is `prev`, 0..n-1 the block
+    for (; s.pos <= (double)(n - 1); s.pos += step) {
+        const double t = s.pos;
+        const long i = (long)std::floor(t);
+        const float a = i < 0 ? s.prev : clean(pcm[i]);
+        const float b = clean(pcm[std::min<long>(i + 1, (long)n - 1)]);
+        const float x = a + (b - a) * (float)(t - (double)i);
+        s.st.push_back(x); s.st.push_back(x);
+    }
+    s.pos -= (double)n;
+    s.prev = clean(pcm[n - 1]);
+    if (s.out->bufferedFrames() > 48000 * 3 / 2) s.out->flush();   // more than 1.5 s behind: start again
+    s.out->write(s.st.data(), (int)(s.st.size() / 2));
+    return 0;
+}
+
+// Closes the outputs of the plugins `keep` says no to. `keep` runs without gSoundMu (it may ask the Manager), and the devices are closed
+// after gSoundMu is released.
+template <class Keep> void dropPluginSounds(Keep keep) {
+    std::vector<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lk(gSoundMu);
+        for (const auto& kv : gSounds) ids.push_back(kv.first);
+    }
+    std::vector<std::shared_ptr<PluginSound>> gone;
+    for (const auto& id : ids) {
+        if (keep(id)) continue;
+        std::lock_guard<std::mutex> lk(gSoundMu);
+        auto it = gSounds.find(id);
+        if (it == gSounds.end()) continue;
+        gone.push_back(std::move(it->second));
+        gSounds.erase(it);
+    }
+}
+
+void stopPluginSound(const std::string& id) {
+    dropPluginSounds([&](const std::string& k) { return k != id; });
 }
 
 struct PluginApp {
@@ -119,6 +203,7 @@ void init(App& a) {
     P.hostAvail = !c.hostExe.empty();
     c.hostVersion = ONAIR_VERSION;
     P.mgr = std::make_unique<dp::Manager>(c);
+    P.mgr->setAudioSink(playPluginSound);
     P.mgr->scan();
     P.mgr->beginSession();
     if (plat::prefs().getB("pluginsSafeMode", false)) P.mgr->forceSafeMode(true);
@@ -143,7 +228,7 @@ void stopActive() {
         std::lock_guard<std::mutex> lk(P.sinkMu);
         P.active = nullptr;
     }
-    if (!id.empty()) P.mgr->stop(id, mode);
+    if (!id.empty()) { P.mgr->stop(id, mode); stopPluginSound(id); }
     P.activeId.clear(); P.activeMode.clear();
 }
 
@@ -413,10 +498,26 @@ void managerPanel(App& a) {
     ImGui::EndChild();
 }
 
+// the manager with its two tabs: what is installed, and the Store (docs/PLUGIN-MARKETPLACE-3.9.md)
+static bool gWantStoreTab = false;   // Tools > Plugin store: open the window on the Store tab (once)
+
+void managerTabs(App& a) {
+    if (!P.inited) { managerPanel(a); return; }
+    if (ImGui::BeginTabBar("##plugtabs")) {
+        if (ImGui::BeginTabItem(trw("Installed"))) { managerPanel(a); ImGui::EndTabItem(); }
+        const bool pick = gWantStoreTab; gWantStoreTab = false;
+        if (ImGui::BeginTabItem(trw("Store"), nullptr, pick ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (pluginStoreTab(a, *P.mgr, [](const std::string& id) { if (P.activeId == id) stopActive(); })) registerModes();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
 // the main tab of the "Plugins" row and of every plugin mode
 void tab(App& a) {
     if (!P.inited) return;
-    if (a.family == 999) { managerPanel(a); return; }
+    if (a.family == 999) { managerTabs(a); return; }
     std::string pid, mid;
     if (!P.mgr->modeFromNumber(a.family, pid, mid)) { ImGui::TextDisabled("%s", tr("This plugin mode is not installed any more.")); return; }
     dp::Entry e;
@@ -468,13 +569,18 @@ const ModeUi kPluginUi = {
     .summary = summary,
 };
 
+void pluginRegister(App& a) { if (a.rxId == 1 && !P.inited) init(a); }   // first thing in the frame: the plugin rows have a tuning before anything asks for it (#465)
+
 void pluginFrame(App& a) {
     if (a.rxId != 1) return;
-    if (!P.inited) init(a);
+    pluginRegister(a);
+    gSoundVolume = a.volume; gSoundMuted = a.muted;   // the sound controls are shared with the other modes
     const double now = ImGui::GetTime();
     if (now - P.lastTick > 1.0) {
         P.lastTick = now;
         P.mgr->tick(std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count());
+        // close the outputs of plugins that do not run any more (switched off, removed, failed): only the active mode and actions play
+        dropPluginSounds([](const std::string& id) { return id == P.activeId || P.mgr->running(id, "") != nullptr; });
         if (P.active && P.activeId.size()) {
             dp::Runner* r = P.mgr->running(P.activeId, P.activeMode);
             if (!r) { P.error = tr("The plugin was switched off after a failure. See its log in the Plugins mode."); stopActive(); }
@@ -497,7 +603,7 @@ void pluginFrame(App& a) {
         if (P.startFailed) return;   // the user turns the plugin off and on again to retry
         std::string err;
         dp::Runner* r = P.mgr->start(pid, mid, err);
-        if (!r) { P.error = err; P.startFailed = true; return; }
+        if (!r) { DIAG(412174, "The plugin could not start (%s), so it stays off until you switch it off and on again.", err.c_str()); P.error = err; P.startFailed = true; return; }
         { std::lock_guard<std::mutex> lk(P.sinkMu); P.active = r; }
         P.activeId = pid; P.activeMode = mid; P.lastRate = 0;
     }
@@ -511,6 +617,7 @@ void pluginFrame(App& a) {
 }
 
 void pluginShutdown() {
+    pluginStoreShutdown();
     if (!P.inited) return;
     stopActive();
     P.mgr->stopAll();
@@ -519,11 +626,13 @@ void pluginShutdown() {
     P.images.clear();
 }
 
+void pluginStoreOpen(App& a) { a.pluginsOpen = true; gWantStoreTab = true; }
+
 void pluginManagerWindow(App& a) {
     if (!a.pluginsOpen || a.rxId != 1) return;
     if (!P.inited) init(a);
     firstWindowSize(820 * gUi, 520 * gUi);
     if (!ImGui::Begin(trw("Plugins"), &a.pluginsOpen)) { ImGui::End(); return; }
-    managerPanel(a);
+    managerTabs(a);
     ImGui::End();
 }

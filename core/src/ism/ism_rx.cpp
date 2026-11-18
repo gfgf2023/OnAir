@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // ISM sensors receiver. See ism_rx.h.
 #include "dect2/ism/ism_rx.h"
 #include "dect2/results/results_io.h"
@@ -8,7 +11,13 @@
 #include <atomic>
 #include <cmath>
 #include <ctime>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <thread>
+#include <chrono>
 
 namespace dect2 {
 
@@ -27,6 +36,7 @@ struct IsmReceiver::Impl {
     std::mutex mu;
     double rateSet = 0, offsetSet = 0, centerSet = 0;
     float thrSet = 13;
+    bool narrowRetry = true;
     bool resetReq = true;
     std::atomic<bool> clearReq{false};
     std::function<void(const std::string&)> log;
@@ -59,6 +69,76 @@ struct IsmReceiver::Impl {
     bool loadReq = false;
     IsmTelemetry loaded;
 
+    // Burst analysis runs on its own thread: demodulating and slicing a long burst takes tens to hundreds of ms, and feed() is on the same
+    // thread as the waterfall (#542). wmu guards tel, taps and the rate set (the worker holds it for one burst); the feed thread only
+    // try-locks it, so it never waits: a publish is skipped until the next call, a reset / clear / load waits by dropping input.
+    struct Job { bool sfxChunk = false; std::vector<cf32> x; std::vector<float> excess; uint64_t s0 = 0, gen = 0; };   // a burst to analyse, or a chunk of input for the Sigfox receiver (also slow, and it must stay in order)
+    size_t burstJobs = 0, sfxJobs = 0;
+    bool sfxOn = false;
+    std::mutex wmu, qmu;
+    std::condition_variable qcv, idleCv;
+    std::deque<Job> jobs;
+    bool busy = false, stop = false;
+    std::atomic<uint64_t> gen{0};
+    std::atomic<bool> realtime{false};
+    std::atomic<bool> want{false};   // the feed thread found wmu taken: the worker leaves a gap before its next job (a mutex is not fair, and a queue of jobs would starve it)
+    std::thread worker;
+
+    ~Impl() {
+        { std::lock_guard<std::mutex> lk(qmu); stop = true; }
+        qcv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+    void workerMain() {
+        for (;;) {
+            Job j;
+            {
+                std::unique_lock<std::mutex> lk(qmu);
+                qcv.wait(lk, [&] { return stop || !jobs.empty(); });
+                if (stop) return;
+                j = std::move(jobs.front()); jobs.pop_front();
+                (j.sfxChunk ? sfxJobs : burstJobs)--;
+                busy = true;
+            }
+            {
+                std::lock_guard<std::mutex> wl(wmu);
+                if (j.gen == gen.load()) { if (j.sfxChunk) sfx.feed(j.x.data(), j.x.size()); else analyse(j); }   // a retune since it was cut: its samples are of the old set-up
+            }
+            { std::lock_guard<std::mutex> lk(qmu); busy = false; }
+            idleCv.notify_all();
+            for (int i = 0; i < 20 && want.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    // the feed thread's way to wmu: a radio's try-locks (false: not now, and the worker is asked for a gap), a file's waits
+    bool takeLock(std::unique_lock<std::mutex>& wl) {
+        want = true;
+        if (realtime.load()) { if (!wl.try_lock()) return false; }
+        else wl.lock();
+        want = false;
+        return true;
+    }
+    void enqueue(Job&& j) {
+        {
+            std::unique_lock<std::mutex> lk(qmu);
+            if (!worker.joinable()) worker = std::thread([this] { workerMain(); });
+            if (!realtime.load()) {   // a file: wait for the worker instead of dropping
+                idleCv.wait(lk, [&] { return stop || (j.sfxChunk ? sfxJobs < 64 : burstJobs < 8); });
+                if (stop) return;
+            }
+            if (j.sfxChunk) {
+                if (sfxJobs >= 64) return;   // 0.5 s behind: this chunk is dropped, the waterfall goes on
+                sfxJobs++;
+            } else {
+                if (burstJobs >= 8)   // far behind (a band full of bursts): the oldest burst is dropped
+                    for (auto it = jobs.begin(); it != jobs.end(); ++it) if (!it->sfxChunk) { jobs.erase(it); burstJobs--; break; }
+                burstJobs++;
+            }
+            jobs.push_back(std::move(j));
+        }
+        qcv.notify_one();
+    }
+    void waitIdle() { std::unique_lock<std::mutex> lk(qmu); idleCv.wait(lk, [&] { return jobs.empty() && !busy; }); }
+
     static void moveLists(IsmTelemetry& to, IsmTelemetry& from) {
         to.devices = std::move(from.devices); to.events = std::move(from.events); to.raws = std::move(from.raws);
         from.devices.clear(); from.events.clear(); from.raws.clear();
@@ -76,6 +156,8 @@ struct IsmReceiver::Impl {
     }
 
     void init() {
+        gen++;
+        { std::lock_guard<std::mutex> lk(qmu); jobs.clear(); burstJobs = sfxJobs = 0; }
         thrLin = (float)std::pow(10.0, thrDb / 10.0);
         N = 64;
         while (N < 4096 && N < rate * kFrameSec) N *= 2;
@@ -114,6 +196,7 @@ struct IsmReceiver::Impl {
         tel.inputRate = rate; tel.centerHz = center; tel.dialOffsetHz = offset;
         tel.state = 0;
         sfx.configure(rate, offset, center > 0 ? center + offset : 0);
+        sfxOn = SigfoxRx::onSigfoxBand(center > 0 ? center + offset : 0);
         changed = true;
     }
 
@@ -155,16 +238,25 @@ struct IsmReceiver::Impl {
 
     // ---------------------------------------------------------------- one burst
 
-    void burst() {
+    void burst() {   // the feed thread: cuts the burst's samples out of the ring and hands them on
         const uint64_t pre = (uint64_t)(kPreSec * rate), post = (uint64_t)(kPostSec * rate);
         uint64_t s0 = bStart > pre ? bStart - pre : 0, s1 = std::min(total, bLast + post);
         if (total > ring.size() && s0 < total - ring.size()) s0 = total - ring.size();
         if (s1 <= s0 + 64) return;
+        Job j;
+        j.x.resize(s1 - s0);
+        for (uint64_t i = s0; i < s1; i++) j.x[i - s0] = ring[i & ringMask];
+        j.excess = excess;
+        j.s0 = s0; j.gen = gen.load();
+        enqueue(std::move(j));
+    }
+
+    void analyse(const Job& job) {   // the worker thread, wmu held
+        const std::vector<cf32>& x = job.x;
+        const uint64_t s0 = job.s0;
         tel.bursts++;
-        std::vector<cf32> x(s1 - s0);
-        for (uint64_t i = s0; i < s1; i++) x[i - s0] = ring[i & ringMask];
         // the signals in it
-        std::vector<float> e = excess;
+        std::vector<float> e = job.excess;
         std::vector<double> found;
         const int grp = std::max(1, (int)std::ceil(kGroupHz / (rate / N)));
         float first = 0;
@@ -277,88 +369,182 @@ struct IsmReceiver::Impl {
         std::vector<uint8_t> st;
         size_t first = M, last = 0;
         double pOn = 0;
-        if (slice(magW, st)) {
-            const size_t nOn = span(st, first, last, pOn);
-            if (nOn >= 10 && (double)nOn / (double)(last - first + 1) >= 0.9) {
-                std::vector<float> f0(M, 0.f);
-                for (size_t k = 1; k < M; k++) f0[k] = std::arg(y[k] * std::conj(y[k - 1]));
-                {   // median of three: the clicks of the discriminator at low C/N are single samples, far from both tones
-                    const std::vector<float> g = f0;
-                    for (size_t k = 1; k + 1 < M; k++) f0[k] = std::max(std::min(g[k - 1], g[k]), std::min(std::max(g[k - 1], g[k]), g[k + 1]));
-                }
-                // two passes: the first finds the tones and the length of a chip, the second averages the frequency over a third of it
-                std::vector<float> fr;
-                float mid = 0, devHz = 0;
-                int fw = 3;
-                bool fsk = false;
-                for (int pass = 0; pass < 2; pass++) {
-                    fr.assign(M, 0.f);
-                    double acc = 0;
-                    for (size_t k = 0; k < M; k++) { acc += f0[k]; if (k >= (size_t)fw) acc -= f0[k - fw]; fr[k] = (float)(acc / fw); }
-                    std::vector<float> v;
-                    for (size_t k = first + (size_t)fw; k <= last; k++) if (st[k]) v.push_back(fr[k]);
-                    if (v.size() <= 20) break;
-                    std::vector<float> sv = v;
-                    std::sort(sv.begin(), sv.end());
-                    float c1 = sv[sv.size() / 10], c2 = sv[sv.size() * 9 / 10];
-                    for (int it = 0; it < 12; it++) {
-                        const float md = 0.5f * (c1 + c2);
-                        double a = 0, b = 0; size_t na = 0, nb = 0;
-                        for (float q : v) { if (q < md) { a += q; na++; } else { b += q; nb++; } }
-                        if (na) c1 = (float)(a / na);
-                        if (nb) c2 = (float)(b / nb);
+        // FSK first: the carrier stays up and the frequency takes two values. minFrac: the share of the burst the envelope must hold up (4.0: a
+        // second try at 0.5 when no protocol read the burst as OOK, with the dropouts of a weak carrier bridged, handing on only what a protocol reads)
+        auto fskPath = [&](double minFrac, bool needDecode) -> bool {
+            const bool sw = slice(magW, st);
+            bool anyHandled = false;
+            if (sw) {
+                const size_t nOn = span(st, first, last, pOn);
+                if (nOn >= 10 && (double)nOn / (double)(last - first + 1) >= minFrac) {
+                    if (minFrac < 0.9) std::fill(st.begin() + (ptrdiff_t)first, st.begin() + (ptrdiff_t)last + 1, (uint8_t)1);   // the dropouts of a weak carrier are not gaps
+                    std::vector<float> f0(M, 0.f);
+                    for (size_t k = 1; k < M; k++) f0[k] = std::arg(y[k] * std::conj(y[k - 1]));
+                    {   // median of three: the clicks of the discriminator at low C/N are single samples, far from both tones
+                        const std::vector<float> g = f0;
+                        for (size_t k = 1; k + 1 < M; k++) f0[k] = std::max(std::min(g[k - 1], g[k]), std::min(std::max(g[k - 1], g[k]), g[k + 1]));
                     }
-                    mid = 0.5f * (c1 + c2);
-                    devHz = (float)((c2 - c1) * rd / (4 * M_PI));
-                    fsk = devHz > 4e3f;
-                    if (!fsk || pass == 1) break;
-                    std::vector<size_t> runs;   // the tone runs, for the chip length
-                    size_t a = first;
-                    for (size_t k = first + 1; k <= last; k++) if ((fr[k] > mid) != (fr[k - 1] > mid)) { runs.push_back(k - a); a = k; }
-                    if (runs.size() < 8) break;
-                    std::sort(runs.begin(), runs.end());
-                    std::vector<size_t> big;
-                    for (size_t r : runs) if (r * 10 >= runs[runs.size() / 2]) big.push_back(r);
-                    const size_t chip = big.empty() ? 3 : big[big.size() / 4];
-                    const int nfw = std::max(1, std::min(64, (int)(chip / 3)));
-                    if (nfw == fw) break;
-                    fw = nfw;
-                }
-                if (fsk) {
-                    const float snr = (float)(10 * std::log10(std::max(1e-20, pOn) / noiseP));
-                    const float rssi = (float)(10 * std::log10(std::max(1e-20, pOn)));
-                    // the averaging delays the frequency by half its length: line it up with the envelope
-                    const size_t dl = (size_t)(fw / 2);
-                    auto mark = [&](size_t j) { return fr[std::min(M - 1, j + dl)] > mid; };
-                    const size_t split = (size_t)(kSplitSec * rd);   // split where the carrier drops; the upper tone is the mark
-                    size_t k = first;
-                    while (k <= last) {
-                        size_t e = k, offRun = 0;
-                        while (e <= last) { if (!st[e]) { if (++offRun > split) break; } else offRun = 0; e++; }
-                        const size_t end = e - offRun;
-                        IsmTrain t; t.fsk = true;
-                        size_t j = k;
-                        while (j < end && !mark(j)) j++;
-                        while (j < end) {
-                            size_t a = j;
-                            while (j < end && mark(j)) j++;
-                            const size_t pl = j - a;
-                            a = j;
-                            while (j < end && !mark(j)) j++;
-                            t.p.push_back({(float)(pl * us), (float)((j - a) * us)});
+                    // two passes: the first finds the tones and the length of a chip, the second averages the frequency over a third of it
+                    std::vector<float> fr;
+                    float mid = 0, devHz = 0;
+                    int fw = 3;
+                    size_t chipLen = 0;   // the shortest tone run that is a real chip, samples
+                    bool fsk = false;
+                    for (int pass = 0; pass < 2; pass++) {
+                        fr.assign(M, 0.f);
+                        double acc = 0;
+                        for (size_t k = 0; k < M; k++) { acc += f0[k]; if (k >= (size_t)fw) acc -= f0[k - fw]; fr[k] = (float)(acc / fw); }
+                        std::vector<float> v;
+                        for (size_t k = first + (size_t)fw; k <= last; k++) if (st[k]) v.push_back(fr[k]);
+                        if (v.size() <= 20) break;
+                        std::vector<float> sv = v;
+                        std::sort(sv.begin(), sv.end());
+                        float c1 = sv[sv.size() / 10], c2 = sv[sv.size() * 9 / 10];
+                        for (int it = 0; it < 12; it++) {
+                            const float md = 0.5f * (c1 + c2);
+                            double a = 0, b = 0; size_t na = 0, nb = 0;
+                            for (float q : v) { if (q < md) { a += q; na++; } else { b += q; nb++; } }
+                            if (na) c1 = (float)(a / na);
+                            if (nb) c2 = (float)(b / nb);
                         }
-                        fold(t);
-                        handle(t, fAbs, rssi, snr, devHz, sec);
-                        k = e;
-                        while (k <= last && !st[k]) k++;
+                        mid = 0.5f * (c1 + c2);
+                        devHz = (float)((c2 - c1) * rd / (4 * M_PI));
+                        fsk = devHz > 4e3f;
+                        if (!fsk || pass == 1) break;
+                        std::vector<size_t> runs;   // the tone runs, for the chip length
+                        size_t a = first;
+                        for (size_t k = first + 1; k <= last; k++) if ((fr[k] > mid) != (fr[k - 1] > mid)) { runs.push_back(k - a); a = k; }
+                        if (runs.size() < 8) break;
+                        std::sort(runs.begin(), runs.end());
+                        std::vector<size_t> big;
+                        for (size_t r : runs) if (r * 10 >= runs[runs.size() / 2]) big.push_back(r);
+                        const size_t chip = big.empty() ? 3 : big[big.size() / 4];
+                        chipLen = chip;
+                        const int nfw = std::max(1, std::min(64, (int)(chip / 3)));
+                        if (nfw == fw) break;
+                        fw = nfw;
                     }
-                    return;
+                    if (fsk) {
+                        const float snr = (float)(10 * std::log10(std::max(1e-20, pOn) / noiseP));
+                        const float rssi = (float)(10 * std::log10(std::max(1e-20, pOn)));
+                        // the averaging delays the frequency by half its length: line it up with the envelope
+                        const size_t dl = (size_t)(fw / 2);
+                        auto mark = [&](size_t j) { return fr[std::min(M - 1, j + dl)] > mid; };
+                        // 4.0: when no protocol reads the train, the chips are judged again by the energy at the upper tone against the one at the lower
+                        // tone over half a chip (noncoherent matched detection), not by the discriminator, whose clicks fill a weak burst with chip errors
+                        std::vector<uint8_t> mk2;
+                        bool mk2done = false;
+                        auto toneMarks = [&]() {
+                            if (mk2done) return;
+                            mk2done = true;
+                            const double sep = devHz * 4 * M_PI / rd;
+                            const double wH = mid + 0.5 * sep, wL = mid - 0.5 * sep;
+                            const size_t W = std::max<size_t>(2, chipLen / 2);
+                            std::vector<std::complex<double>> ph(M + 1), pl(M + 1);
+                            for (size_t k2 = 0; k2 < M; k2++) {
+                                const std::complex<double> v(y[k2].real(), y[k2].imag());
+                                ph[k2 + 1] = ph[k2] + v * std::polar(1.0, -wH * (double)k2);
+                                pl[k2 + 1] = pl[k2] + v * std::polar(1.0, -wL * (double)k2);
+                            }
+                            mk2.assign(M, 0);
+                            for (size_t j2 = 0; j2 < M; j2++) {
+                                const size_t a2 = j2 > W / 2 ? j2 - W / 2 : 0, b2 = std::min(M, a2 + W);
+                                mk2[j2] = std::norm(ph[b2] - ph[a2]) > std::norm(pl[b2] - pl[a2]) ? 1 : 0;
+                            }
+                        };
+                        const size_t split = (size_t)(kSplitSec * rd);   // split where the carrier drops; the upper tone is the mark
+                        size_t k = first;
+                        while (k <= last) {
+                            size_t e = k, offRun = 0;
+                            while (e <= last) { if (!st[e]) { if (++offRun > split) break; } else offRun = 0; e++; }
+                            const size_t end = e - offRun;
+                            IsmTrain t; t.fsk = true;
+                            size_t j = k;
+                            while (j < end && !mark(j)) j++;
+                            while (j < end) {
+                                size_t a = j;
+                                while (j < end && mark(j)) j++;
+                                const size_t pl = j - a;
+                                a = j;
+                                while (j < end && !mark(j)) j++;
+                                t.p.push_back({(float)(pl * us), (float)((j - a) * us)});
+                            }
+                            fold(t);
+                            if (narrowRetry && chipLen >= 4 && ismDecode(t).empty()) {
+                                toneMarks();
+                                IsmTrain u; u.fsk = true;
+                                size_t j3 = k;
+                                while (j3 < end && !mk2[j3]) j3++;
+                                while (j3 < end) {
+                                    size_t a3 = j3;
+                                    while (j3 < end && mk2[j3]) j3++;
+                                    const size_t pl3 = j3 - a3;
+                                    a3 = j3;
+                                    while (j3 < end && !mk2[j3]) j3++;
+                                    u.p.push_back({(float)(pl3 * us), (float)((j3 - a3) * us)});
+                                }
+                                fold(u);
+                                if (!ismDecode(u).empty()) t = u;
+                            }
+                            if (!needDecode || !ismDecode(t).empty()) { handle(t, fAbs, rssi, snr, devHz, sec); anyHandled = true; }
+                            k = e;
+                            while (k <= last && !st[k]) k++;
+                        }
+                        return needDecode ? anyHandled : true;
+                    }
                 }
             }
-        }
+            return false;
+        };
+        if (fskPath(0.9, false)) return;
         // OOK
-        if (!slice(magN, st)) return;
-        if (span(st, first, last, pOn) < 10) return;
+        // 4.0: a burst that the standard envelope (+-25 kHz) did not give to any protocol is sliced again with narrower ones, 40 / 80 / 160 us
+        // boxcars of the carrier (+-12.5 / 6 / 3 kHz): the noise falls with the filter, and the protocols' own checks (CRC, parity, repeats) accept or refuse the result
+        auto narrowTry = [&]() -> bool {
+            if (!narrowRetry) return false;
+            std::complex<double> acc(0, 0);
+            for (size_t k = 1; k < M; k++) acc += std::complex<double>(y[k].real(), y[k].imag()) * std::conj(std::complex<double>(y[k - 1].real(), y[k - 1].imag()));
+            const double fe = std::arg(acc) * rd / (2 * M_PI);   // the carrier's offset from the centre found by the FFT
+            std::vector<std::complex<double>> z(M);
+            for (size_t k = 0; k < M; k++) z[k] = std::complex<double>(y[k].real(), y[k].imag()) * std::polar(1.0, -2 * M_PI * fe / rd * (double)k);
+            for (const double usN : {40.0, 80.0, 160.0}) {
+                const int w1n = std::max(2, (int)std::lround(rd * usN * 1e-6));
+                std::vector<float> a(M), mg(M);
+                std::complex<double> ca(0, 0);
+                for (size_t k = 0; k < M; k++) {
+                    ca += z[k];
+                    if (k >= (size_t)w1n) ca -= z[k - (size_t)w1n];
+                    a[k] = (float)(std::abs(ca) / (double)std::min<size_t>(k + 1, (size_t)w1n));
+                }
+                double acc2 = 0;
+                for (size_t k = 0; k < M; k++) {
+                    acc2 += a[k];
+                    if (k >= (size_t)W2) acc2 -= a[k - (size_t)W2];
+                    mg[k] = (float)(acc2 / (double)std::min<size_t>(k + 1, (size_t)W2));
+                }
+                std::vector<uint8_t> s2;
+                size_t f2 = M, l2 = 0;
+                double p2 = 0;
+                if (!slice(mg, s2) || span(s2, f2, l2, p2) < 10) continue;
+                IsmTrain t2; t2.fsk = false;
+                size_t j2 = f2;
+                while (j2 <= l2) {
+                    size_t a2 = j2;
+                    while (j2 <= l2 && s2[j2]) j2++;
+                    const size_t pl = j2 - a2;
+                    a2 = j2;
+                    while (j2 <= l2 && !s2[j2]) j2++;
+                    t2.p.push_back({(float)(pl * us), j2 > l2 ? 1e6f : (float)((j2 - a2) * us)});
+                }
+                fold(t2);
+                if (ismDecode(t2).empty()) continue;
+                handle(t2, fAbs + fe, (float)(10 * std::log10(std::max(1e-20, p2))), (float)(10 * std::log10(std::max(1e-20, p2) / noiseP)), 0, sec);
+                return true;
+            }
+            return false;
+        };
+        if (!slice(magN, st)) { if (!narrowTry() && narrowRetry) fskPath(0.5, true); return; }
+        if (span(st, first, last, pOn) < 10) { if (!narrowTry() && narrowRetry) fskPath(0.5, true); return; }
         const float snr = (float)(10 * std::log10(std::max(1e-20, pOn) / noiseP));
         const float rssi = (float)(10 * std::log10(std::max(1e-20, pOn)));
         IsmTrain t; t.fsk = false;
@@ -372,6 +558,31 @@ struct IsmReceiver::Impl {
             t.p.push_back({(float)(pl * us), j > last ? 1e6f : (float)((j - a) * us)});
         }
         fold(t);
+        if (ismDecode(t).empty()) {
+            // a fast ASK (EnOcean: 8 us chips) is smeared by the narrow envelope: slice the channel envelope itself and keep that train
+            // only when a protocol reads it, so slow bursts and noise are not reported twice
+            std::vector<float> magF(M);
+            magF[0] = std::abs(y[0]);
+            for (size_t k = 1; k < M; k++) magF[k] = 0.5f * (std::abs(y[k]) + std::abs(y[k - 1]));
+            std::vector<uint8_t> st2;
+            size_t f2 = M, l2 = 0;
+            double p2 = 0;
+            if (slice(magF, st2) && span(st2, f2, l2, p2) >= 10) {
+                IsmTrain t2; t2.fsk = false;
+                size_t j2 = f2;
+                while (j2 <= l2) {
+                    size_t a2 = j2;
+                    while (j2 <= l2 && st2[j2]) j2++;
+                    const size_t pl = j2 - a2;
+                    a2 = j2;
+                    while (j2 <= l2 && !st2[j2]) j2++;
+                    t2.p.push_back({(float)(pl * us), j2 > l2 ? 1e6f : (float)((j2 - a2) * us)});
+                }
+                fold(t2);
+                if (!ismDecode(t2).empty()) { handle(t2, fAbs, rssi, snr, 0, sec); return; }
+            }
+        }
+        if (ismDecode(t).empty() && (narrowTry() || (narrowRetry && fskPath(0.5, true)))) return;
         handle(t, fAbs, rssi, snr, 0, sec);
     }
 
@@ -528,6 +739,7 @@ bool IsmReceiver::loadResults(const std::string& blob) {
 }
 void IsmReceiver::setLogCallback(std::function<void(const std::string&)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->log = std::move(cb); }
 void IsmReceiver::setReadingTap(std::function<void(const IsmReading&, double)> cb) { std::lock_guard<std::mutex> lk(p_->mu); p_->tap = std::move(cb); }
+void IsmReceiver::setNarrowRetry(bool on) { std::lock_guard<std::mutex> lk(p_->mu); p_->narrowRetry = on; }
 void IsmReceiver::setThresholdDb(float db) { std::lock_guard<std::mutex> lk(p_->mu); p_->thrSet = std::max(8.f, std::min(25.f, db)); p_->resetReq = true; }
 
 bool IsmReceiver::telemetry(IsmTelemetry& out, uint64_t lastSeq) {
@@ -539,16 +751,26 @@ bool IsmReceiver::telemetry(IsmTelemetry& out, uint64_t lastSeq) {
 
 void IsmReceiver::feed(const cf32* x, size_t n) {
     Impl& m = *p_;
-    bool rs;
-    { std::lock_guard<std::mutex> lk(m.mu); rs = m.resetReq; }
-    if (rs) { m.setup(); if (m.rate > 0) m.init(); }
-    if (m.rate < ismTuning().minSampleRate - 1 || !m.fft) return;
-    if (m.clearReq.exchange(false)) { m.tel.devices.clear(); m.tel.events.clear(); m.tel.raws.clear(); m.tel.blocksOk = m.tel.blocksBad = 0; m.sfx.clear(); m.changed = true; }
-    {
-        std::lock_guard<std::mutex> lk(m.mu);
-        if (m.loadReq) { m.loadReq = false; Impl::moveLists(m.tel, m.loaded); m.changed = true; }
+    bool rs, ld;
+    { std::lock_guard<std::mutex> lk(m.mu); rs = m.resetReq; ld = m.loadReq; }
+    const bool cl = m.clearReq.load();
+    std::unique_lock<std::mutex> wl(m.wmu, std::defer_lock);
+    if (rs || ld || cl) {
+        if (!m.takeLock(wl)) return;   // the worker is in a burst that uses the old set-up and lists: this input is dropped rather than waited for (#542)
+        if (rs) { m.setup(); if (m.rate > 0) m.init(); }
+        if (m.rate >= ismTuning().minSampleRate - 1 && m.fft) {
+            if (m.clearReq.exchange(false)) { m.tel.devices.clear(); m.tel.events.clear(); m.tel.raws.clear(); m.tel.blocksOk = m.tel.blocksBad = 0; m.sfx.clear(); m.changed = true; }
+            std::lock_guard<std::mutex> lk(m.mu);
+            if (m.loadReq) { m.loadReq = false; Impl::moveLists(m.tel, m.loaded); m.changed = true; }
+        }
+        wl.unlock();
     }
-    m.sfx.feed(x, n);
+    if (m.rate < ismTuning().minSampleRate - 1 || !m.fft) return;
+    if (m.sfxOn) {
+        Impl::Job j;
+        j.sfxChunk = true; j.x.assign(x, x + n); j.gen = m.gen.load();
+        m.enqueue(std::move(j));
+    }
     for (size_t i = 0; i < n; i++) {
         cf32 v = x[i];
         if (!std::isfinite(v.real()) || !std::isfinite(v.imag())) v = cf32(0, 0);
@@ -559,10 +781,20 @@ void IsmReceiver::feed(const cf32* x, size_t n) {
         if (m.fpos == m.N) { m.fpos = 0; m.frame(m.total); }
     }
     const double now = (double)m.total / m.rate;
-    if (m.changed || now - m.lastPubSec >= 0.25) {
+    if ((m.changed || now - m.lastPubSec >= 0.25) && m.takeLock(wl)) {   // a radio: never waits for a burst, the next call tries again
         m.publish();
+        wl.unlock();
         m.levelAcc = 0; m.levelN = 0;
     }
+}
+
+void IsmReceiver::setRealtime(bool on) { p_->realtime = on; }
+
+void IsmReceiver::flush() {
+    Impl& m = *p_;
+    m.waitIdle();
+    std::lock_guard<std::mutex> wl(m.wmu);
+    if (m.rate >= ismTuning().minSampleRate - 1 && m.fft) m.publish();
 }
 
 ModeTuning ismTuning() {

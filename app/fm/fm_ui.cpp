@@ -1,5 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // FM broadcast radio panels: tuning, status line, station panel with RDS, diagnostic plots and the band scanner.
+#include "../d40/d40_ui.h"
 #include "app.h"
+#include "dab/played_ui.h"
 #include "../ui/typography.h"
 #include "state/results_export.h"
 #include <chrono>
@@ -163,6 +168,8 @@ void fmStatus(App& a) {
 
 // ------------------------------------------------------------------ history, volume
 void fmHistory(App& a) {
+    fmSmartTick(a);
+    fmTmcTick(a);   // the TMC log takes new messages
     static uint64_t lastSeq = 0;
     static bool wasRunning = false;
     static float lastVol = -1;
@@ -202,6 +209,12 @@ void fmHistory(App& a) {
     auto push = [](std::deque<float>& dq, float v) { dq.push_back(v); if (dq.size() > 600) dq.pop_front(); };
     const FmTelemetry& fm = a.rx.fm;
     if (fm.carrier) { push(a.fmSnrH, fm.snrDb); push(a.fmPilotH, fm.pilotPct); push(a.fmRdsH, fm.rdsBlockOkPct); }
+    if (fm.carrier && fm.rdsSync) {   // the played list and the broadcast.* events (dab/played_ui.h)
+        std::string artist, title;
+        for (const auto& t : fm.rds.rtPlus) { if (t.type == 4 || (t.type == 9 && artist.empty())) artist = t.text; if (t.type == 1) title = t.text; }
+        const std::string ps = fmTrim(fm.psName);
+        if (!ps.empty()) playedNote("FM", ps, a.freqMhz, artist, title, fm.radioTextComplete ? fm.radioText : std::string(), fm.ptyText, fm.trafficAlert);
+    }
 }
 
 // ------------------------------------------------------------------ plots under the tabs
@@ -355,6 +368,13 @@ void fmRadioPanel(App& a) {
     const bool run = a.engine.running();
     const bool live = run && a.rx.standard == 6 && fm.carrier;
     sectionHeader(Ic::Radio, "FM radio");
+    // #442: rows come and go with the RDS data (now playing, flags, subcarriers, TMC) and text wraps, so everything below (the saved stations)
+    // jumped up and down while a station was read, under the mouse. The block keeps the tallest height it has had on this frequency: it can
+    // grow, but it only shrinks on a retune or after the receiver stops.
+    static float rdsBlockMaxH = 0;
+    static double rdsBlockFreq = -1;
+    if (std::fabs(rdsBlockFreq - a.freqMhz) > 1e-6 || !run) { rdsBlockMaxH = 0; rdsBlockFreq = a.freqMhz; }
+    const float rdsBlockY0 = ImGui::GetCursorPosY();
     if (ImGui::BeginTable("fmtbl", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 110 * gUi);
         ImGui::TableSetupColumn("");
@@ -372,6 +392,9 @@ void fmRadioPanel(App& a) {
             if (!fm.rds.ert.empty()) row(Ic::Wave, tr("Text (eRT)"), "%s", fm.rds.ert.c_str());
         }
         row(Ic::Layers, "Programme", "%s", live && !fm.ptyText.empty() && fm.ptyText != "None" ? fm.ptyText.c_str() : "-");
+        if (live && fm.rdsSync && fm.ptyCode >= 0) {   // PTY code and the TP / TA / music-speech flags (#436)
+            row(Ic::Layers, tr("Type and flags"), "PTY %d%s%s%s  %s", fm.ptyCode, fm.ptyCode == 31 && !fm.rbds ? " (alarm)" : "", fm.trafficProgram ? "  TP" : "", fm.trafficAlert ? "  TA (announcement on air)" : "", fm.music ? tr("music") : tr("speech"));
+        }
         if (live && fm.rbds && !fm.callSign.empty()) row(Ic::Radio, tr("Call letters"), "%s", fm.callSign.c_str());
         {
             char snd[64];
@@ -389,6 +412,23 @@ void fmRadioPanel(App& a) {
             else snprintf(rds, sizeof rds, "%.0f %% blocks ok", fm.rdsBlockOkPct);
         }
         row(Ic::Wave, "RDS", "%s", rds);
+        if (live) {
+            std::string subTxt;
+            for (auto& c : fm.sub.rds2) if (c.synced) { char b[64]; snprintf(b, sizeof b, "%sRDS2 %.2f kHz (%.0f %%)", subTxt.empty() ? "" : ", ", c.carrierHz / 1e3, c.okPct); subTxt += b; }
+            static int scaSel = -1;
+            for (int i = 0; i < 2; i++) if (fm.sub.sca[i].present) { char b[64]; snprintf(b, sizeof b, "%sSCA %.0f kHz", subTxt.empty() ? "" : ", ", fm.sub.sca[i].carrierHz / 1e3); subTxt += b; }
+            if (!subTxt.empty()) row(Ic::Wave, tr("Subcarriers"), "%s", subTxt.c_str());
+            if (fm.sub.sca[0].present || fm.sub.sca[1].present || scaSel >= 0) {
+                row(Ic::Speaker, tr("Listen to"), "%s", "");
+                ImGui::SameLine();
+                static const char* scaNames[] = {N_("the programme"), "SCA 67 kHz", "SCA 92 kHz"};
+                ImGui::SetNextItemWidth(140 * gUi);
+                if (ImGui::BeginCombo("##fmsca", scaSel < 0 ? tr(scaNames[0]) : scaNames[scaSel + 1])) {
+                    for (int i = -1; i < 2; i++) if (ImGui::Selectable(i < 0 ? tr(scaNames[0]) : scaNames[i + 1], scaSel == i)) { scaSel = i; a.engine.fm().setScaListen(i); }
+                    ImGui::EndCombo();
+                }
+            }
+        }
         if (live && fm.equaliser) row(Ic::Wave, tr("Multipath"), "%s", tr("echo found, equaliser on"));
         row(Ic::Warning, "Traffic", "%s", !live ? "-" : fm.trafficAlert ? "ANNOUNCEMENT" : fm.trafficProgram ? "station (TP)" : "no");
         ImGui::TableNextRow(); ImGui::TableNextColumn(); iconInline(Ic::Wave, iconDim(), 0.9f); ImGui::SameLine(0, 5 * gUi); ImGui::TextDisabled("%s", tr("RDS standard")); ImGui::TableNextColumn();
@@ -459,7 +499,8 @@ void fmRadioPanel(App& a) {
         ImGui::EndTable();
     }
     ImGui::Spacing();
-    if (live && fm.rdsSync && (!fm.rds.afMhz.empty() || !fm.rds.ptyn.empty() || fm.rds.clockUtc || fm.rds.ecc >= 0 || !fm.rds.eon.empty() || !fm.rds.oda.empty())) {
+    if (live) d40FmCard(a);   // 4.0: station names, DX opening alarm (app/d40)
+    if (live && fm.rdsSync && (!fm.rds.afMhz.empty() || fm.rds.language >= 0 || !fm.rds.ptyn.empty() || fm.rds.clockUtc || fm.rds.ecc >= 0 || !fm.rds.eon.empty() || !fm.rds.oda.empty())) {
         // the rest of RDS: what the station sends beyond the name and the text
         if (typo::collapsingHeader(trw("RDS details"), 0)) {
             ImGui::PushTextWrapPos(0);
@@ -478,10 +519,18 @@ void fmRadioPanel(App& a) {
                 std::string af;
                 for (double f : fm.rds.afMhz) { char b[16]; snprintf(b, sizeof b, "%s%.1f", af.empty() ? "" : ", ", f); af += b; }
                 ImGui::Text("%s: %s MHz", tr("Also on"), af.c_str());
+                fmAfPanel(a);
             }
             if (fm.rds.ecc >= 0) ImGui::Text("%s: %02X  PI %04X", tr("Country code (ECC)"), fm.rds.ecc, fm.piCode);
             if (fm.rds.pinDay) ImGui::Text("%s: day %d, %02d:%02d", tr("Programme item"), fm.rds.pinDay, fm.rds.pinHour, fm.rds.pinMinute);
-            for (const auto& e : fm.rds.eon) ImGui::Text("%s: %04X %s", tr("Other network"), e.pi, e.ps.empty() ? "..." : fmTrim(e.ps).c_str());
+            if (fm.rds.language >= 0) ImGui::Text("%s: %s (%02X)", tr("Language"), rdsLanguageName(fm.rds.language), fm.rds.language);
+            for (const auto& e : fm.rds.eon) {
+                std::string x = e.ps.empty() ? "..." : fmTrim(e.ps);
+                if (e.pty >= 0) x += std::string("  PTY ") + std::to_string(e.pty);
+                if (e.tp == 1) x += "  TP";
+                if (e.ta == 1) x += "  TA";
+                ImGui::Text("%s: %04X %s", tr("Other network"), e.pi, x.c_str());
+            }
             for (const auto& t : fm.rds.rtPlus) if (t.type != 1 && t.type != 4) ImGui::Text("%s: %s", t.name.c_str(), t.text.c_str());
             if (!fm.rds.oda.empty()) {
                 std::string o;
@@ -502,33 +551,15 @@ void fmRadioPanel(App& a) {
         char hd[96];
         snprintf(hd, sizeof hd, "Traffic (TMC) - %zu", fm.tmcMessages.size());
         if (typo::collapsingHeader(hd, ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextDisabled("Table %d%s%s. Locations are shown as codes: the country's location table is not included.", fm.tmc.ltn, fm.tmc.mode == 1 ? ", enhanced mode" : "", "");
-            ImGui::PopTextWrapPos();
-            ImGui::BeginChild("##fmtmc", ImVec2(0, 150 * gUi), ImGuiChildFlags_Borders);
-            if (fm.tmcMessages.empty()) ImGui::TextDisabled("No messages yet.");
-            const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-            for (size_t i = 0; i < fm.tmcMessages.size(); i++) {
-                const TmcMessage& m = fm.tmcMessages[i];
-                ImGui::PushID((int)i);
-                ImGui::PushTextWrapPos(0);
-                ImGui::Text("%s", m.text.c_str());
-                for (const auto& s : m.more) ImGui::TextDisabled("  + %s", s.c_str());
-                char loc[160];
-                int n = snprintf(loc, sizeof loc, "location %d (table %d), %s", m.location, fm.tmc.ltn, m.negative ? "negative direction" : "positive direction");
-                if (m.extent) n += snprintf(loc + n, sizeof loc - (size_t)n, ", +%d locations", m.extent);
-                if (m.diversion) n += snprintf(loc + n, sizeof loc - (size_t)n, ", diversion advised");
-                if (!m.durationText.empty()) n += snprintf(loc + n, sizeof loc - (size_t)n, ", %s", m.durationText.c_str());
-                ImGui::TextDisabled("%s", loc);
-                const int ago = (int)std::max(0.0, (now - m.received) / 60), left = (int)std::max(0.0, (m.expires - now) / 60);
-                ImGui::TextDisabled("received %d min ago, expires in %d min", ago, left);
-                ImGui::PopTextWrapPos();
-                ImGui::Separator();
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
+            fmTmcPanel(a);   // fm_tmc_ui.cpp: in plain words with the user's own tables, and the log
         }
         ImGui::Spacing();
+    }
+    if (live) smart5FmCard(a);   // round-5 smart checks: watchdog, BS.412 power, transmitter fingerprint (app/smart5), below the RDS information
+    {
+        const float h = ImGui::GetCursorPosY() - rdsBlockY0;
+        if (h < rdsBlockMaxH) ImGui::Dummy(ImVec2(1, rdsBlockMaxH - h));
+        else rdsBlockMaxH = h;
     }
     fmSavedPanel(a);   // the saved-stations library, under the RDS decoder
     if (pal::dev()) {   // compact now-playing, then the scanned stations fill the rest of the panel
@@ -605,6 +636,7 @@ void fmRadioTab(App& a) {
     ImGui::TextUnformatted(ps.c_str());
     if (live && !fm.ptyText.empty() && fm.ptyText != "None") { ImGui::SameLine(0, 10 * gUi); ImGui::TextDisabled("%s", fm.ptyText.c_str()); }
     if (live && !fm.radioText.empty()) ImGui::TextDisabled("%s", fm.radioText.c_str());
+    if (ImGui::CollapsingHeader(trw("Played (RadioText+ songs)##fmpl"))) { ImGui::BeginChild("##fmplc", ImVec2(0, 240 * gUi)); playedPanel(a, "fmpl"); ImGui::EndChild(); }
     ImGui::Spacing();
     {   // tuning dial and steps
         float f = (float)a.freqMhz;
@@ -724,7 +756,7 @@ static void fmScanBeginRange(App::FmScan& s) {
 }
 
 // power of one 100 kHz channel (+-50 kHz) in a spectrum frame, dB; the radio's DC spike is skipped
-static double fmChannelDb(const SpectrumFrame& f, double fs, double offHz) {
+double fmChannelDb(const SpectrumFrame& f, double fs, double offHz) {
     const size_t n = f.dbfs.size();
     const double binHz = fs / (double)n;
     double sum = 0;
@@ -740,7 +772,11 @@ static double fmChannelDb(const SpectrumFrame& f, double fs, double offHz) {
     return cnt ? 10 * std::log10(sum / cnt + 1e-20) : -200;
 }
 
+// First start: what the Scan button does (docs/EASE-3.8.md)
+void fmAutoScan(App& a) { App::FmScan& s = a.fmScan; fmScanBeginRange(s); s.running = true; s.phase = 0; s.idx = -1; s.t0 = 0; s.results.clear(); s.cand.clear(); s.savedFreq = a.freqMhz; }
+
 void fmScanTab(App& a) {
+    fmCensusPanel(a);
     App::FmScan& s = a.fmScan;
     const bool run = a.engine.running();
     double lo = 87.0, hi = 108.0;
@@ -850,13 +886,16 @@ void fmScanStep(App& a) {
 
     if (s.phase == 0) {
         if (s.idx < 0) { fmScanBeginRange(s); s.idx = 0; tuneTo(fmSurveyCentre(s.scanLoMhz, 0)); return; }
-        if (now - s.t0 < 0.7 || a.lastSeq == s.seq0) return;
+        const bool newFrame = a.lastSeq != s.seq0;
+        if (now - s.t0 < 0.7 || (!newFrame && now - s.t0 < 4.0)) return;
+        // no spectrum frame 4 s after the retune (a slow driver, a stalled USB read): skip this hop instead of waiting for ever (#418, the scan stood at 18%)
         const double centre = fmSurveyCentre(s.scanLoMhz, s.idx), fs = a.engine.sampleRate();
         double db[20];
         for (int j = 0; j < 20; j++) db[j] = fmChannelDb(a.spec, fs, (-1.0 + 0.1 * j) * 1e6);
         double sorted[20]; std::copy(db, db + 20, sorted); std::sort(sorted, sorted + 20);
         const double floorDb = sorted[4];
-        for (int j = 0; j < 20; j++) {
+        if (!newFrame) a.engine.log("FM scan: no spectrum from the radio around " + std::to_string(centre) + " MHz, skipped");
+        for (int j = 0; j < 20 && newFrame; j++) {
             const double mhz = std::round((centre - 1.0 + 0.1 * j) * 10) / 10;
             if (mhz < s.scanLoMhz - 0.01 || mhz > s.scanHiMhz + 0.01) continue;
             const bool peak = (j == 0 || db[j] >= db[j - 1]) && (j == 19 || db[j] >= db[j + 1]);

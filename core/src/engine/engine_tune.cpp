@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // Retuning a running engine: the radio and hardware tune settings (radioTune/hwTune), retune, retune with receiver reset, and the
 // restart when the sample rate has to change.
 #include "dect2/engine/engine.h"
+#include "dect2/common/diag.h"
 #include "engine_internal.h"
 #include "engine_ctl.h"
 #include "dect2/source/converter.h"
@@ -63,10 +67,14 @@ TuneSettings Engine::hwTune(const TuneSettings& t) const {
 
 bool Engine::retune(const TuneSettings& tune) {
     std::lock_guard<std::recursive_mutex> ctl(engineControlMutex());   // the tuning thread and the UI's start / stop take turns
-    if (!src_) return false;
+    if (!src_) { DIAG_DEBUG(913103, "A retune was requested while no radio is open, so it is ignored."); return false; }
     std::string err;
     holdDelivery(300);
-    if (!src_->retune(hwTune(tune), err)) { log("retune failed: " + err); return false; }
+    if (!src_->retune(hwTune(tune), err)) {
+        log("retune failed: " + err);
+        DIAG(903454, "The radio refused the new tuning (%s), so it stays on the previous frequency and rate.", err.c_str());
+        return false;
+    }
     setNote(err, true);
     if (restartIfRateChanged(tune)) return running_;
     double oldCentre = 0;
@@ -74,16 +82,17 @@ bool Engine::retune(const TuneSettings& tune) {
     if (lastDev_.kind == DeviceInfo::File) fileFollowVfo(tune);   // a recording: the VFO moves, the spectrum does not
     // a retune that does not move (the gain, the AGC) leaves a second mode's receiver alone: placing it again would restart it
     const bool moved = std::fabs(oldCentre - tune.centerHz) > 0.5;
-    wide_.setCenterHz(lastDev_.kind != DeviceInfo::File ? radioTune(tune).centerHz : fileCentreHz_.load());
+    { const double wc_ = lastDev_.kind != DeviceInfo::File ? radioTune(tune).centerHz + offHz_.load() : fileCentreHz_.load();   /* offset tuning: the samples are mixed back to the channel centre */ wide_.setCenterHz(wc_); wideAllCentre_.store(wc_); }
     if (lastDev_.isRadio()) rxAis_.setCenterHz(radioTune(tune).centerHz);   // AIS: the four channels are placed by their own frequencies
     if (moved || secAct_.load() < 0) {
         if (lastDev_.kind != DeviceInfo::File) { rxIono_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) { rxHfdig_.setDialHz(tune.centerHz); rxSw_.setDialHz(tune.centerHz); rxCube_.setDialHz(tune.centerHz); rxGs_.setDialHz(tune.centerHz); rxVdes_.setDialHz(tune.centerHz); rxTime_.setDialHz(tune.centerHz); rxWifi_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); rxQo100_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) { rxRid_.setCenterHz(radioTune(tune).centerHz); rxWifi_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); rxQo100_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) { rxWifi_.setCenterHz(radioTune(tune).centerHz); rxNr_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); rxQo100_.setCenterHz(radioTune(tune).centerHz); }
-        if (lastDev_.kind != DeviceInfo::File) rxZb_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) { rxZb_.setCenterHz(radioTune(tune).centerHz); rxTh_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) rxNb_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxHl_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) rxEspnow_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxWs_.setCenterHz(radioTune(tune).centerHz);
         rxWs_.setDialHz(tune.centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxFpv_.setCenterHz(radioTune(tune).centerHz);
@@ -96,7 +105,9 @@ bool Engine::retune(const TuneSettings& tune) {
         if (lastDev_.kind != DeviceInfo::File) rxGd_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxBt_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxSb_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) rxSatd_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxIsdbs_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) rxC2_.setCenterHz(radioTune(tune).centerHz);
     }
     refreshSecondary(moved);
     return true;
@@ -129,10 +140,14 @@ bool Engine::restartIfRateChanged(const TuneSettings& tune) {
 
 bool Engine::retuneReset(const TuneSettings& tune) {
     std::lock_guard<std::recursive_mutex> ctl(engineControlMutex());
-    if (!src_) return false;
+    if (!src_) { DIAG_DEBUG(354074, "A retune with a receiver reset was requested while no radio is open, so it is ignored."); return false; }
     std::string err;
     holdDelivery(300);
-    if (!src_->retune(hwTune(tune), err)) { log("retune failed: " + err); return false; }
+    if (!src_->retune(hwTune(tune), err)) {
+        log("retune failed: " + err);
+        DIAG(876774, "The radio refused the new tuning of a retune with a receiver reset (%s), so it stays on the previous frequency and rate.", err.c_str());
+        return false;
+    }
     setNote(err, true);
     if (restartIfRateChanged(tune)) return running_;
     double oldCentre = 0;
@@ -140,16 +155,17 @@ bool Engine::retuneReset(const TuneSettings& tune) {
     if (lastDev_.kind == DeviceInfo::File) fileFollowVfo(tune);   // a recording: the VFO moves, the spectrum does not
     // a retune that does not move (the gain, the AGC) leaves a second mode's receiver alone: placing it again would restart it
     const bool moved = std::fabs(oldCentre - tune.centerHz) > 0.5;
-    wide_.setCenterHz(lastDev_.kind != DeviceInfo::File ? radioTune(tune).centerHz : fileCentreHz_.load());
+    { const double wc_ = lastDev_.kind != DeviceInfo::File ? radioTune(tune).centerHz + offHz_.load() : fileCentreHz_.load();   /* offset tuning: the samples are mixed back to the channel centre */ wide_.setCenterHz(wc_); wideAllCentre_.store(wc_); }
     if (lastDev_.isRadio()) rxAis_.setCenterHz(radioTune(tune).centerHz);   // AIS: the four channels are placed by their own frequencies
     if (moved || secAct_.load() < 0) {
         if (lastDev_.kind != DeviceInfo::File) { rxIono_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) { rxHfdig_.setDialHz(tune.centerHz); rxSw_.setDialHz(tune.centerHz); rxCube_.setDialHz(tune.centerHz); rxGs_.setDialHz(tune.centerHz); rxVdes_.setDialHz(tune.centerHz); rxTime_.setDialHz(tune.centerHz); rxWifi_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); rxQo100_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) { rxRid_.setCenterHz(radioTune(tune).centerHz); rxWifi_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); rxQo100_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) { rxWifi_.setCenterHz(radioTune(tune).centerHz); rxNr_.setCenterHz(radioTune(tune).centerHz); rxAcars_.setCenterHz(radioTune(tune).centerHz); rxAirband_.setCenterHz(radioTune(tune).centerHz); rxVdl2_.setCenterHz(radioTune(tune).centerHz); rxIsm_.setCenterHz(radioTune(tune).centerHz); rxVor_.setCenterHz(radioTune(tune).centerHz); rxCell_.setCenterHz(radioTune(tune).centerHz); rxHfdl_.setCenterHz(radioTune(tune).centerHz); rxGsmr_.setCenterHz(radioTune(tune).centerHz); rxTetra_.setCenterHz(radioTune(tune).centerHz); rxOrb_.setCenterHz(radioTune(tune).centerHz); rxAle_.setDialHz(tune.centerHz); rxBle_.setCenterHz(radioTune(tune).centerHz); rxQo100_.setCenterHz(radioTune(tune).centerHz); }
-        if (lastDev_.kind != DeviceInfo::File) rxZb_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) { rxZb_.setCenterHz(radioTune(tune).centerHz); rxTh_.setCenterHz(radioTune(tune).centerHz); }
         if (lastDev_.kind != DeviceInfo::File) rxNb_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxHl_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) rxEspnow_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxWs_.setCenterHz(radioTune(tune).centerHz);
         rxWs_.setDialHz(tune.centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxFpv_.setCenterHz(radioTune(tune).centerHz);
@@ -162,7 +178,9 @@ bool Engine::retuneReset(const TuneSettings& tune) {
         if (lastDev_.kind != DeviceInfo::File) rxGd_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxBt_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxSb_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) rxSatd_.setCenterHz(radioTune(tune).centerHz);
         if (lastDev_.kind != DeviceInfo::File) rxIsdbs_.setCenterHz(radioTune(tune).centerHz);
+        if (lastDev_.kind != DeviceInfo::File) rxC2_.setCenterHz(radioTune(tune).centerHz);
     }
     refreshSecondary(moved);
     resetReq_ = true;

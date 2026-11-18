@@ -1,11 +1,22 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // P25 Phase 1 screens: the current call (unit ID, talkgroup, emergency, encryption, voice), the call log (calls, voice grants, data
 // packets), the trunking system (site, adjacent sites, channel identifiers), the talkgroups with their activity, the decoded control
 // messages, and a "?" about the mbelib library the voice needs (docs/CODECS.md). Receive only; encrypted calls are only reported.
+#include "../d40/d40_ui.h"
+#include "../ui/typography.h"
 #include "dect2/common/time_fmt.h"
+#include "ui/kit/export.h"
 #include "app.h"
+#include "ui/voice_why_ui.h"
+#include "dect2/voice/voice_why_modes.h"
+#include "ui/kit/mode_panel.h"
 #include "ui/kit/mode_frame.h"
 #include "ui/kit/session_list.h"
 #include "voice/voice_monitor_ui.h"
+#include "voice/watch_ui.h"
+#include "voice/tgdir_ui.h"
 #include "dect2/codec/codec_registry.h"
 #include "dect2/codec/codec_registry.h"
 #include "../codec/speech_codec_ui.h"
@@ -33,6 +44,8 @@
 #include <string>
 #include <map>
 #include <vector>
+#include "trunkpool/trunk1.h"
+#include "dect2/common/diag.h"
 
 namespace {
 
@@ -89,7 +102,7 @@ std::string tgFile() { return plat::dataDir() + "/trunk_talkgroups.csv"; }
 
 void tgLoad(const std::string& path, bool merge) {
     std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
-    if (!f) { T.status = "cannot open " + path; return; }
+    if (!f) { DIAG_DEBUG(901821, "The P25 talkgroup list %s could not be opened, so no talkgroups were loaded.", path.c_str()); T.status = "cannot open " + path; return; }
     std::stringstream ss; ss << f.rdbuf();
     std::string err; int skipped = 0;
     const int n = T.ctl.tgs.importCsv(ss.str(), &err, &skipped, merge);
@@ -98,7 +111,7 @@ void tgLoad(const std::string& path, bool merge) {
 void tgSave(const std::string& path) {
     std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
     if (f) f << T.ctl.tgs.exportCsv();
-    else T.status = "cannot write " + path;
+    else { DIAG(404247, "Writing the P25 talkgroup list %s failed (the folder may be read-only), so it was not saved.", path.c_str()); T.status = "cannot write " + path; }
 }
 
 bool live(const App& a) { return a.rx.standard == 51; }   // the engine reports its standard code minus one
@@ -115,7 +128,8 @@ std::string clock(int64_t t) {
 }
 
 std::string dstOf(const dect2::P25Call& c) { return (c.group ? "TG " : "") + dect2::p25Id(c.dst); }
-const char* kindOf(const dect2::P25Call& c) { return c.kind == 1 ? "grant" : c.kind == 2 ? "data" : "voice"; }
+std::string dstOfUi(const dect2::P25Call& c) { return c.group ? tgdirui::withName(dect2::TgKind::P25, dstOf(c), (uint32_t)c.dst) : dstOf(c); }   // with the directory's name
+const char* kindOf(const dect2::P25Call& c) { return c.kind == 1 ? "grant" : c.kind == 2 ? "data" : c.kind == 3 ? "denied" : "voice"; }
 std::string mhz(double hz) { if (hz <= 0) return "-"; char b[32]; snprintf(b, sizeof b, "%.5f MHz", hz / 1e6); return b; }
 std::string cryptoOf(const dect2::P25Call& c) {
     char b[96];
@@ -157,7 +171,7 @@ void nowView(App& a) {
         return;
     }
     ImGui::PushFont(a.mono, 0);
-    ImGui::TextColored(n.active ? pal::okGreen() : pal::grey(0.6f), "%s  %s  ->  %s", n.active ? "ON AIR" : "last", dect2::p25Id(n.src).c_str(), dstOf(n).c_str());
+    ImGui::TextColored(n.active ? pal::okGreen() : pal::grey(0.6f), "%s  %s  ->  %s", n.active ? "ON AIR" : "last", dect2::p25Id(n.src).c_str(), dstOfUi(n).c_str());
     ImGui::PopFont();
     kvRow(a, "call", "%s, NAC %03X%s", n.group ? "group" : "unit to unit", n.nac < 0 ? 0 : n.nac, n.lateEntry ? ", joined late" : "");
     if (n.emergency) { ImGui::TextDisabled("note"); kvColumn(130 * gUi); ImGui::TextColored(pal::warnAmber(), "EMERGENCY"); }
@@ -174,6 +188,7 @@ void nowView(App& a) {
 void callsView(App& a) {
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "start the receiver to see the calls"); return; }
     const auto& log = a.rx.p25.log;
+    if (typo::collapsingHeader(trw("Talkgroup activity"), 0)) d40P25Activity(a.rx.p25);   // 4.0 (app/d40)
     if (ImGui::Button("Copy")) {
         std::string txt;
         for (const auto& e : log) {
@@ -183,6 +198,15 @@ void callsView(App& a) {
             txt += b;
         }
         ImGui::SetClipboardText(txt.c_str());
+    }
+    {
+        static std::string note;
+        resexp::Table x; x.cols = {"time", "kind", "from", "to", "channel", "frequency_mhz", "encryption", "details", "duration_s"};
+        for (const auto& e : log)
+            x.add({clock(e.wallTime), kindOf(e), dect2::p25Id(e.src), dstOf(e), e.kind == 1 ? dect2::p25::channelText(e.channel) : "", e.kind == 1 ? resexp::num(e.freqHz / 1e6, 5) : "",
+                   e.encrypted ? cryptoOf(e) : "clear", e.text, resexp::num(e.durSec, 1)}, (double)e.wallTime);
+        ImGui::SameLine();
+        kit::exportBar(x, "p25_calls", note, "p25xc");
     }
     if (!ImGui::BeginTable("##p25log", 7 + (wideActive(a) ? 1 : 0), ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollX, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
@@ -196,7 +220,7 @@ void callsView(App& a) {
         ImGui::TableNextColumn(); ImGui::TextColored(c, "%s", on ? "on air" : clock(e.wallTime).c_str());
         ImGui::TableNextColumn(); ImGui::TextUnformatted(kindOf(e));
         ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::TextColored(c, "%s", dect2::p25Id(e.src).c_str()); ImGui::PopFont();
-        ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::TextUnformatted(dstOf(e).c_str()); ImGui::PopFont();
+        ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::TextUnformatted(dstOfUi(e).c_str()); ImGui::PopFont();
         ImGui::TableNextColumn();
         if (e.kind == 1) ImGui::Text("%s  %s", dect2::p25::channelText(e.channel).c_str(), mhz(e.freqHz).c_str()); else ImGui::TextDisabled("-");
         ImGui::TableNextColumn();
@@ -242,6 +266,36 @@ void trunkingView(App& a) {
         ImGui::EndTable();
     }
     ImGui::Spacing();
+    ImGui::TextDisabled("%s", tr("Patches"));
+    if (t.patches.empty()) ImGui::TextDisabled("  %s", tr("none heard"));
+    else for (const auto& p : t.patches) {
+        std::string m;
+        for (int g : p.members) { if (!m.empty()) m += ", "; m += std::to_string(g); }
+        ImGui::Text("  %s %d: %s", tr("Supergroup"), p.supergroup, m.c_str());
+    }
+    ImGui::Spacing();
+    {
+        static std::string noteAff;
+        resexp::Table x; x.cols = {"unit", "talkgroup", "last_seen"};
+        for (const auto& u : t.affiliations) x.add({dect2::p25Id(u.unit), u.tg >= 0 ? std::to_string(u.tg) : "", clock(u.wallTime)}, (double)u.wallTime);
+        ImGui::TextDisabled("%s (%zu)", tr("Units on this site"), t.affiliations.size());
+        ImGui::SameLine();
+        resexp::saveButton(x, "p25_units", noteAff, "svp25u");
+        if (!noteAff.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", noteAff.c_str()); }
+        if (!t.affiliations.empty() && ImGui::BeginTable("##p25aff", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV, ImVec2(0, 150 * gUi))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn(tr("Unit")); ImGui::TableSetupColumn(tr("Talkgroup")); ImGui::TableSetupColumn(tr("Heard"));
+            ImGui::TableHeadersRow();
+            for (const auto& u : t.affiliations) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(dect2::p25Id(u.unit).c_str());
+                ImGui::TableNextColumn(); if (u.tg >= 0) ImGui::Text("%d", u.tg); else ImGui::TextDisabled("-");
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(clock(u.wallTime).c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::Spacing();
     ImGui::TextDisabled("Channel identifiers");
     bool any = false;
     for (const auto& r : t.idens) any = any || r.valid;
@@ -264,11 +318,23 @@ void trunkingView(App& a) {
 }
 
 void talkgroupView(App& a) {
+    tgdirui::section(dect2::TgKind::P25);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     const auto& tg = a.rx.p25.talkgroups;
     if (tg.empty()) { ImGui::TextDisabled("no talkgroups heard yet"); return; }
     std::vector<dect2::trunk::Controller::TalkgroupRow> conv;
     if (T.on) conv = T.ctl.conversations();   // followed calls and airtime per talkgroup (the call log of the follower)
+    {
+        static std::string note;
+        resexp::Table x; x.cols = {"talkgroup", "grants", "calls", "last_unit", "last_frequency_mhz", "emergency", "encrypted", "followed_calls", "airtime_s"};
+        for (const auto& g : tg) {
+            const dect2::trunk::Controller::TalkgroupRow* cv = nullptr;
+            for (const auto& r : conv) if (r.tg == g.tg) { cv = &r; break; }
+            x.add({std::to_string(g.tg), std::to_string(g.grants), std::to_string(g.calls), dect2::p25Id(g.lastSrc), resexp::num(g.lastFreqHz / 1e6, 5), g.emergency ? "1" : "0", g.encrypted ? "1" : "0",
+                   cv ? std::to_string(cv->followed) : "", cv ? resexp::num(cv->airSec, 0) : ""}, (double)g.lastWall);
+        }
+        kit::exportBar(x, "p25_talkgroups", note, "p25xt");
+    }
     if (!ImGui::BeginTable("##p25tg", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Talkgroup"); ImGui::TableSetupColumn("Grants"); ImGui::TableSetupColumn("Calls"); ImGui::TableSetupColumn("Last unit");
@@ -278,6 +344,7 @@ void talkgroupView(App& a) {
         ImGui::TableNextRow();
         const ImVec4 c = g.active ? pal::okGreen() : ImGui::GetStyleColorVec4(ImGuiCol_Text);
         ImGui::TableNextColumn(); ImGui::PushFont(a.mono, 0); ImGui::TextColored(c, "%d", g.tg); ImGui::PopFont();
+        { const std::string nm = tgdirui::nameOf(dect2::TgKind::P25, (uint32_t)g.tg); if (!nm.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(nm.c_str()); } }
         ImGui::TableNextColumn(); ImGui::Text("%u", g.grants);
         ImGui::TableNextColumn(); ImGui::Text("%u", g.calls);
         ImGui::TableNextColumn(); ImGui::TextUnformatted(dect2::p25Id(g.lastSrc).c_str());
@@ -560,9 +627,9 @@ void trunkTick(App& a) {
             localtime_r(&tt, &g);
 #endif
             char ts[32]; strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &g);
-            snprintf(nm, sizeof nm, "/recordings/trunk_%s_%s.wav", ac.text.c_str(), ts);
+            snprintf(nm, sizeof nm, "/trunk_%s_%s.wav", ac.text.c_str(), ts);
             std::string err;
-            if (rec.start(plat::dataDir() + nm, o, err)) { T.recCall = ac.callId; if (auto* r = T.ctl.log.byId(ac.callId)) r->audioPath = plat::dataDir() + nm; }
+            if (rec.start(recordingsDir() + nm, o, err)) { T.recCall = ac.callId; if (auto* r = T.ctl.log.byId(ac.callId)) r->audioPath = recordingsDir() + nm; }
             break;
         }
         case Action::RecordStop:
@@ -683,8 +750,9 @@ void followView(App& a) {
     if (a.wideFollow) ImGui::TextDisabled("calls inside the capture get a decoder when they are granted (up to %d Phase 1 at once, one Phase 2 as the second mode); outside it the radio leaves the control channel for them", T.ctl.follower.config().maxSlices);
     else if (wideActive(a)) ImGui::TextDisabled("whole span: every carrier in the capture is decoded, the sound moves to the followed call (up to %d at once)", T.ctl.follower.config().maxSlices);
     else ImGui::TextDisabled("single channel: the radio leaves the control channel for each call");
+    trunk1::section(a);
     FollowConfig fc = T.ctl.follower.config();
-    ImGui::SetNextItemWidth(110 * gUi); bool ch = ImGui::SliderInt("simultaneous calls", &fc.maxSlices, 1, 4);
+    ImGui::SetNextItemWidth(110 * gUi); bool ch = ImGui::SliderInt("simultaneous calls", &fc.maxSlices, 1, 8);
     ImGui::SameLine(0, 10 * gUi); ImGui::SetNextItemWidth(110 * gUi); ch |= ImGui::SliderFloat("hang time s", &S.hang, 0.5f, 6.f, "%.1f");
     fc.hangSec = S.hang;
     ch |= ImGui::Checkbox("retune the radio", &fc.allowRetune);
@@ -782,6 +850,7 @@ void followView(App& a) {
 }
 
 void tick(App& a) {
+    watchui::tick(a);
     if (live(a)) appcodec::voiceCodecTick("imbe");   // the user's codec plug-in (docs/CODECS.md), loaded whichever tab is shown
     trunkTick(a);
     Pushed& ps = S.pushed[a.rxId];
@@ -795,7 +864,7 @@ void tick(App& a) {
     ps.was = true;
 }
 
-void tab(App& a) {
+void voiceBar(App& a) {
     {   // the voice monitor's strip, the same in every voice mode
         const dect2::P25Telemetry& t = a.rx.p25;
         voiceui::Link l;
@@ -804,8 +873,13 @@ void tab(App& a) {
         l.errorRate = l.locked ? t.berPct / 100.f : -1.f;
         voiceui::strip(a, "p25", "P25", l);
     }
+}
+
+void tab(App& a) {
+    voiceBar(a);
     kit::modeHeader({50, "P25", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
-    kit::modeNav("p25v", S.view, {{tr("Live"), 0}, {tr("Calls"), 6}, {tr("Call list"), 1, true}, {tr("Trunking"), 2, true}, {tr("Talkgroups"), 3, true}, {tr("Messages"), 4, true}, {tr("Follow"), 5, true}});
+    kit::modeNav("p25v", S.view, {{tr("Live"), 0}, {tr("Calls"), 6}, {tr("Call list"), 1, true}, {tr("Trunking"), 2, true}, {tr("Talkgroups"), 3, true}, {tr("Messages"), 4, true}, {tr("Follow"), 5, true}, {tr("Watch"), 90, true}});
+    if (S.view == 90) { watchui::watchView(a, "p25"); return; }
     if (S.view == 6) { kit::sessionItems(50, 1, "p25"); return; }
     if (S.view == 0) nowView(a); else if (S.view == 1) callsView(a); else if (S.view == 2) trunkingView(a); else if (S.view == 3) talkgroupView(a); else if (S.view == 4) messageView(a); else followView(a);
 }
@@ -844,6 +918,7 @@ void receiver(App& a) {
     wideCarriersTable(a, 0);
     if (!live(a)) { ImGui::TextDisabled("%s", a.engine.running() ? "starting" : "stopped"); return; }
     const dect2::P25Telemetry& t = a.rx.p25;
+    voiceWhyRow(a, dect2::p25Why(t));
     kvRow(a, "follow", "%s", T.on ? T.ctl.statusLine(nowSec()).c_str() : "off: calls are shown but not followed (Follow tab)");
     kvRow(a, "state", "%s", dect2::p25Summary(t).c_str());
     kvRow(a, "signal", "C4FM, symbol SNR %.1f dB, +3 deviation %.0f Hz, offset %+.0f Hz%s", t.snrDb, t.deviationHz, t.cfoHz, t.inverted ? ", inverted" : "");
@@ -884,6 +959,24 @@ void summary(const App& a, std::string& l1, std::string& l2) {
 
 } // namespace
 
+// For the multi-radio trunk pool (app/trunkpool): its grant feed, and the P25 follower's own voice radio handed over to it
+dect2::trunk::Controller& p25TrunkController() { return T.ctl; }
+void p25VoiceRadioOff(bool off) {
+    static int saved = 0;
+    if (off && T.voicePick >= 0) { saved = T.voicePick; T.voicePick = -1; }
+    else if (!off && T.voicePick < 0) T.voicePick = saved;
+}
+
+// Simple view: the voice strip, then what is on air, the call list and the trunking state side by side
+static void command(App& a) {
+    voiceBar(a);
+    kit::modeHeader({50, "P25", live(a) ? 1 : a.engine.running() ? 2 : 0, -1000.f, a.freqMhz * 1e6});
+    if (live(a)) voiceWhyRow(a, dect2::p25Why(a.rx.p25));
+    modepanel::panes({{"##p25cnow", tr("On air"), [&a] { nowView(a); }, 0.9f, 220.f},
+                      {"##p25ccalls", tr("Calls"), [&a] { callsView(a); }, 1.5f, 240.f},
+                      {"##p25ctrunk", tr("Trunking"), [&a] { trunkingView(a); }, 1.f, 220.f}}, 300.f);
+}
+
 extern const ModeUi kP25Ui;
 const ModeUi kP25Ui = {
     .sideTitle = "TALKGROUPS",
@@ -895,4 +988,5 @@ const ModeUi kP25Ui = {
     .status = status,
     .summary = summary,
     .tick = tick,
+    .command = command,
 };

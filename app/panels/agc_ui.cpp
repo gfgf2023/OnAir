@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Kristijonas Adomaitis and OnAir contributors
+
 // The auto-gain loop's glue to the app: it configures SmartAgc (core/src/source/agc.cpp) for the radio and mode in use, feeds it the ADC statistics,
 // the spectrum and the decoder's SNR, applies what it decides, and offers the gear button with the "Let AGC turn the amp on/off by itself" switch.
 // The amp is off by default for everyone and the AGC never touches it unless the user allowed that for this radio (docs/auto-gain.md).
@@ -17,6 +20,7 @@ const char* reasonText(AgcReason r) {
     case AgcReason::Blocker: return N_("strong neighbour: front gain limited");
     case AgcReason::Locked: return N_("decoder locked: gain frozen");
     case AgcReason::LimitHit: return N_("at the end of the gain range");
+    case AgcReason::TopGain: return N_("least attenuation: this radio sets its own level");
     default: return N_("holding the level");
     }
 }
@@ -82,7 +86,7 @@ bool agcStep(App& a, GainSetting& g) {
     const int bits = adcBits();
     const GainModel m = gainModelFor(d, bits);
     const double fs = a.engine.sampleRate() > 0 ? a.engine.sampleRate() : a.tune.sampleRate;
-    const double bw = a.tune.bandwidthMhz * 1e6;
+    const double bw = a.tune.signalBwMhz() * 1e6;
     const int std_ = engineStd(a);
     const std::string ctx = radioKeyOf(d) + "|" + std::to_string(std_) + "|" + std::to_string((long)bw) + "|" + std::to_string((long)fs) + "|" + std::to_string(bits);
     const int curTotal = generic ? (int)std::lround(a.tune.gainDb) : a.tune.lnaDb + a.tune.vgaDb + (a.tune.ampOn ? 14 : 0);
